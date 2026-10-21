@@ -119,6 +119,10 @@ adjust queued-job priorities directly in the dashboard. See the
 
 ### macOS menu bar app
 
+Install the CLI and daemon with `brew install jayhickey/tap/simqueue`. Add the
+optional app with `brew install --cask jayhickey/tap/simqueue-app`; the cask installs
+it into `/Applications` and pulls in the CLI formula if missing.
+
 The optional [SimQueue.app](docs/MENU_BAR.md) adds a `square.stack` menu bar item.
 Click to open the dashboard; right-click for status, Launch at Login, and separate
 options to quit the app or stop SimQueue after finishing/canceling active jobs.

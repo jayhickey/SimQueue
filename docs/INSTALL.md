@@ -21,6 +21,23 @@ simq --version
 simq init
 ```
 
+### Optional menu bar app
+
+CLI-only users can keep using the formula above. To add `SimQueue.app` in
+`/Applications`, install the optional cask:
+
+```sh
+brew install --cask jayhickey/tap/simqueue-app
+```
+
+The cask also installs the CLI formula if it is missing. Launch the app through
+Spotlight or Applications; Launch at Login is opt-in. Installation does not start
+or restart the daemon. Configure it with `simq init` and the steps below first.
+App shutdown controls require daemon v0.1.4 or later; existing installations should
+follow the planned upgrade procedure. App installation, upgrades, uninstall and
+migration from a manually copied app are covered in the [menu bar guide](MENU_BAR.md).
+Uninstalling only the cask leaves the CLI, daemon and queue data intact.
+
 The public formula downloads the tagged release archive without GitHub authentication. Homebrew is the supported installation path; changing Gatekeeper/quarantine settings is not part of installation.
 
 `simq init` checks Xcode and writes `~/Library/Application Support/SimQueue/config.json`. It keeps an existing config; `--force` replaces it. Missing simslim is only a warning: stock templates work without it.

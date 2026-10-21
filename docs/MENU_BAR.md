@@ -7,11 +7,45 @@ per-session loopback URL, job cancellation and queued-job priority controls.
 
 ## Install a published version
 
-Starting with v0.1.4, the Apple silicon release archive includes `SimQueue.app`
-alongside `bin/simq` and `bin/simqd`. Copy the app into `/Applications` or
-`~/Applications`, and keep the installed daemon at the same release version for
-shutdown support. The app is ad-hoc signed and is not notarized; do not disable
-Gatekeeper or remove quarantine attributes to bypass system policy.
+Choose either installation:
+
+```sh
+# CLI and daemon only
+brew install jayhickey/tap/simqueue
+
+# Optional app, with the CLI formula installed as a dependency if missing
+brew install --cask jayhickey/tap/simqueue-app
+```
+
+The formula installs only the command-line tools and documentation. The cask
+installs `SimQueue.app` into `/Applications`; launch it through Spotlight or
+Applications. Launch at Login is opt-in. The app uses your existing daemon;
+installing it does not start or restart services or change host configuration.
+New users still need `simq init` and the setup steps in [INSTALL.md](INSTALL.md).
+
+Keep the app and CLI/daemon on matching releases when available. An already
+running older daemon is not replaced by installing the cask: follow the
+[planned upgrade](INSTALL.md#planned-upgrade) before using app shutdown controls,
+which require daemon v0.1.4 or later. Quit the app before upgrading it:
+
+```sh
+brew upgrade --cask simqueue-app
+```
+
+Upgrade the CLI separately with `brew upgrade simqueue` using the planned daemon
+upgrade procedure. `brew uninstall --cask simqueue-app` removes the app but leaves
+the CLI, daemon, simulator pool and queue data intact. The cask has no shared-data
+cleanup hooks. Disable Launch at Login in the app before uninstalling it.
+
+If you previously copied a development app into `/Applications` or
+`~/Applications`, quit it and move it aside before installing the cask. Homebrew
+will not overwrite an existing unmanaged app automatically. Avoid keeping two
+copies of the companion app installed.
+
+Starting with v0.1.4, the release archive also contains `SimQueue.app` alongside
+the CLI tools for manual installation. The app is ad-hoc signed, not notarized;
+follow macOS security policy rather than disabling Gatekeeper or removing
+quarantine attributes.
 
 ## Build and install
 
@@ -24,8 +58,9 @@ open /tmp/simqueue-app/SimQueue.app
 ```
 
 The packaging script creates an ad-hoc signed app, suitable for local development.
-Copy it to `/Applications` before enabling **Launch at Login**. Public release archives include the same app bundle; Homebrew installation and
-daemon service management remain independent. Install/configure SimQueue first (see [INSTALL.md](INSTALL.md)).
+Copy it to `/Applications` before enabling **Launch at Login**.
+Public archives and the optional cask include the same app bundle.
+Install/configure SimQueue first (see [INSTALL.md](INSTALL.md)).
 The app connects to the default state directory, or `SIMQ_STATE_DIR` when launched
 with that environment. It does not replace the daemon, reconfigure its service,
 or launch a second daemon. Start the installed daemon using `simq status` or your

@@ -58,6 +58,13 @@ is not a substitute for verifying its public URL.
 
 ## Update the public Homebrew tap
 
+Maintain both `Formula/simqueue.rb` (CLI/daemon only) and
+`Casks/simqueue-app.rb` (optional app, depending on the formula). Use the same
+release version and verified checksum in both. Verify the cask app path against
+the staged archive, keep installation free of service changes, and preserve all
+shared state on app uninstall. Do not add daemon stop or shared-data zap hooks.
+
+
 1. Download the actual public release asset anonymously, with no credentials or cached
    download, and check its SHA-256, archive contents, versions and ARM64 architecture.
 2. Set the formula URL to the exact public tagged asset and its verified checksum. Use
