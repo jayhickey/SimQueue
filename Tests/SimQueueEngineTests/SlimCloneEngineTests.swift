@@ -170,6 +170,23 @@ final class SlimCloneEngineTests: XCTestCase {
         XCTAssertEqual(try engine.poolCapacity().bootsInProgress, 0)
     }
 
+    func testMemoryPressureStillRecoversAProvenInterruptedCloneWithoutStartingAnother() throws {
+        let (h, store, engine, pool) = try world()
+        let (_, proof) = try pending(engine, store, createdUDID: "PARTIAL")
+        h.sims.setDevices([
+            SimDevice(udid: source, name: sourceName, isBooted: true),
+            SimDevice(udid: "PARTIAL", name: proof.name, isBooted: true),
+        ])
+        h.probe.update { $0.memoryPressure = .warn }
+        _ = try engine.poolPass(config: pool, demand: 2)
+        XCTAssertEqual(h.sims.deletedUDIDs, ["PARTIAL"], "existing proof permits bounded interrupted cleanup")
+        XCTAssertEqual(try h.sims.listDevices(), [SimDevice(udid: source, name: sourceName, isBooted: false)])
+        XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+        XCTAssertEqual(try engine.poolCapacity().bootsInProgress, 0)
+        XCTAssertTrue(h.sims.clonePlans.isEmpty, "recovery cannot turn into replacement boot/create under pressure")
+        XCTAssertTrue(try store.poolSims().isEmpty)
+    }
+
     func testPartialCommittedCloneIsFencedThenLedgerRetiredOnlyAfterCleanup() throws {
         let (h, store, engine, pool) = try world()
         let (_, proof) = try pending(engine, store, createdUDID: "PARTIAL")

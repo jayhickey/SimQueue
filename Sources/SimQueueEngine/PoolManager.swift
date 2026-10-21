@@ -60,12 +60,15 @@ public enum PoolError: Error, Equatable, CustomStringConvertible {
     case notLeased(String)
     case holderNotRunning(Int32)
     case cloneRecoveryBlocked(String)
+    case pressureRecoveryBlocked(String)
     public var description: String {
         switch self {
         case .notLeased(let udid): "pool sim \(udid) isn't leased"
         case .holderNotRunning(let pid): "lease holder pid \(pid) isn't running"
         case .cloneRecoveryBlocked(let detail):
             "pool clone recovery blocked: \(detail); inspect doctor and preserve the pending intent"
+        case .pressureRecoveryBlocked(let detail):
+            "pool pressure recovery blocked: \(detail); inspect doctor and preserve the pending intent"
         }
     }
 }
@@ -279,6 +282,7 @@ extension Engine {
         var reportedNow: Set<String> = []
         refreshDefaultTemplate()
         try requireCompatiblePoolTemplate()
+        try recoverPressureShutdowns(hostWork: hostWork)
         let noTemplate = environment.sims.templateCloneSource.map { $0.cloneTemplate == nil } ?? false
         let unreadyTemplate = try unreadyCloneTemplate()
         let clonePlan = try selectedClonePlan()
@@ -608,6 +612,19 @@ extension Engine {
                     now: now)
             }
             reportedNow.insert(key)
+        }
+        // Existing settling/failure/recovery maintenance must keep progressing even
+        // while admission and new boots wait for pressure to clear. Reclaim only
+        // verified ready capacity after those transitions, using a fresh host sample.
+        let sampledAt = environment.clock.now()
+        let pressureHost = try environment.probe.sample(now: sampledAt)
+        recordSwapSample(pressureHost, at: sampledAt)
+        if pressureHost.memoryPressure >= scheduler.config.pressureStop {
+            let relief = try reclaimPoolMemory(
+                config: config, unleasedUsers: unleasedUsers, reported: &reportedNow, hostWork: hostWork)
+            report.actions += relief.actions
+            report.wouldExecute += relief.wouldExecute
+            report.failures += relief.failures
         }
         poolReportedActions = reportedNow
         try auditBootDeferral(report.bootsDeferredForLoad, host: host, now: now)

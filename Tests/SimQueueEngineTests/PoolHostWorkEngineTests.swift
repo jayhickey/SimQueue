@@ -220,8 +220,17 @@ final class PoolHostWorkEngineTests: XCTestCase {
                 if gate == "pressure" { $0.memoryPressure = .warn }
             }
             let recovered = try engine.poolPass(config: pool, demand: 1)
-            XCTAssertEqual(recovered.actions, [.settled(udid: udid, capHit: false, waitedSeconds: 100)])
-            XCTAssertEqual(try store.poolSims().first?.phase, .ready, "load5 history cannot strand default settling")
+            if gate == "pressure" {
+                XCTAssertEqual(
+                    recovered.actions,
+                    [.settled(udid: udid, capHit: false, waitedSeconds: 100), .shutdown(udid: udid)],
+                    "load recovery still settles; only then is an idle owned clone eligible for pressure relief")
+                XCTAssertEqual(try store.poolSims().first?.phase, .shutdown)
+            } else {
+                XCTAssertEqual(recovered.actions, [.settled(udid: udid, capHit: false, waitedSeconds: 100)])
+                XCTAssertEqual(
+                    try store.poolSims().first?.phase, .ready, "load5 history cannot strand default settling")
+            }
             let first = try harness.submit(store)
             let next = try harness.submit(store, resources: ResourceRequest(minSims: 0))
             let tick = try engine.tick()
@@ -237,7 +246,15 @@ final class PoolHostWorkEngineTests: XCTestCase {
                 XCTAssertEqual(try store.job(id: first.id)?.state, .queued)
                 XCTAssertEqual(try store.job(id: next.id)?.state, .queued)
             }
-            XCTAssertTrue(harness.sims.shutdownUDIDs.isEmpty, "no failed-settle shutdown after healthy recovery")
+            if gate == "pressure" {
+                XCTAssertEqual(harness.sims.shutdownUDIDs, [udid], "one verified idle pressure shutdown")
+                harness.probe.update { $0.memoryPressure = .normal }
+                _ = try engine.poolPass(config: pool, demand: 1)
+                _ = try engine.poolPass(config: pool, demand: 1)
+                XCTAssertEqual(try store.poolSims().first?.phase, .ready, "settling resumes after pressure clears")
+            } else {
+                XCTAssertTrue(harness.sims.shutdownUDIDs.isEmpty, "no failed-settle shutdown after healthy recovery")
+            }
         }
     }
 
