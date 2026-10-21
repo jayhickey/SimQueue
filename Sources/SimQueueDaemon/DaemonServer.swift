@@ -231,6 +231,10 @@ public final class DaemonServer: @unchecked Sendable {
         }
         let response = service.handle(request)
         _ = send(response, on: connection)
+        if case .stop(let params) = request.params, params.exitDaemon, case .result(.status) = response.body {
+            stop()
+            return
+        }
         switch request.params {
         case .submit, .cancel, .bump, .drain, .resume, .leaseAcquire, .leaseRelease, .templateBuild, .templateRemove:
             requestTick()

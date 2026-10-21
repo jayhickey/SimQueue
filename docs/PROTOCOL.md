@@ -169,3 +169,13 @@ scheduling pass. Submission time, sequence and aging are preserved. Unknown IDs
 return `not_found`, invalid values return `invalid_argument`, and jobs that have
 already been admitted or ended return `invalid_state`. Older daemons do not
 support this additive method.
+
+### `stop`
+
+Parameters: `epoch` (the observed daemon epoch) and `exit_daemon` (boolean).
+Requires a completed planned drain; returns the final `status` and seals admissions
+against resume/submission. With `exit_daemon: true`, the daemon closes its listener
+after sending the acknowledgement. With `false`, the native companion unloads its
+PID-matched standard login service after acknowledgement, preventing KeepAlive
+restart. Queued rows remain intact. A stale epoch or incomplete drain returns
+`invalid_state`. This method is not exposed through the browser dashboard.
