@@ -22,6 +22,7 @@ enum DashboardAssets {
             <footer>Refreshes every 3 seconds while visible. Timings and memory describe the latest attempt. Commands and logs may contain sensitive information.</footer>
             </main>
             <dialog id="detail"><div class="dialog-heading"><h2>Job details</h2><button id="close">Close</button></div><p id="detail-action-status" role="status"></p><div id="detail-body"></div></dialog>
+            <dialog id="action-dialog"><form method="dialog"><h2 id="action-title"></h2><p id="action-question"></p><label id="priority-label">Priority (0–100)<input id="new-priority" type="number" min="0" max="100" step="1"></label><div class="dialog-heading"><button value="cancel" formnovalidate>Back</button><button id="confirm-action" value="confirm">Confirm</button></div></form></dialog>
             </body></html>
             """#
         ),
@@ -55,10 +56,21 @@ enum DashboardAssets {
               return (!$('project').value || j.project === $('project').value) && (!$('state').value || j.state === $('state').value) &&
                 [j.project,j.kind,j.id,j.submitter,...(j.command || [])].join(' ').toLowerCase().includes(query);
             }
+            function askAction(j, action) {
+              const dialog=$('action-dialog');
+              if (dialog.open) return Promise.resolve(null);
+              const priority=action==='priority';
+              $('action-title').textContent=priority ? 'Change priority' : 'Cancel job';
+              $('action-question').textContent=priority ? `Set the base priority for ${j.id} (${label(j)}). Higher runs first.` : `Cancel ${j.id} (${label(j)})? Running commands will be stopped and their resources cleaned up.`;
+              $('priority-label').hidden=!priority; $('new-priority').required=priority; $('new-priority').value=String(j.priority);
+              $('confirm-action').textContent=priority ? 'Set priority' : 'Cancel job';
+              dialog.returnValue=''; dialog.showModal();
+              return new Promise(resolve=>dialog.addEventListener('close',()=>resolve(dialog.returnValue==='confirm' ? (priority ? Number($('new-priority').value) : true) : null),{once:true}));
+            }
             function setActionStatus(text) { $('action-status').textContent=text; $('detail-action-status').textContent=text; }
             async function changeJob(j, action, priority) {
               if (pendingActions.has(j.id)) return;
-              if (action === 'cancel' && !confirm(`Cancel ${j.id} (${label(j)})? Running commands will be stopped and their resources cleaned up.`)) return;
+              if (action === 'cancel' && !(await askAction(j,'cancel'))) return;
               if (action === 'priority' && (!Number.isInteger(priority) || priority < 0 || priority > 100)) {
                 setActionStatus('Priority must be a whole number from 0 to 100.'); return;
               }
@@ -87,7 +99,7 @@ enum DashboardAssets {
               if (j.state === 'queued') {
                 button('↑',`Raise priority for ${j.id} by 10`,()=>changeJob(j,'priority',Math.min(100,j.priority+10))).disabled ||= j.priority >= 100;
                 button('↓',`Lower priority for ${j.id} by 10`,()=>changeJob(j,'priority',Math.max(0,j.priority-10))).disabled ||= j.priority <= 0;
-                button('Priority…',`Set priority for ${j.id}`,()=>{const value=prompt(`Priority for ${j.id} (0–100, higher runs first)`,String(j.priority)); if (value !== null && value.trim() !== '') changeJob(j,'priority',Number(value));});
+                button('Priority…',`Set priority for ${j.id}`,async()=>{const value=await askAction(j,'priority'); if (value !== null) changeJob(j,'priority',value);});
               }
               button('Cancel',`Cancel ${j.id}`,()=>changeJob(j,'cancel'));
               return cell;

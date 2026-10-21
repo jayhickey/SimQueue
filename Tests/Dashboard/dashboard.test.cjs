@@ -44,6 +44,7 @@ assert.equal(run("controls({id:'J-1',state:'succeeded'}).children.length"),0);
   run('snapshot=null');
   let posts=0;
   context.confirm=()=>false;
+  run('askAction=async()=>confirm()');
   context.fetch=async (path,options) => {
     if (options?.method === 'POST') { posts++; assert.equal(options.headers['X-SimQueue-Action'],'1'); return {ok:true,json:async()=>({priority:80})}; }
     return {ok:true,json:async()=>({status:{},active:[],recent:[],generatedAt:0})};
