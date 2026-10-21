@@ -11,7 +11,7 @@ enum DashboardAssets {
             <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SimQueue · Queue dashboard</title><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head>
             <body>
             <header><div class="brand">SQ <span>SimQueue</span></div><span class="badge">LOCAL · READ ONLY</span></header>
-            <main><div class="heading"><div><p class="eyebrow">HOST OPERATIONS</p><h1>The queue, at a glance.</h1><p class="muted">A live view of work sharing this host.</p></div><p id="connection" role="status">Connecting…</p></div>
+            <main><div class="heading"><div><h1>Queue status</h1></div><p id="connection" role="status">Connecting…</p></div>
             <section id="overview" class="overview" aria-label="Host overview"></section>
             <p id="health" class="notice"></p>
             <div class="filters"><input id="search" type="search" placeholder="Search project, command, submitter or ID" aria-label="Search jobs"><select id="project" aria-label="Filter project"><option value="">All projects</option></select><select id="state" aria-label="Filter state"><option value="">All states</option></select></div>
