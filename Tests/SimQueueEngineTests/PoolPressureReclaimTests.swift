@@ -72,16 +72,171 @@ final class PoolPressureReclaimTests: XCTestCase {
         XCTAssertTrue(try store.pendingActionIntents().isEmpty, "confirmed pressure shutdown completes its intent")
     }
 
-    func testOneIdleSimulatorPerPassAndReliefStopsFurtherReclaim() throws {
+    func testPersistentPressureReclaimsMultipleIdleSimulatorsInOnePass() throws {
         let (harness, store, engine, config) = try setup()
         for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
         harness.probe.update { $0.memoryPressure = .critical }
+        let report = try engine.poolPass(config: config, demand: 3)
+        XCTAssertEqual(harness.sims.shutdownUDIDs, ["A", "B", "C"])
+        XCTAssertEqual(shutdowns(report.actions), ["A", "B", "C"], "report retains every completed candidate")
+        XCTAssertEqual(try store.poolSims().map(\.phase), [.shutdown, .shutdown, .shutdown])
+        XCTAssertEqual(try store.auditEntries().filter { $0.type == "pool_pressure_shutdown" }.count, 3)
+        XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+        XCTAssertTrue(harness.sims.bootedUDIDs.isEmpty)
+        XCTAssertTrue(harness.sims.clonePlans.isEmpty)
         _ = try engine.poolPass(config: config, demand: 3)
-        XCTAssertEqual(harness.sims.shutdownUDIDs.count, 1, "do not tear down every idle simulator in one pass")
+        XCTAssertEqual(harness.sims.shutdownUDIDs, ["A", "B", "C"], "already shut down is not reclaimed twice")
+    }
+
+    private func shutdowns(_ actions: [SimPoolAction]) -> [String] {
+        actions.compactMap { if case .shutdown(let udid) = $0 { udid } else { nil } }
+    }
+
+    func testPressureClearingAfterAShutdownStopsImmediatelyWithRemainingSimsReady() throws {
+        for clearedAfter in [1, 2] {
+            let (harness, store, engine, config) = try setup()
+            for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+            harness.probe.update { $0.memoryPressure = .warn }
+            var callsAfterRelief = 0
+            let report = try engine.poolPass(config: config, demand: 3) { body in
+                if harness.sims.shutdownUDIDs.count == clearedAfter { callsAfterRelief += 1 }
+                try body()
+                if harness.sims.shutdownUDIDs.count == clearedAfter {
+                    harness.probe.update { $0.memoryPressure = .normal }
+                }
+            }
+            let expected = Array(["A", "B", "C"].prefix(clearedAfter))
+            XCTAssertEqual(harness.sims.shutdownUDIDs, expected)
+            XCTAssertEqual(shutdowns(report.actions), expected)
+            XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.count, 3 - clearedAfter)
+            XCTAssertEqual(callsAfterRelief, 1, "only verification of the last shutdown; no next candidate inventory")
+            XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+        }
+    }
+
+    func testPressureClearingDuringNextCandidateInventoryStopsBeforeItsShutdown() throws {
+        let (harness, store, engine, config) = try setup()
+        for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+        harness.probe.update { $0.memoryPressure = .warn }
+        var clearedBetweenCandidates = false
+        let report = try engine.poolPass(config: config, demand: 3) { body in
+            try body()
+            if harness.sims.shutdownUDIDs == ["A"], try store.pendingActionIntents().isEmpty {
+                clearedBetweenCandidates = true
+                harness.probe.update { $0.memoryPressure = .normal }
+            }
+        }
+        XCTAssertTrue(clearedBetweenCandidates, "first intent confirmed before the next unlocked inventory")
+        XCTAssertEqual(harness.sims.shutdownUDIDs, ["A"])
+        XCTAssertEqual(shutdowns(report.actions), ["A"])
         XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.count, 2)
-        harness.probe.update { $0.memoryPressure = .normal }
-        _ = try engine.poolPass(config: SimPoolConfig(maxSims: 3), demand: 2)
-        XCTAssertEqual(harness.sims.shutdownUDIDs.count, 1, "a recovered host keeps remaining warm capacity")
+    }
+
+    func testDryRunReportsAllVerifiedCandidatesWithoutMutationAndDeduplicatesAudits() throws {
+        let (harness, store, engine, original) = try setup()
+        for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+        var config = original
+        config.mode = .reportOnly
+        harness.probe.update { $0.memoryPressure = .warn }
+        for _ in 0..<2 {
+            let report = try engine.poolPass(config: config, demand: 3)
+            XCTAssertEqual(shutdowns(report.actions), ["A", "B", "C"])
+            XCTAssertEqual(shutdowns(report.wouldExecute), ["A", "B", "C"])
+        }
+        XCTAssertTrue(harness.sims.shutdownUDIDs.isEmpty)
+        XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.count, 3)
+        XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+        XCTAssertEqual(
+            try store.auditEntries().filter {
+                $0.type == "pool_would_execute" && ($0.detail?.hasPrefix("pressure-shutdown(") ?? false)
+            }.count, 3)
+    }
+
+    func testFailedFirstShutdownStopsTheBatchAndKeepsLaterCandidatesReady() throws {
+        enum Injected: Error { case unavailable }
+        let (harness, store, engine, config) = try setup()
+        for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+        harness.probe.update { $0.memoryPressure = .warn }
+        let report = try engine.poolPass(config: config, demand: 3) { body in
+            if try store.poolSims().first(where: { $0.udid == "A" })?.phase == .shutdown {
+                throw Injected.unavailable
+            }
+            try body()
+        }
+        XCTAssertFalse(report.failures.isEmpty)
+        XCTAssertEqual(shutdowns(report.actions), ["A"])
+        XCTAssertTrue(harness.sims.shutdownUDIDs.isEmpty)
+        XCTAssertEqual(try store.pendingActionIntents().count, 1, "failed target remains fenced")
+        XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.map(\.udid), ["B", "C"])
+    }
+
+    func testShutdownReturningWithTargetStillBootedRestoresReadyAndStopsTheBatch() throws {
+        let (harness, store, engine, config) = try setup()
+        for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+        harness.probe.update { $0.memoryPressure = .warn }
+        var skippedShutdown = false
+        let report = try engine.poolPass(config: config, demand: 3) { body in
+            if !skippedShutdown, try store.poolSims().first(where: { $0.udid == "A" })?.phase == .shutdown {
+                skippedShutdown = true
+                return
+            }
+            try body()
+        }
+        XCTAssertTrue(skippedShutdown, "simulate a shutdown command returning without changing the device")
+        XCTAssertEqual(shutdowns(report.actions), ["A"])
+        XCTAssertTrue(harness.sims.shutdownUDIDs.isEmpty)
+        XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.count, 3)
+        XCTAssertTrue(try store.pendingActionIntents().isEmpty, "Booted verification safely restored the first row")
+    }
+
+    func testLaterCandidateLeasedOrOwnershipReleasedDuringEarlierShutdownIsSkipped() throws {
+        for protection in ["lease", "released-ownership"] {
+            let (harness, store, engine, config) = try setup()
+            for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+            harness.probe.update { $0.memoryPressure = .warn }
+            var protectedLaterCandidate = false
+            let report = try engine.poolPass(config: config, demand: 3) { body in
+                try body()
+                if !protectedLaterCandidate, harness.sims.shutdownUDIDs == ["A"] {
+                    protectedLaterCandidate = true
+                    if protection == "lease" {
+                        XCTAssertEqual(try engine.acquireManualLease(leaseID: "lease:concurrent", pid: nil)?.udid, "B")
+                    } else {
+                        let owner = try XCTUnwrap(try store.liveResources(kinds: [.sim]).first { $0.externalID == "B" })
+                        XCTAssertTrue(
+                            try store.releaseResource(
+                                id: owner.id, generation: owner.generation, now: harness.clock.now()))
+                    }
+                }
+            }
+            XCTAssertTrue(protectedLaterCandidate)
+            XCTAssertEqual(harness.sims.shutdownUDIDs, ["A", "C"], protection)
+            XCTAssertEqual(shutdowns(report.actions), ["A", "C"], protection)
+            XCTAssertEqual(
+                try store.poolSims().first { $0.udid == "B" }?.phase, protection == "lease" ? .leased : .ready)
+            XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+        }
+    }
+
+    func testNewPendingIntentAfterFirstShutdownStopsBeforeTheNextCandidate() throws {
+        let (harness, store, engine, config) = try setup()
+        for id in ["A", "B", "C"] { try seed(id, harness, store, engine) }
+        harness.probe.update { $0.memoryPressure = .warn }
+        var interveningIntent: ActionIntent?
+        let report = try engine.poolPass(config: config, demand: 3) { body in
+            try body()
+            if interveningIntent == nil, harness.sims.shutdownUDIDs == ["A"], try store.pendingActionIntents().isEmpty {
+                interveningIntent = try store.recordActionIntent(
+                    ActionIntent(
+                        target: .path("/fake/other-operation"), auditType: "pending_test_action", detail: "pending"),
+                    now: harness.clock.now())
+            }
+        }
+        XCTAssertNotNil(interveningIntent)
+        XCTAssertEqual(harness.sims.shutdownUDIDs, ["A"])
+        XCTAssertEqual(shutdowns(report.actions), ["A"])
+        XCTAssertEqual(try store.poolSims().filter { $0.phase == .ready }.count, 2)
+        XCTAssertEqual(try store.pendingActionIntents().map(\.id), [try XCTUnwrap(interveningIntent).id])
     }
 
     func testNoCreateBootOrPrewarmUnderPressureWithoutReadyCandidates() throws {

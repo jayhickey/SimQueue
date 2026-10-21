@@ -15,8 +15,8 @@ extension Engine {
         var pressure: MemoryPressure
     }
 
-    /// Pressure relief is independent of queued demand and warm_min. Limit each pass
-    /// to one shutdown so the next fresh host sample decides whether more is needed.
+    /// Pressure relief is independent of queued demand and warm_min. Reclaim idle
+    /// candidates serially while fresh host samples still require pressure relief.
     /// Leased/tainted/unknown sims and pending host work are never relief candidates.
     func reclaimPoolMemory(
         config: SimPoolConfig, unleasedUsers: Set<String>, reported: inout Set<String>, hostWork: PoolHostWork
@@ -31,6 +31,7 @@ extension Engine {
                 && !environment.naming.isTemplate($0.name) && $0.name != environment.sims.cloneSource
         }.sorted { ($0.lastUsedAt, $0.udid) < ($1.lastUsedAt, $1.udid) }
         for candidate in candidates {
+            guard try store.pendingActionIntents().isEmpty else { return report }
             guard let owner = try pressureShutdownOwner(udid: candidate.udid) else { continue }
             var devices: [SimDevice] = []
             try hostWork { devices = try self.environment.sims.listDevices() }
@@ -48,15 +49,15 @@ extension Engine {
             recordSwapSample(fresh, at: now)
             guard fresh.memoryPressure >= scheduler.config.pressureStop else { return report }
             let action = SimPoolAction.shutdown(udid: candidate.udid)
-            report.actions = [action]
+            report.actions.append(action)
             guard config.actsOnHost(cleanupMode: reliability.cleanupMode) else {
-                report.wouldExecute = [action]
+                report.wouldExecute.append(action)
                 let key = "pressure-shutdown(\(candidate.udid))"
                 reported.insert(key)
                 if !poolReportedActions.contains(key) {
                     try store.audit("pool_would_execute", detail: key, now: now)
                 }
-                return report
+                continue
             }
             let barrier = try candidate.applying(.shutDown, now: now)
             let proof = PressureShutdown(
@@ -77,13 +78,19 @@ extension Engine {
                 try hostWork { try self.environment.sims.shutdownDevice(udid: candidate.udid) }
                 try recoverPressureShutdown(intent, proof: proof, hostWork: hostWork)
                 let sampledAt = environment.clock.now()
-                recordSwapSample(try environment.probe.sample(now: sampledAt), at: sampledAt)
+                let afterShutdown = try environment.probe.sample(now: sampledAt)
+                recordSwapSample(afterShutdown, at: sampledAt)
+                guard afterShutdown.memoryPressure >= scheduler.config.pressureStop,
+                    try store.pendingActionIntents().isEmpty,
+                    try store.poolSims().first(where: { $0.udid == candidate.udid })
+                        .map({ $0.phase == .shutdown }) ?? true
+                else { return report }
             } catch {
                 // Keep durable proof and its barrier if verification/database work
                 // failed. The next serialized pass resolves it before any pool action.
                 report.failures.append("pressure shutdown \(candidate.udid): \(error)")
+                return report
             }
-            return report
         }
         return report
     }

@@ -29,6 +29,8 @@ Production admits at most one command per pass, at least one second apart, and l
 
 Admissions stop on memory pressure, insufficient reserve/headroom, excessive swap growth, thermal pressure, insufficient disk space or the load policy. Stable historical swap above 3 GiB alone does not stop an otherwise healthy host. A failed probe holds admissions rather than substituting an optimistic reading. These are admission controls: unrelated applications can change the host after a sample, and SimQueue does not impose an operating-system resource quota on arbitrary commands.
 
+When memory pressure blocks admission, the pool shuts down verified idle, unleased simulators serially, even when jobs are waiting or the warm minimum would otherwise keep them booted. It samples pressure after every shutdown and stops as soon as pressure clears, no eligible simulators remain, or an operation fails or cannot be verified. Running and leased simulators, templates and unrelated devices remain protected. Shutting down idle simulators does not relax the admission gates.
+
 ### Load recovery
 
 By default, entry occurs when five-minute load exceeds 3 × active cores, or one-minute load exceeds 3 × cores while five-minute load exceeds 1.5 × cores. A recovered one-minute load at or below 2 × cores suppresses those historical gates. On a ten-core Mac that recovery threshold is 20, so a previous boot spike need not keep admissions waiting for the entire five-minute average to decay.
