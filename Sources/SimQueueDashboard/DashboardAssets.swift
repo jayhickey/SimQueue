@@ -36,7 +36,7 @@ enum DashboardAssets {
             const epoch = value => value == null ? null : (typeof value === 'number' ? value * 1000 : Date.parse(value));
             const duration = ms => { if (ms == null || !Number.isFinite(ms)) return '—'; const s = Math.max(0, Math.floor(ms/1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`; };
             const now = () => epoch(snapshot?.generatedAt) || Date.now();
-                        const label = j => j.kind ? `${j.project} · ${j.kind}` : `${j.project} · ${j.command?.[0]?.split('/').pop() || j.id.slice(0,8)}`;
+            const label = j => j.kind ? `${j.project} · ${j.kind}` : `${j.project} · ${j.command?.[0]?.split('/').pop() || j.id.slice(0,8)}`;
             function timings(j) {
               const q=epoch(j.queue_time), a=epoch(j.admitted_at), s=epoch(j.started_at), f=epoch(j.finished_at), end=f ?? now();
               // Admission is the start of preparation, execution begins at started_at.

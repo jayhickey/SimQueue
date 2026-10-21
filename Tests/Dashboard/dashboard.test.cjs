@@ -4,7 +4,7 @@ const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source = readFileSync('Sources/SimQueueDashboard/DashboardAssets.swift','utf8');
-const script = source.split('"app.js": ("text/javascript", #"""\n')[1].split('"""#)')[0];
+const script = source.match(/"app\.js":\s*\(\s*"text\/javascript",\s*#"""\n([\s\S]*?)"""#/)[1];
 class Element {
   constructor(tag) { this.tag=tag; this.children=[]; this.value=''; this.style={}; this.textContent=''; }
   append(...children) { this.children.push(...children); }
