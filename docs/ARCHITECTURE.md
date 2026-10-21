@@ -67,7 +67,7 @@ Write-ahead spawn/action intents record a potentially interrupted host operation
 
 After a restart, proven-unstarted work can requeue under a bounded restart policy. A started non-retryable command is interrupted rather than replayed; explicitly retryable work obeys both retry and restart bounds. An uncertain start reports uncertainty and retains resources when absence cannot be proved. Killing an old process avoids concurrent copies but cannot undo side effects. SimQueue does not guarantee exactly-once command execution or survival across abrupt restarts.
 
-A waiting client reconnects to the same job; reconnect is separate from command recovery. Planned upgrades first drain admitted work, process groups, simulator leases, pending intents and template/pool/preparation/archive workers. A drain timeout leaves its gate set and does not authorize a restart. Live destructive uninstall also requires completed drain, refuses unresolved processes/intents even with force, and re-reads ownership after stop. See [installation](INSTALL.md) for consistent backups, legacy-state transitions and matching-backup rollback. Unfinished legacy shard groups are refused before database migration or writer journal changes.
+A waiting client reconnects to the same job; reconnect is separate from command recovery. Planned upgrades first drain admitted work, process groups, simulator leases, pending intents and template/pool/preparation/archive/artifact workers. A drain timeout leaves its gate set and does not authorize a restart. Live destructive uninstall also requires completed drain, refuses unresolved processes/intents even with force, and re-reads ownership after stop. See [installation](INSTALL.md) for consistent backups, legacy-state transitions and matching-backup rollback. Unfinished legacy shard groups are refused before database migration or writer journal changes.
 
 ## Reconciliation and health
 
@@ -90,3 +90,16 @@ A single hourly maintenance worker first makes an online SQLite backup, checks i
 A pass scans at most 1,000 job and 1,000 old-health candidates, removes at most 10,000 eligible audits/released pool resources, and uses cursors so protected early rows do not starve later history. Active jobs/resources, pending intents, pins, retained artifacts and their required metadata remain protected. Recent cleanup-accounting events and current anomaly/breaker state also survive retention. A failed copy/prune leaves live history intact; the next exclusively locked pass cleans interrupted partial copies.
 
 Targets and the 256 MiB high-water mark are not hard filesystem quotas. Protected state and recent high churn can exceed them. Free SQLite pages are reused; older databases may retain their allocated file size until an intentionally drained, backed-up `VACUUM`. Archives rotate and are not permanent backups. Job output/artifacts have separate retention and are outside the daemon-log bound. See [installation](INSTALL.md) before exporting, compacting or purging state.
+
+## Artifact cleanup
+
+Artifact retention runs on one background worker shared with manual `simq gc` requests.
+Planning and ownership rechecks use the service lock; recursive sizing and removal run outside
+it so large build directories do not block job supervision. An automatic pass removes at most
+20 candidates, honoring a lower configured cap. It rechecks cleanup mode, breaker state,
+terminal job/process ownership and pins before each removal. In-flight deletion intents stay
+protected from recovery until the worker finishes; planned drain and shutdown wait for it.
+
+Use the supplied top-level DerivedData directory for disposable compiler/tool output.
+Configure an artifact size budget and retention periods for the host's workload; retained
+artifacts have separate bounds from the database, daemon logs and history archives.

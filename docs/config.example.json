@@ -11,5 +11,8 @@
   },
   "max_queued_per_submitter_per_project": 128,
   "max_queued_total": 1024,
-  "age_rules": {"artifact_retention_days": {"derived_data": 1}}
+  "age_rules": {
+    "artifact_budget_gib": 20,
+    "artifact_retention_days": {"derived_data": 0.0833333333, "succeeded": 2, "other": 7}
+  }
 }

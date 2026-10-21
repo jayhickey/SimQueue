@@ -40,6 +40,24 @@ simq template build host --replace --slim
 
 A failed slimming step leaves `slim_failed`, not ready for cloning. Inspect the error and rebuild/remove it. Configured slim profiles supply arguments when the template is built; they do not create separate pools.
 
+Keep the services your tests use enabled. For example, this host-wide profile preserves
+StoreKit and WidgetKit categories; `--keep` can preserve individual daemon labels too:
+
+```json
+{"template": {"profiles": {"default": ["--except", "store,widgets"]}}}
+```
+
+Profiles are read on startup. When changing an existing pool's profile, first finish or
+cancel its queued work, then drain, stop and retire the old pool using steps 2–4 below.
+Merge the profile into the configuration and restart to build the new candidate; finish
+step 5 to select it and restart again. Keep callers paused during this transition.
+Use the installed simslim category list to choose other services. Check a leased clone's
+required features before a complete test run:
+
+```sh
+simq run --sims 1 -- sh -c 'simslim doctor "$SIMQ_UDID" --requires widgets,storekit'
+```
+
 Keep simslim installed while a slimmed template is selected. SimQueue uses `simslim clone` to copy the source’s actual disabled-service profile into new pool devices. This can temporarily boot the source and clone, so creation respects boot and host resource limits. Stock templates continue to use simctl without simslim. Existing clones made without profile preservation must be retired before using the slimmed selection; follow the drain/uninstall sequence below.
 
 ## Reuse and readiness

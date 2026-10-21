@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: MIT
+
+import Foundation
+import SimQueueCore
+import SimQueueDaemon
+import SimQueueEngine
+import SimQueueHost
+import SimQueueProtocol
+import SimQueueStore
+import XCTest
+
+final class BackgroundRetentionTests: XCTestCase {
+    /// Block an actual filesystem boundary, rather than delaying the daemon's clock.
+    private final class BlockingFileSystem: FileSystem, @unchecked Sendable {
+        enum Operation: Equatable { case size, remove }
+        let base = FakeFileSystem()
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var operation: Operation?
+        private var path: String?
+
+        func block(_ operation: Operation, path: String) {
+            lock.lock(); defer { lock.unlock() }
+            self.operation = operation; self.path = path
+        }
+        private func pause(_ operation: Operation, path: String) {
+            lock.lock()
+            let shouldBlock = self.operation == operation && self.path == path
+            if shouldBlock { self.operation = nil }
+            lock.unlock()
+            if shouldBlock {
+                entered.signal()
+                _ = resume.wait(timeout: .now() + 15)
+            }
+        }
+        func fileExists(_ path: String) -> Bool { base.fileExists(path) }
+        func children(of path: String) throws -> [String] { try base.children(of: path) }
+        func createDirectory(_ path: String) throws { try base.createDirectory(path) }
+        func sizeOfItem(_ path: String) -> UInt64? {
+            pause(.size, path: path)
+            return base.sizeOfItem(path)
+        }
+        func removeItem(_ path: String) throws {
+            pause(.remove, path: path)
+            try base.removeItem(path)
+        }
+    }
+
+    private func config() -> DaemonConfig {
+        var config = DaemonConfig()
+        config.reliability.cleanupMode = .enforce
+        config.reliability.ageRules.artifactRetention.budgetBytes = 1
+        config.watchdog.fullIntervalSeconds = 0.05
+        config.watchdog.lightIntervalSeconds = 0.02
+        return config
+    }
+
+    private func status(_ daemon: TestDaemon) throws -> StatusResult {
+        guard case .status(let status) = try daemon.result(.status) else { throw TestFailure("no status") }
+        return status
+    }
+
+    private func endedJob(_ daemon: TestDaemon) throws -> JobInfo {
+        let params = SubmitParams(project: "retention", submitter: "test", dedupeKey: UUID().uuidString, minSims: 0)
+        let job = try daemon.submit(params).job
+        XCTAssertEqual(try daemon.wait(job.id).state, .succeeded)
+        return job
+    }
+
+    func testSlowSizingDoesNotBlockTicksOrNewJobsAndRechecksNewPins() throws {
+        let fs = BlockingFileSystem()
+        let daemon = try TestDaemon(config: config(), fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        let job = try endedJob(daemon)
+        let directory = daemon.paths.jobsRoot + "/2020-01-01/" + job.id
+        fs.base.sizes[directory] = 100
+        fs.block(.size, path: directory)
+        try fs.createDirectory(directory)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        let before = try XCTUnwrap(status(daemon).lastTickAt)
+        // Model a pin committed after the store plan, before the disk walk ends.
+        try daemon.side.audit(
+            Engine.artifactKeepAuditType, jobID: job.id, detail: "--keep", now: Date().timeIntervalSince1970)
+        let submittedAt = ProcessInfo.processInfo.systemUptime
+        let newJob = try daemon.submit(SubmitParams(project: "retention", submitter: "test", minSims: 0)).job
+        XCTAssertEqual(try daemon.wait(newJob.id).state, .succeeded)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - submittedAt, 1)
+        XCTAssertGreaterThan(try XCTUnwrap(status(daemon).lastTickAt), before)
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertTrue(fs.fileExists(directory), "a pin added during sizing must be rechecked before removal")
+        XCTAssertTrue(fs.base.removed.isEmpty)
+    }
+
+    func testSlowRemovalKeepsItsIntentAndQueuedManualGCBlocksDrainAndStop() throws {
+        let fs = BlockingFileSystem()
+        let daemon = try TestDaemon(config: config(), fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        let pinned = try endedJob(daemon)
+        let job = try endedJob(daemon)
+        let directory = daemon.paths.jobsRoot + "/2020-01-01/" + job.id
+        let pinnedDirectory = daemon.paths.jobsRoot + "/2020-01-01/" + pinned.id
+        try daemon.side.audit(
+            Engine.artifactKeepAuditType, jobID: pinned.id, detail: "--keep", now: Date().timeIntervalSince1970)
+        fs.base.sizes[directory] = 100
+        fs.base.sizes[pinnedDirectory] = 100
+        fs.block(.remove, path: directory)
+        try fs.createDirectory(pinnedDirectory)
+        try fs.createDirectory(directory)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(try daemon.side.pendingActionIntents().filter { $0.jobID == job.id }.count, 1)
+        let before = try XCTUnwrap(status(daemon).lastTickAt)
+        // Enough full passes to expose recovery accidentally abandoning a live removal.
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertGreaterThan(try XCTUnwrap(status(daemon).lastTickAt), before)
+        XCTAssertEqual(try daemon.side.pendingActionIntents().filter { $0.jobID == job.id }.count, 1)
+
+        // Queue a manual dry run behind the automatic remover, then block its disk walk.
+        // Drain must cover both the queued request and its later unlocked execution.
+        fs.block(.size, path: pinnedDirectory)
+        let manualStarted = DispatchSemaphore(value: 0)
+        let manualFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            manualStarted.signal()
+            do { _ = try daemon.result(.gc(GCParams())) } catch { XCTFail("manual GC failed: \(error)") }
+            manualFinished.signal()
+        }
+        XCTAssertEqual(manualStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(manualFinished.wait(timeout: .now() + 0.1), .timedOut)
+        guard case .status(let queued) = try daemon.result(.drain) else { return XCTFail("no drain status") }
+        XCTAssertEqual(queued.drainComplete, false)
+        fs.resume.signal()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        XCTAssertFalse(fs.fileExists(directory))
+        XCTAssertTrue(fs.fileExists(pinnedDirectory))
+        guard case .status(let draining) = try daemon.result(.status) else { return XCTFail("no status") }
+        XCTAssertEqual(draining.drainComplete, false, "manual work remains after the automatic worker ends")
+        let stopped = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            daemon.stop(); stopped.signal()
+        }
+        XCTAssertEqual(stopped.wait(timeout: .now() + 0.1), .timedOut, "stop must join the manual worker too")
+        fs.resume.signal()
+        XCTAssertEqual(manualFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(stopped.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(try daemon.side.pendingActionIntents().isEmpty)
+        XCTAssertEqual(try daemon.side.auditEntries(jobID: job.id, type: Engine.artifactRemovedAuditType).count, 1)
+    }
+
+    func testAutomaticRetentionIsCappedAtTwentyRemovalsAndContinuesNextPass() throws {
+        let fs = FakeFileSystem()
+        var config = config()
+        config.reliability.ageRules.artifactRetention.maxRemovalsPerPass = 100
+        let daemon = try TestDaemon(config: config, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        daemon.stop()  // Drive exact full passes without a racing server tick.
+        let directories = (1...21).map { daemon.paths.jobsRoot + "/2020-01-01/J-\($0)" }
+        for directory in directories { try fs.createDirectory(directory) }
+        Thread.sleep(forTimeInterval: 0.06)
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertEqual(directories.filter { !fs.fileExists($0) }.count, 20)
+        Thread.sleep(forTimeInterval: 0.06)
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertTrue(directories.allSatisfy { !fs.fileExists($0) })
+    }
+}

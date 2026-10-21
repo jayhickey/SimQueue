@@ -16,8 +16,11 @@ final class RetentionConfigTests: XCTestCase {
             try DaemonConfig.parse(Data(#"{"age_rules": {"artifact_retention_days": {"derived_data": 0}}}"#.utf8)))
         let example = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("docs/config.example.json").path
-        XCTAssertEqual(
-            try DaemonConfig.load(path: example).reliability.ageRules.artifactRetention.derivedDataSeconds, 86_400)
+        let boundedExample = try DaemonConfig.load(path: example).reliability.ageRules.artifactRetention
+        XCTAssertEqual(boundedExample.derivedDataSeconds, 2 * 3600, accuracy: 0.001)
+        XCTAssertEqual(boundedExample.budgetBytes, 20 * ByteSize.gibibyte)
+        XCTAssertEqual(boundedExample.succeededSeconds, 2 * 86_400)
+        XCTAssertEqual(boundedExample.otherSeconds, 7 * 86_400)
     }
 
     func testBudgetAndKeptParseAndAreOffOrNinetyDaysByDefault() throws {

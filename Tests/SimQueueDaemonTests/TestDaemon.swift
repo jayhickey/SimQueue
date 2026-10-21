@@ -32,7 +32,8 @@ final class TestDaemon: @unchecked Sendable {
         config: DaemonConfig = DaemonConfig(), stateDir: String? = nil, realProcesses: Bool = false,
         processTable: (any ProcessTable)? = nil,
         simsOverride: (any SimBackend)? = nil, processesOverride: (any ProcessTable)? = nil,
-        executorOverride: (any JobExecutor)? = nil, tickIntervalOverride: Double? = nil
+        executorOverride: (any JobExecutor)? = nil, tickIntervalOverride: Double? = nil,
+        fileSystemOverride: (any FileSystem)? = nil
     ) throws {
         let dir = stateDir ?? testScratchRoot() + "/sqd-" + UUID().uuidString.prefix(8)
         paths = SimQueuePaths(stateDir: dir)
@@ -51,7 +52,7 @@ final class TestDaemon: @unchecked Sendable {
             probe: FakeResourceProbe(fixed: healthyFakeHost),
             sims: simsOverride ?? sims,
             processes: processesOverride ?? (realProcesses ? (processTable ?? SystemProcessTable()) : processes),
-            fileSystem: FakeFileSystem(),
+            fileSystem: fileSystemOverride ?? FakeFileSystem(),
             layout: RunDirectoryLayout(root: paths.runsRoot),
             processGraceSeconds: config.timeouts.killGraceSeconds,
             artifactsRoot: paths.jobsRoot

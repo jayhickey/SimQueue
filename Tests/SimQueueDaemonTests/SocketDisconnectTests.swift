@@ -117,14 +117,34 @@ final class SocketDisconnectTests: XCTestCase {
             // Close with an unread response, including streamed wait responses.
             // When close wins the race with accept, Darwin can reject SO_NOSIGPIPE;
             // the server must discard that connection instead of sending on it.
+            var refusedConnections = 0
             for index in 0..<256 {
-                let connection = try UnixConnection.connect(path: socket)
+                // A burst may fill the finite listen backlog. Retry that specific
+                // refusal only while our unreaped child is still alive; a SIGPIPE
+                // exit fails immediately, and persistent refusal still fails.
+                let connectDeadline = Date().addingTimeInterval(1)
+                let connection: UnixConnection
+                while true {
+                    do {
+                        connection = try UnixConnection.connect(path: socket)
+                        break
+                    } catch let failure as SocketError {
+                        guard case .system(call: "connect", errno: ECONNREFUSED) = failure,
+                            try ProcessSpawner.peekExit(pid) == nil, Date() < connectDeadline
+                        else { throw failure }
+                        refusedConnections += 1
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
                 let params: RequestParams =
                     index.isMultiple(of: 3)
                     ? .wait(WaitParams(jobID: response.job.id, stream: true))
                     : (index.isMultiple(of: 2) ? .status : .jobs(JobsParams(limit: 256)))
                 try connection.write(try LineCodec.encode(Request(params: params)))
                 connection.close()
+            }
+            if refusedConnections > 0 {
+                print("Recovered \(refusedConnections) backlog refusals with live daemon \(pid) (rotating=\(rotating))")
             }
             Thread.sleep(forTimeInterval: 0.05)
             XCTAssertNil(try ProcessSpawner.peekExit(pid), "closed clients killed the daemon (rotating=\(rotating))")

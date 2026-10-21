@@ -40,7 +40,9 @@ extension Engine {
     /// The age rules that run on a full pass besides reconcile's per-kind grace periods
     /// and lease max age: job artifact retention (destructive, so only in `enforce` mode
     /// with the breaker not open) and the queued-job alert (never cancels anything).
-    func applyAgeRules(now: Double, mode: CleanupMode) throws -> (AgeRuleReport, [AlertEvent]) {
+    func applyAgeRules(now: Double, mode: CleanupMode, includeArtifacts: Bool = true) throws -> (
+        AgeRuleReport, [AlertEvent]
+    ) {
         let rules = reliability.ageRules
         var report = AgeRuleReport()
         var events: [AlertEvent] = []
@@ -56,6 +58,7 @@ extension Engine {
             report.longQueuedAlerted.append(job.id)
         }
 
+        guard includeArtifacts else { return (report, events) }
         let reasoned = try retentionCandidates(now: now)
         let candidates = reasoned.map(\.path)
         if mode != .enforce {
@@ -147,12 +150,44 @@ extension Engine {
     /// Re-checked under the lock just before a removal: the job may have been pinned,
     /// requeued since the plan. A `DerivedData` path needs its job
     /// and its directory both need `isRemovable`; a directory with no job record goes.
-    public func stillRemovable(_ path: String) throws -> Bool {
+    public func stillRemovable(_ path: String, now: Double? = nil) throws -> Bool {
         let isDerived = path.hasSuffix("/DerivedData")
         let dir = isDerived ? String(path.dropLast("/DerivedData".count)) : path
         guard let id = dir.split(separator: "/").last.map(String.init) else { return false }
         guard let job = try store.job(id: id) else { return !isDerived }
+        if let now, try isPinned(job) {
+            // Pins expire by age, but never by the budget or DerivedData's shorter TTL.
+            guard !isDerived, job.state.isTerminal, try !hasOwnedCommandProcesses(job),
+                let keep = reliability.ageRules.artifactRetention.keepSeconds(for: job.state, pinned: true)
+            else { return false }
+            return now - (job.finishedAt ?? job.createdAt) >= keep
+        }
         return try isRemovable(job)
+    }
+
+    /// Record under the service lock, then keep recovery from settling this live worker's
+    /// intent while it removes files without the lock. The caller must finish the intent.
+    public func beginArtifactRemoval(path: String, reason: String, now: Double) throws -> ActionIntent? {
+        guard try stillRemovable(path, now: now) else { return nil }
+        let directory = path.hasSuffix("/DerivedData") ? String(path.dropLast("/DerivedData".count)) : path
+        let jobID = directory.split(separator: "/").last.map(String.init)
+        let intent = try store.recordActionIntent(
+            ActionIntent(
+                target: .path(path), auditType: Self.artifactRemovedAuditType,
+                detail: "removed \(path) (\(reason))", jobID: try jobID.flatMap { try store.job(id: $0)?.id }),
+            now: now)
+        hostActionIntentsInFlight.insert(intent.id)
+        return intent
+    }
+
+    public func finishArtifactRemoval(_ intent: ActionIntent, failure: String?, now: Double) throws {
+        defer { hostActionIntentsInFlight.remove(intent.id) }
+        if let failure {
+            try? store.abandonActionIntent(intent, reason: failure, now: now)
+            try store.audit("cleanup_failed", detail: "remove \(intent.target): \(failure)", now: now)
+        } else {
+            try store.confirmActionIntent(intent, now: now)
+        }
     }
 
     /// `simq gc` in one go (tests and single-threaded callers): plan, size, then remove
@@ -160,7 +195,7 @@ extension Engine {
     public func garbageCollect(apply: Bool, now: Double) throws -> GarbageCollection {
         var result = GarbageCollection(candidates: gcCandidates(try gcPlan(now: now)))
         guard apply else { return result }
-        let still = try result.candidates.filter { try stillRemovable($0.path) }
+        let still = try result.candidates.filter { try stillRemovable($0.path, now: now) }
         let outcome = try removeArtifacts(still.map { ($0.path, $0.reason) }, now: now)
         result.removed = outcome.removed
         result.failures = outcome.failures
@@ -200,7 +235,7 @@ extension Engine {
             for path in try fileSystem.children(of: day) where !removed.contains(path) {
                 guard let id = path.split(separator: "/").last.map(String.init), path == "\(day)/\(id)",
                     let job = try store.job(id: id), retention.keepSeconds(for: job.state) != nil,
-                    try !hasOwnedCommandProcesses(job),
+                    try !isPinned(job), try !hasOwnedCommandProcesses(job),
                     now - (job.finishedAt ?? job.createdAt) >= retention.derivedDataSeconds
                 else { continue }
                 let derived = path + "/DerivedData"

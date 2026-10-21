@@ -25,6 +25,9 @@ public final class DaemonService: @unchecked Sendable {
     private var poolFailure: EngineError?
     private let historyQueue = DispatchQueue(label: "simqd.history-archive")
     private var historyRunning = false
+    private let artifactQueue = DispatchQueue(label: "simqd.artifact-retention")
+    private var artifactCleanupRunning = false
+    private let artifactRequests = DispatchGroup()
     private var lastHistoryAt: Double = -.infinity
     public var wakeScheduler: @Sendable () -> Void = {}
     /// At most five seconds idle resource-recovery latency, one normal tick while work
@@ -32,7 +35,7 @@ public final class DaemonService: @unchecked Sendable {
     public var nextTickInterval: Double {
         locked {
             let busy =
-                poolPassRunning || ((try? store.activeJobs().isEmpty) == false)
+                poolPassRunning || artifactCleanupRunning || ((try? store.activeJobs().isEmpty) == false)
                 || ((try? store.queuedJobs().isEmpty) == false)
                 || ((try? store.liveResources(kinds: [.processGroup]).isEmpty) == false)
             return busy ? min(1, config.tickIntervalSeconds) : min(5, max(1, config.tickIntervalSeconds * 5))
@@ -145,6 +148,8 @@ public final class DaemonService: @unchecked Sendable {
     public func waitForBackgroundWork() {
         poolQueue.sync {}
         historyQueue.sync {}
+        artifactQueue.sync {}
+        artifactRequests.wait()
         simPrepQueue.sync {}
     }
 
@@ -205,7 +210,7 @@ public final class DaemonService: @unchecked Sendable {
                 // A failed pass (hung backend, database error) is recorded and retried at
                 // the next interval, not on every tick; scheduling carries on.
                 do {
-                    try engine.watchdogPass(kind, config: config.watchdog)
+                    try engine.watchdogPass(kind, config: config.watchdog, includeArtifactRetention: false)
                 } catch let error as EngineError {
                     throw error
                 } catch {
@@ -214,7 +219,25 @@ public final class DaemonService: @unchecked Sendable {
                 }
                 switch kind {
                 case .light: lastLightPassAt = now
-                case .full: lastFullPassAt = now
+                case .full:
+                    lastFullPassAt = now
+                    if !artifactCleanupRunning {
+                        artifactCleanupRunning = true
+                        artifactQueue.async { [self] in
+                            defer { locked { artifactCleanupRunning = false } }
+                            do {
+                                let outcome = try collectArtifacts(apply: true, automatic: true)
+                                if !outcome.candidates.isEmpty {
+                                    log(
+                                        "artifact retention: \(outcome.removed.count) removed, \(outcome.failures.count) failed; "
+                                            + "simq gc lists remaining candidates (including report-only/breaker holds)"
+                                    )
+                                }
+                            } catch {
+                                log("artifact retention deferred: \(error)")
+                            }
+                        }
+                    }
                 }
                 try? writeHealth(now: now)
             }
@@ -367,50 +390,61 @@ public final class DaemonService: @unchecked Sendable {
     /// `simq gc`: a dry run unless `apply`. Applying is refused while cleanup_mode is
     /// report-only (the same gate the watchdog's retention goes through).
     func garbageCollect(_ params: GCParams) throws -> GCResult {
-        let apply = params.apply ?? false
-        if apply, config.reliability.cleanupMode != .enforce {
+        // Manual GC and the automatic worker share one serial lane: no duplicate
+        // removals or concurrent whole-tree walks, and neither holds the tick lock.
+        locked {
+            hostWorkInFlight += 1
+            artifactRequests.enter()
+        }
+        defer {
+            locked { hostWorkInFlight -= 1 }
+            artifactRequests.leave()
+        }
+        return try artifactQueue.sync {
+            try collectArtifacts(apply: params.apply ?? false, automatic: false)
+        }
+    }
+
+    private func collectArtifacts(apply: Bool, automatic: Bool) throws -> GCResult {
+        if apply, config.reliability.cleanupMode != .enforce, !automatic {
             throw ProtocolError(
                 .invalidState,
                 "cleanup_mode is \(config.reliability.cleanupMode.rawValue): nothing removed (run without --apply to list)"
             )
         }
-        // 1. Under the lock: what the store says (age candidates, each dir's job state).
         let plan = try locked { try engine.gcPlan(now: engine.environment.clock.now()) }
-        // 2. Without it: sizes and the budget's picks.
         let candidates = engine.gcCandidates(plan)
         var result = GCResult(
-            applied: apply,
-            candidates: candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) },
+            applied: apply, candidates: candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) },
             budgetBytes: plan.budget)
         guard apply else { return result }
-        // 3. One at a time: re-check and record the intent under the lock, remove without
-        // it, settle the intent under it again. A crash mid-remove leaves a pending intent
-        // that recovery settles (gone: audited; still there: abandoned).
+        let limit =
+            automatic ? min(20, max(0, config.reliability.ageRules.artifactRetention.maxRemovalsPerPass)) : Int.max
         let fileSystem = engine.environment.fileSystem
-        for candidate in candidates {
+        var attempted = 0
+        for candidate in candidates.prefix(limit) {
             let path = candidate.path
             let intent: ActionIntent? = try locked {
-                guard try engine.stillRemovable(path) else { return nil }
-                return try store.recordActionIntent(
-                    ActionIntent(
-                        target: .path(path), auditType: Engine.artifactRemovedAuditType,
-                        detail: "removed \(path) (\(candidate.reason))"),
-                    now: engine.environment.clock.now())
+                if automatic {
+                    let phase = try store.watchdogState().breaker.phase
+                    guard config.reliability.cleanupMode == .enforce, phase != .open,
+                        phase != .halfOpen || attempted == 0
+                    else { return nil }
+                }
+                return try engine.beginArtifactRemoval(
+                    path: path, reason: candidate.reason, now: engine.environment.clock.now())
             }
             guard let intent else { continue }
+            attempted += 1
+            var failure: String?
             do {
                 try fileSystem.removeItem(path)
                 if fileSystem.fileExists(path) { throw EngineError.cleanupNotVerified(path) }
-                try locked { try store.confirmActionIntent(intent, now: engine.environment.clock.now()) }
-                result.removed.append(path)
-            } catch {
-                result.failures.append("\(path): \(error)")
-                try locked {
-                    let now = engine.environment.clock.now()
-                    try? store.abandonActionIntent(intent, reason: "\(error)", now: now)
-                    try store.audit("cleanup_failed", detail: "remove \(path): \(error)", now: now)
-                }
+            } catch { failure = "\(error)" }
+            try locked {
+                try engine.finishArtifactRemoval(intent, failure: failure, now: engine.environment.clock.now())
             }
+            if let failure { result.failures.append("\(path): \(failure)") } else { result.removed.append(path) }
         }
         try locked {
             try engine.removeEmptyDayDirectories(after: result.removed, now: engine.environment.clock.now())
@@ -780,7 +814,8 @@ public final class DaemonService: @unchecked Sendable {
         let control = try store.queueControl()
         let active = try store.activeJobs()
         var drainComplete = false
-        if engine.maintenanceDraining && active.isEmpty && !historyRunning && !poolPassRunning && hostWorkInFlight == 0
+        if engine.maintenanceDraining && active.isEmpty && !historyRunning && !artifactCleanupRunning
+            && !poolPassRunning && hostWorkInFlight == 0
             && !engine.hasTemplateBuildsInFlight
         {
             let groups = try store.liveResources(kinds: [.processGroup])

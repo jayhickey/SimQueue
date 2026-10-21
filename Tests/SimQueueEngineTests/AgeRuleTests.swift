@@ -293,6 +293,26 @@ final class AgeRuleTests: XCTestCase {
         XCTAssertEqual(try engine.garbageCollect(apply: false, now: harness.clock.now()).candidates.map(\.path), [dir])
     }
 
+    func testPinnedDerivedDataStaysUntilTheWholePinExpiresAndGCCanThenRemoveIt() throws {
+        let harness = Harness(reliability: ReliabilityConfig(cleanupMode: .enforce))
+        harness.artifactsRoot = "/fake/jobs"
+        let store = try makeStore()
+        let (engine, _, _) = try harness.start(store: store)
+        let job = try harness.submit(store, resources: ResourceRequest(minSims: 0))
+        _ = try engine.tick()
+        _ = try store.finish(jobID: job.id, result: .success, now: harness.clock.now())
+        try store.audit(Engine.artifactKeepAuditType, jobID: job.id, detail: "--keep", now: harness.clock.now())
+        let directory = "/fake/jobs/2027-01-15/\(job.id)"
+        try harness.fileSystem.createDirectory(directory + "/DerivedData")
+        harness.clock.advance(by: 2 * 86_400)
+        XCTAssertTrue(try engine.garbageCollect(apply: false, now: harness.clock.now()).candidates.isEmpty)
+        XCTAssertTrue(try engine.watchdogPass(.full, config: watchdog).age.artifactsRemoved.isEmpty)
+        XCTAssertTrue(harness.fileSystem.fileExists(directory + "/DerivedData"))
+        harness.clock.advance(by: 88 * 86_400)
+        XCTAssertEqual(try engine.garbageCollect(apply: true, now: harness.clock.now()).removed, [directory])
+        XCTAssertFalse(harness.fileSystem.fileExists(directory))
+    }
+
     func testAForeignBootedSimSeenADayIsAFindingAndNeverTouched() throws {
         let harness = Harness(reliability: ReliabilityConfig(cleanupMode: .enforce))
         harness.sims.setDevices([SimDevice(udid: "F1", name: "Other Tool Sim", isBooted: true)])

@@ -76,7 +76,15 @@ you'd actually look at.
 | Job directory without a matching record | 30 days |
 | Output pinned with `submit --keep` | At least 90 days; exempt from the configured size budget |
 
-Host configuration can change these values. Retention deletion requires cleanup enforcement; report-only mode only shows candidates. Inspect `simq gc` before applying `simq gc --apply`. Copy evidence you need to keep elsewhere before its retention period expires. Pins are retention controls, not permanent backups.
+Place disposable build output, package build intermediates and tool environments under
+`$SIMQ_DERIVED_DATA` (`$SIMQ_RUN_DIR/DerivedData`). This top-level directory gets the shorter
+build-product retention; a nested `TestFlight/DerivedData`, for example, follows the enclosing
+artifact directory's retention instead.
+
+Host configuration can change these values and set `age_rules.artifact_budget_gib` to bound
+retained job output by size. The budget removes eligible terminal output, successful jobs
+first; active work and pins remain protected. It is a retention target, not a hard disk quota.
+ Retention deletion requires cleanup enforcement; report-only mode only shows candidates. Inspect `simq gc` before applying `simq gc --apply`. Copy evidence you need to keep elsewhere before its retention period expires. Pins are retention controls, not permanent backups.
 
 - The run dir belongs to the job: SimQueue never deletes it while the job is running, and
   eligible retention removes it according to `age_rules.artifact_retention_days`. DerivedData has its own shorter retention period.

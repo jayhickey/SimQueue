@@ -601,7 +601,9 @@ public final class Engine {
     /// while open, one action while half-open), steps the breaker and persists the
     /// watchdog state. The cleanup mode still decides whether anything is destroyed.
     @discardableResult
-    public func watchdogPass(_ kind: WatchdogPassKind, config: WatchdogConfig) throws -> WatchdogPassReport {
+    public func watchdogPass(
+        _ kind: WatchdogPassKind, config: WatchdogConfig, includeArtifactRetention: Bool = true
+    ) throws -> WatchdogPassReport {
         let now = environment.clock.now()
         var state = try store.watchdogState()
         state.passCount += 1
@@ -617,7 +619,9 @@ public final class Engine {
         // Manual pool leases protect a sim only while their holder is live.
         let staleLeases = try reclaimStaleManualLeases(limits: limits, executedThisPass: report.executed.count)
         let (age, ageAlerts) =
-            kind == .full ? try applyAgeRules(now: now, mode: limits.cleanupMode) : (AgeRuleReport(), [])
+            kind == .full
+            ? try applyAgeRules(now: now, mode: limits.cleanupMode, includeArtifacts: includeArtifactRetention)
+            : (AgeRuleReport(), [])
         let outcome = BreakerPassOutcome(
             executedTargets: report.executed.compactMap(\.targetKey), failures: report.failedActions)
         let (after, recorded) = Breaker.record(outcome, state: current, now: now, policy: config.breaker)
