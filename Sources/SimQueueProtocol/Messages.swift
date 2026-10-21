@@ -16,6 +16,7 @@ public enum Method: String, Sendable, Codable, CaseIterable {
     case jobs
     case explain
     case cancel
+    case bump
     case wait
     case doctor
     case logs
@@ -464,6 +465,22 @@ public struct CancelParams: Sendable, Equatable, Codable {
     }
 }
 
+/// Changes only a waiting job's base priority; higher values run first.
+public struct BumpParams: Sendable, Equatable, Codable {
+    public var jobID: String
+    public var priority: Int
+
+    public init(jobID: String, priority: Int) {
+        self.jobID = jobID
+        self.priority = priority
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case priority
+    }
+}
+
 public struct WaitParams: Sendable, Equatable, Codable {
     public var jobID: String
     /// Send an `event` line on every state, position or reason change.
@@ -523,6 +540,7 @@ public enum RequestParams: Sendable, Equatable {
     case jobs(JobsParams)
     case explain(JobRef)
     case cancel(CancelParams)
+    case bump(BumpParams)
     case wait(WaitParams)
     case doctor
     case logs(LogsParams)
@@ -544,6 +562,7 @@ public enum RequestParams: Sendable, Equatable {
         case .jobs: return .jobs
         case .explain: return .explain
         case .cancel: return .cancel
+        case .bump: return .bump
         case .wait: return .wait
         case .doctor: return .doctor
         case .logs: return .logs
@@ -609,6 +628,7 @@ public struct Request: Sendable, Equatable, Codable {
         case .jobs: params = .jobs(try container.decodeIfPresent(JobsParams.self, forKey: .params) ?? JobsParams())
         case .explain: params = .explain(try container.decode(JobRef.self, forKey: .params))
         case .cancel: params = .cancel(try container.decode(CancelParams.self, forKey: .params))
+        case .bump: params = .bump(try container.decode(BumpParams.self, forKey: .params))
         case .wait: params = .wait(try container.decode(WaitParams.self, forKey: .params))
         case .doctor: params = .doctor
         case .logs: params = .logs(try container.decode(LogsParams.self, forKey: .params))
@@ -632,6 +652,7 @@ public struct Request: Sendable, Equatable, Codable {
         case .jobs(let value): try container.encode(value, forKey: .params)
         case .explain(let value): try container.encode(value, forKey: .params)
         case .cancel(let value): try container.encode(value, forKey: .params)
+        case .bump(let value): try container.encode(value, forKey: .params)
         case .wait(let value): try container.encode(value, forKey: .params)
         case .logs(let value): try container.encode(value, forKey: .params)
         case .leaseAcquire(let value): try container.encode(value, forKey: .params)

@@ -41,6 +41,9 @@ let package = Package(
         .target(name: "SimQueueIPC", dependencies: ["SimQueueProtocol"]),
         // Opt-in MCP server (`simq mcp`): a thin wrapper over the socket protocol.
         .target(name: "SimQueueMCP", dependencies: ["SimQueueProtocol", "SimQueueIPC"]),
+        .target(
+            name: "SimQueueDashboard", dependencies: ["SimQueueCore", "SimQueueProtocol", "SimQueueIPC"]
+        ),
         // Daemon: request handling, run loop, single-instance lock, doctor, fake executor.
         .target(
             name: "SimQueueDaemon",
@@ -53,7 +56,7 @@ let package = Package(
             name: "simq",
             dependencies: [
                 "SimQueueCore", "SimQueueProtocol", "SimQueueIPC", "SimQueueMCP", "SimQueueStore", "SimQueueDaemon",
-                "SimQueueHost",
+                "SimQueueHost", "SimQueueDashboard",
                 argumentParser,
             ]
         ),
@@ -64,6 +67,8 @@ let package = Package(
                 "SimQueueIPC", "SimQueueDaemon", argumentParser,
             ]
         ),
+        .testTarget(
+            name: "SimQueueDashboardTests", dependencies: ["SimQueueDashboard", "SimQueueCore", "SimQueueProtocol"]),
         .testTarget(name: "SimQueueStoreTests", dependencies: ["SimQueueCore", "SimQueueStore"]),
         .testTarget(
             name: "SimQueueEngineTests",
