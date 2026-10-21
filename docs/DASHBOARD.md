@@ -1,0 +1,41 @@
+# Local dashboard
+
+Run `simq dashboard` to open a read-only browser view. The foreground command prints
+its private URL and serves until Ctrl-C. It uses an available port on `127.0.0.1`;
+`--port 8765` selects a port, `--no-open` only prints the URL, and `--state-dir`
+selects the daemon state directory. It does not start or replace the daemon. Start
+or inspect your configured daemon with `simq status` if the view is disconnected.
+
+The dashboard shows:
+
+- Running, queued and preparing counts; admission state, health and global holds.
+- Active jobs with dispatch position, priority and per-job waiting explanations.
+- Up to 100 retained terminal jobs, ordered by submission (matching `simq jobs`).
+- Search by command, project, kind, submitter or ID, plus project/state filters.
+- Separate queue wait, preparation and execution durations, and execution overlap
+  for the latest 20 started jobs in the filtered window.
+- Job details from `explain`: exact command argv, directory, commit, submitter,
+  attempts, deadlines, simulators, peak process-group memory and artifact paths.
+- The first 32 KiB of output, refreshed with the selected job. Use `simq logs JOB`
+  for the full output. Artifact paths are displayed, not served as files.
+
+Labels combine the caller's project with its kind, falling back to the command
+executable or job ID. No new naming or scheduling semantics are introduced.
+Wait runs from submission to admission (or start on older daemons); prep runs
+from admission to start; execution runs from start to completion. Missing phases
+show a dash. Retries retain the original submission timestamp, so wait includes
+prior attempts; prep, execution, simulator and memory details describe the latest
+attempt. Snapshots make separate read requests and can briefly straddle a state
+transition. Active lists are bounded at 10,000 entries; header counts come directly
+from status and can exceed the displayed list.
+
+Polling happens every three seconds after the previous request completes, while
+the tab is visible. On failure, the last snapshot stays visible with a stale-data
+warning. Timing values stop at that snapshot rather than suggesting fresh data.
+
+The listener is loopback-only with a random per-session capability in its URL,
+exact Host checking, no CORS, no external assets, and read-only API routes. Keep
+the URL private: it permits viewing commands and logs, which may contain secrets.
+Other processes/users on the same host are not a security isolation boundary.
+There are no cancellation, retry, drain or arbitrary file/command endpoints.
+No web dependencies or separate asset installation are required.

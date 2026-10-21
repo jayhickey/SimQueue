@@ -66,6 +66,8 @@ jobs:
           "$BIN/simq" --help >/dev/null
           "$BIN/simqd" run --foreground --backend fake --probe fake \
             --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
+      - name: Dashboard JavaScript checks
+        run: node Tests/Dashboard/dashboard.test.cjs
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail

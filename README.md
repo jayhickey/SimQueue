@@ -109,3 +109,9 @@ swift test --skip-build -j 4
 Read [AGENTS.md](AGENTS.md) for contributor guidance and [backends](docs/BACKENDS.md) for fake-tool development.
 
 Licensed under the [MIT License](LICENSE); see [NOTICE](NOTICE).
+
+## Queue dashboard
+
+Run `simq dashboard` for a live, read-only local browser view of the queue, recent
+results, timings, waiting reasons, commands and bounded logs. See the
+[dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.

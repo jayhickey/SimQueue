@@ -34,7 +34,7 @@ struct SimQ: ParsableCommand {
         subcommands: [
             Submit.self, Run.self, Status.self, Jobs.self, Explain.self, Logs.self, Cancel.self, Wait.self, Doctor.self,
             OwnedUDIDs.self, Lease.self, Project.self, Template.self, LegacyGolden.self, MCP.self,
-            Init.self, Uninstall.self, Drain.self, Resume.self, GC.self, AgentGuide.self, Docs.self,
+            Dashboard.self, Init.self, Uninstall.self, Drain.self, Resume.self, GC.self, AgentGuide.self, Docs.self,
         ]
     )
 }
