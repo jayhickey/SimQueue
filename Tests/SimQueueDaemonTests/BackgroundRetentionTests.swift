@@ -113,9 +113,16 @@ final class BackgroundRetentionTests: XCTestCase {
         XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(try daemon.side.pendingActionIntents().filter { $0.jobID == job.id }.count, 1)
         let before = try XCTUnwrap(status(daemon).lastTickAt)
-        // Enough full passes to expose recovery accidentally abandoning a live removal.
-        Thread.sleep(forTimeInterval: 0.2)
-        XCTAssertGreaterThan(try XCTUnwrap(status(daemon).lastTickAt), before)
+        // The tick loop can still be in its one-second idle sleep when removal
+        // begins. Observe a full-pass window while the remover stays blocked.
+        let afterFullPasses = Timestamp(before.epochSeconds + 0.2)
+        let tickDeadline = ProcessInfo.processInfo.systemUptime + 3
+        while try XCTUnwrap(status(daemon).lastTickAt) < afterFullPasses,
+            ProcessInfo.processInfo.systemUptime < tickDeadline
+        {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(status(daemon).lastTickAt), afterFullPasses)
         XCTAssertEqual(try daemon.side.pendingActionIntents().filter { $0.jobID == job.id }.count, 1)
 
         // Queue a manual dry run behind the automatic remover, then block its disk walk.
