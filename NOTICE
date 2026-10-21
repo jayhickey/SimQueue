@@ -1,0 +1,23 @@
+SimQueue
+Copyright 2026 Jay Hickey
+
+This product is licensed under the MIT License (see LICENSE).
+
+Design credits
+--------------
+SimQueue borrows design ideas from the following open-source projects.
+At the time of this notice no source code from them has been copied
+into this repository. If code is copied later, the specific files and
+their original copyright notices will be listed here.
+
+- XCSteward (https://github.com/acyment/XCSteward)
+  Copyright 2026 XCSteward Contributors. Licensed under Apache-2.0.
+  Ideas: result classes and exit-code contract, fake-tool test harness,
+  atomic job claim, startup recovery, capacity-snapshot reasons,
+  foreign-runner detection, infra-failure drain, timing-balanced sharding.
+
+- manzanas (https://github.com/BariBariGood/manzanas)
+  Licensed under Apache-2.0.
+  Ideas: separate running/parked/boot capacity caps, load-based boot gate,
+  SIGSTOP warm-pool parking, footprint watchdog, waiter expiry,
+  quarantine and reset-before-grant, mock backend, simslim capability probe.

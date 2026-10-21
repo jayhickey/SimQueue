@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SimQueue daemon as a per-user LaunchAgent. NOT INSTALLED by anything in this repo.
+  Template only: replace __SIMQD__ with the absolute path to simqd and __HOME__ with
+  the user's home directory, then copy to ~/Library/LaunchAgents/ and
+  `launchctl bootstrap gui/$(id -u) <file>`. simqd still refuses to run without
+  foreground mode, which is what launchd wants.
+  Backend: with no backend argument here, simqd uses the config's `backend`, else simctl
+  (real simulators, system probe) on macOS. For a fake daemon, set "backend": "fake" in
+  config.json (or add the backend flag and the value fake as two more ProgramArguments).
+  `simq` also auto-starts simqd when none answers; set "autostart": false in config.json
+  if launchd should own the daemon.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.simqueue.simqd</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__SIMQD__</string>
+        <string>run</string>
+        <string>--foreground</string>
+        <string>--log-file</string>
+        <string>__HOME__/Library/Application Support/SimQueue/simqd.log</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

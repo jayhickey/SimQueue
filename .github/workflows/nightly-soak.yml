@@ -1,0 +1,42 @@
+name: Extended fake soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Simulated days per mode
+        type: choice
+        options: ["30", "365"]
+        default: "365"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SIMQ_NO_AUTOSTART: "1"
+  SIMQ_REAL_READONLY: ""
+  SIMQ_SOAK_DAYS: ${{ inputs.days }}
+  SIMQ_SOAK_WALL_SECONDS: "540"
+  SIMQ_SOAK_TOTAL_WALL_SECONDS: "840"
+
+jobs:
+  soak:
+    name: ARM64 fake soak and chaos
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: ARM64 toolchain
+        run: test "$(uname -m)" = arm64
+      - name: Build release-mode tests
+        run: /usr/bin/swift build -c release --arch arm64 -j 2 -Xswiftc -enable-testing --build-tests
+      - name: Soak
+        run: /usr/bin/swift test -c release --arch arm64 -j 2 -Xswiftc -enable-testing --skip-build --filter SoakTests
+      - name: Chaos and intent recovery
+        run: /usr/bin/swift test -c release --arch arm64 -j 2 -Xswiftc -enable-testing --skip-build --filter 'ChaosTests|ActionIntentTests'

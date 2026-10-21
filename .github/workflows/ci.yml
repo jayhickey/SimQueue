@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SIMQ_NO_AUTOSTART: "1"
+  SIMQ_REAL_READONLY: ""
+  SIMQ_SOAK_HOURS: "4"
+
+jobs:
+  macos:
+    name: Apple silicon build and full fake tests
+    # Disposable GitHub-hosted ARM64 VM. Never register a personal runner for public PRs.
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Isolated paths and ARM64 toolchain
+        run: |
+          set -eu
+          test "$(uname -m)" = arm64
+          /usr/bin/swift --version
+          ROOT="$RUNNER_TEMP/sq"
+          mkdir -p "$ROOT"/{build,cache,config,security,clang,tmp,tests,state}
+          {
+            echo "SIMQ_CI_ROOT=$ROOT"
+            echo "CLANG_MODULE_CACHE_PATH=$ROOT/clang"
+            echo "TMPDIR=$ROOT/tmp/"
+            echo "SIMQ_TEST_TMPDIR=$ROOT/tests"
+            echo "SIMQ_STATE_DIR=$ROOT/state"
+          } >> "$GITHUB_ENV"
+          test "${#ROOT}" -le 76
+      - name: Build executable and test targets
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          /usr/sbin/taskpolicy -b /usr/bin/swift build --build-tests --arch arm64 -j 2 \
+            --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
+            --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security"
+      - name: Full tests without simulator access
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          /usr/sbin/taskpolicy -b /usr/bin/swift test --skip-build --arch arm64 -j 2 \
+            --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
+            --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security" \
+            2>&1 | tee "$RUNNER_TEMP/simqueue-tests.log"
+      - name: Version and fake daemon smoke
+        run: |
+          set -euo pipefail
+          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
+          test "$("$BIN/simq" --version)" = "$("$BIN/simqd" --version)"
+          "$BIN/simq" --help >/dev/null
+          "$BIN/simqd" run --foreground --backend fake --probe fake \
+            --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
+      - name: Swift and shell formatting checks
+        run: |
+          set -euo pipefail
+          /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
+          bash -n scripts/stamp-version.sh scripts/package-release.sh
+      - name: Preserve test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-tests
+          path: ${{ runner.temp }}/simqueue-tests.log
+          if-no-files-found: ignore
+          retention-days: 7

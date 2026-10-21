@@ -1,0 +1,15 @@
+{
+  "backend": "simctl",
+  "autostart": {"timeout_seconds": 30},
+  "cleanup_mode": "report-only",
+  "simctl": {"template": "REPLACE-WITH-EXPLICIT-TEMPLATE-UDID"},
+  "pool": {
+    "mode": "active",
+    "warm_min": 0,
+    "max_concurrent_boots": 1,
+    "settle": {"mode": "load", "max_wait_seconds": 180, "on_cap": "fail"}
+  },
+  "max_queued_per_submitter_per_project": 128,
+  "max_queued_total": 1024,
+  "age_rules": {"artifact_retention_days": {"derived_data": 1}}
+}

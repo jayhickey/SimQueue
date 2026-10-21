@@ -1,0 +1,22 @@
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Logs and local artifacts
+*.log
+/tmp/
+/artifacts/
+
+# Local environment
+.env
+.env.*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/

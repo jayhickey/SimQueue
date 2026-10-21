@@ -1,0 +1,71 @@
+# Set up the host template
+
+SimQueue clones one selected template into one simulator pool. Each normal job runs its complete workload on one leased simulator. Project labels identify work; they do not select different devices or runtimes.
+
+## Build and select
+
+After `simq init`, build a stock candidate using detected host defaults:
+
+```sh
+simq template build host
+simq template list
+```
+
+`host` identifies the candidate, not a routing rule. Building can take a few minutes and does not activate the result. Wait for `ready`, then copy its UDID into the existing `config.json`:
+
+```json
+{"simctl": {"template": "PASTE-READY-TEMPLATE-UDID"}}
+```
+
+Merge this key into the existing JSON; replace the placeholder. Drain/restart using the [chosen manager](INSTALL.md#choose-one-daemon-manager), then check `simq status` and `simq doctor`. A missing selection leaves simulator work waiting with guidance; SimQueue does not silently choose the newest candidate. Unverified/failed builds are not cloned.
+
+For a specific installed target, use build flags or host-wide `template.device_type`/`template.runtime` defaults. Flags override defaults for that build:
+
+```sh
+simq template build host \
+  --device-type INSTALLED_DEVICE_TYPE_ID \
+  --runtime INSTALLED_RUNTIME_ID
+simq template list --json
+```
+
+Replace the uppercase placeholders with identifiers available in the selected Xcode installation. Inspect Xcode's installed runtimes or its read-only simulator inventory. Callers cannot select a separate runtime per job. `STALE` indicates a toolchain/runtime difference from the recorded build and is a reason to review/rebuild. `--replace` creates a replacement candidate; it does not change selection or reassign existing clones.
+
+## Optional slimming
+
+Stock templates use simctl and need no simslim installation. To deliberately slim a template, install simslim separately and opt in:
+
+```sh
+simq template build host --replace --slim
+```
+
+A failed slimming step leaves `slim_failed`, not ready for cloning. Inspect the error and rebuild/remove it. Configured slim profiles supply arguments when the template is built; they do not create separate pools.
+
+Keep simslim installed while a slimmed template is selected. SimQueue uses `simslim clone` to copy the source’s actual disabled-service profile into new pool devices. This can temporarily boot the source and clone, so creation respects boot and host resource limits. Stock templates continue to use simctl without simslim. Existing clones made without profile preservation must be retired before using the slimmed selection; follow the drain/uninstall sequence below.
+
+## Reuse and readiness
+
+Use `simq run --sims 1 -- <command>` and pass the daemon-provided `SIMQ_UDID` to the test runner. See [the complete Xcode example](ONBOARDING.md). Completed jobs return warm simulators for reuse; installed apps, files and settings can persist.
+
+| Option | Preparation before the command |
+| --- | --- |
+| No reset flag | Use the simulator as the previous job left it. |
+| `--reset-app com.example.app` | Uninstall the app, reset its privacy permissions and reset the keychain. Repeat for more apps; a failed reset falls back to erasing. |
+| `--fresh-sim` | Erase before the command; slower, with a cleaner starting state. |
+
+Preparation retains the job's lease. This is trusted execution as the daemon's user, not security isolation between projects. Keep concurrent source checkouts and output directories separate.
+
+Readiness supports `pool.settle.mode: load` and `off`; both require the backend's bounded boot-status step. Default `load` settling accepts load5 below the derived threshold, or recovered load1 at or below the host's derived clear threshold. This avoids waiting for five-minute history after current load recovers. Explicit `pool.settle.load_below` or `host.settle_load5_per_core` retains strict load5-only settling, including an explicitly supplied value equal to the default; omit those overrides to use default recovery. Configured scheduler `max_load5` and all other admission gates still apply before a job starts. `off` permits readiness after boot-status completes. `max_wait_seconds` bounds settling. `on_cap: fail` shuts down an unsettled simulator; `handoff` explicitly permits handoff with an audit entry. The [example config](config.example.json) chooses `fail`. Unsupported quiet-time modes/settings are rejected.
+
+## Change the active template
+
+This changes the environment for all projects. Existing incompatible clones must be removed first; startup refuses them before queue recovery.
+
+1. Build the new candidate while the current selection stays in place. Review queued work: it will use the new contract after restart. Cancel/finish jobs that require the old environment.
+2. Finish jobs, release manual leases and run `simq drain --timeout 30m`. Continue only after a successful drain; resolve pending cleanup/leases first.
+3. Stop the Homebrew service if selected. Keep the current template configured while inspecting `simq uninstall`. On-demand uninstall stops its own drained daemon.
+4. Run `simq uninstall --yes --force` to remove owned pool simulators while keeping templates, config and history. `--force` allows report-only cleanup/queued work; it cannot bypass active leases or cleanup. Do **not** add `--purge`.
+5. Require successful verified removal, set `simctl.template` to the new ready UDID, restart the chosen manager and check status/doctor and the first job's recorded simulator provenance.
+
+Confirmed removals retire their pool/ownership rows. Partial failures or unreadable inventory preserve those rows: fix the reported problem and retry rather than bypassing the guard. A newer candidate alone never changes selection.
+
+Remove obsolete candidates with `simq template rm UDID` after their clones are gone. Removal follows the cleanup gate: report-only mode keeps the template, and rate limits can postpone deletion. Uninstall retains templates by default.
