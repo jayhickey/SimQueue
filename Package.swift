@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "SimQueueCore", targets: ["SimQueueCore"]),
         .executable(name: "simq", targets: ["simq"]),
         .executable(name: "simqd", targets: ["simqd"]),
+        .executable(name: "SimQueueApp", targets: ["SimQueueApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0")
@@ -67,6 +68,10 @@ let package = Package(
                 "SimQueueIPC", "SimQueueDaemon", argumentParser,
             ]
         ),
+        .executableTarget(
+            name: "SimQueueApp", dependencies: ["SimQueueMenuBar", "SimQueueDashboard", "SimQueueProtocol"]),
+        .target(name: "SimQueueMenuBar", dependencies: ["SimQueueCore", "SimQueueProtocol", "SimQueueIPC"]),
+        .testTarget(name: "SimQueueMenuBarTests", dependencies: ["SimQueueMenuBar", "SimQueueProtocol"]),
         .testTarget(
             name: "SimQueueDashboardTests", dependencies: ["SimQueueDashboard", "SimQueueCore", "SimQueueProtocol"]),
         .testTarget(name: "SimQueueStoreTests", dependencies: ["SimQueueCore", "SimQueueStore"]),
@@ -80,7 +85,7 @@ let package = Package(
             name: "SimQueueDaemonTests",
             dependencies: [
                 "SimQueueCore", "SimQueueStore", "SimQueueHost", "SimQueueSim", "SimQueueEngine", "SimQueueProtocol",
-                "SimQueueIPC", "SimQueueDaemon", "SimQueueMCP",
+                "SimQueueIPC", "SimQueueDaemon", "SimQueueMCP", "SimQueueMenuBar",
             ]
         ),
         .testTarget(

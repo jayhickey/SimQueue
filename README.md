@@ -116,3 +116,10 @@ Run `simq dashboard` for a live local browser view of the queue, recent
 results, timings, waiting reasons, commands and bounded logs. Cancel jobs and
 adjust queued-job priorities directly in the dashboard. See the
 [dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.
+
+### macOS menu bar app
+
+The optional [SimQueue.app](docs/MENU_BAR.md) adds a `square.stack` menu bar item.
+Click to open the dashboard; right-click for status, Launch at Login, and separate
+options to quit the app or stop SimQueue after finishing/canceling active jobs.
+Queued jobs stay saved. See the guide for local builds and service behavior.

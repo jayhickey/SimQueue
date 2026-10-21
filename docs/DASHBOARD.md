@@ -57,3 +57,8 @@ the URL private: it permits controlling jobs and viewing commands and logs, whic
 Other processes/users on the same host are not a security isolation boundary.
 There are no retry, drain or arbitrary file/command endpoints.
 No web dependencies or separate asset installation are required.
+
+## Menu bar access
+
+The optional [macOS menu bar app](MENU_BAR.md) opens this dashboard on click and
+adds status counts, Launch at Login, and safe daemon stop options.

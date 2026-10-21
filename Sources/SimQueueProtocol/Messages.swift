@@ -12,6 +12,7 @@ public enum Method: String, Sendable, Codable, CaseIterable {
     case submit
     case status
     case drain
+    case stop
     case resume
     case jobs
     case explain
@@ -532,10 +533,24 @@ public struct LogsParams: Sendable, Equatable, Codable {
     }
 }
 
+public struct StopParams: Sendable, Equatable, Codable {
+    public var epoch: Int64
+    public var exitDaemon: Bool
+    public init(epoch: Int64, exitDaemon: Bool = true) {
+        self.epoch = epoch
+        self.exitDaemon = exitDaemon
+    }
+    enum CodingKeys: String, CodingKey {
+        case epoch
+        case exitDaemon = "exit_daemon"
+    }
+}
+
 public enum RequestParams: Sendable, Equatable {
     case submit(SubmitParams)
     case status
     case drain
+    case stop(StopParams)
     case resume
     case jobs(JobsParams)
     case explain(JobRef)
@@ -556,6 +571,7 @@ public enum RequestParams: Sendable, Equatable {
     public var method: Method {
         switch self {
         case .submit: return .submit
+        case .stop: return .stop
         case .drain: return .drain
         case .resume: return .resume
         case .status: return .status
@@ -622,6 +638,7 @@ public struct Request: Sendable, Equatable, Codable {
                     debugDescription: "test sharding/build groups were removed in v1; submit independent complete jobs")
             }
             params = .submit(try container.decode(SubmitParams.self, forKey: .params))
+        case .stop: params = .stop(try container.decode(StopParams.self, forKey: .params))
         case .drain: params = .drain
         case .resume: params = .resume
         case .status: params = .status
@@ -660,6 +677,7 @@ public struct Request: Sendable, Equatable, Codable {
         case .leaseRenew(let value): try container.encode(value, forKey: .params)
         case .templateBuild(let value): try container.encode(value, forKey: .params)
         case .templateRemove(let value): try container.encode(value, forKey: .params)
+        case .stop(let p): try container.encode(p, forKey: .params)
         case .status, .doctor, .templateList, .drain, .resume: break
         case .gc(let value): try container.encode(value, forKey: .params)
         }

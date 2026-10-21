@@ -29,6 +29,7 @@ public final class DaemonService: @unchecked Sendable {
     private var artifactCleanupRunning = false
     private let artifactRequests = DispatchGroup()
     private var lastHistoryAt: Double = -.infinity
+    private var shutdownRequested = false
     public var wakeScheduler: @Sendable () -> Void = {}
     /// At most five seconds idle resource-recovery latency, one normal tick while work
     /// is active or a host operation is outstanding. Controls wake the semaphore at once.
@@ -162,6 +163,7 @@ public final class DaemonService: @unchecked Sendable {
     @discardableResult
     public func tick() throws -> TickResult {
         try locked {
+            if shutdownRequested, let lastTick { return lastTick }
             if let failure = poolFailure { throw failure }
             let nowForProbe = engine.environment.clock.now()
             let host = try engine.environment.probe.sample(now: nowForProbe)
@@ -274,19 +276,37 @@ public final class DaemonService: @unchecked Sendable {
             // git runs outside the lock: a slow checkout never stalls the scheduler.
             return respond(request) {
                 let checked = try verifiedGitSHA(params)
-                return try locked { .submit(try submit(checked)) }
+                return try locked {
+                    guard !shutdownRequested else { throw ProtocolError(.invalidState, "daemon is stopping") }
+                    return .submit(try submit(checked))
+                }
             }
         default: break
         }
         return respond(request) {
             try locked {
+                if shutdownRequested {
+                    switch request.params {
+                    case .status, .stop, .jobs, .logs, .doctor, .templateList: break
+                    default: throw ProtocolError(.invalidState, "daemon is stopping")
+                    }
+                }
                 switch request.params {
                 case .submit: throw ProtocolError(.internalError, "submit is handled above")
                 case .status: return .status(try status())
                 case .drain:
                     engine.maintenanceDraining = true
                     return .status(try status())
+                case .stop(let params):
+                    guard params.epoch == info.epoch else { throw ProtocolError(.invalidState, "daemon epoch changed") }
+                    let current = try status()
+                    guard current.drainComplete == true, lastTick != nil else {
+                        throw ProtocolError(.invalidState, "drain must complete before stopping")
+                    }
+                    shutdownRequested = true
+                    return .status(current)
                 case .resume:
+                    guard !shutdownRequested else { throw ProtocolError(.invalidState, "daemon is stopping") }
                     engine.maintenanceDraining = false
                     try store.resume(now: engine.environment.clock.now())
                     return .status(try status())
@@ -393,7 +413,8 @@ public final class DaemonService: @unchecked Sendable {
     func garbageCollect(_ params: GCParams) throws -> GCResult {
         // Manual GC and the automatic worker share one serial lane: no duplicate
         // removals or concurrent whole-tree walks, and neither holds the tick lock.
-        locked {
+        try locked {
+            guard !shutdownRequested else { throw ProtocolError(.invalidState, "daemon is stopping") }
             hostWorkInFlight += 1
             artifactRequests.enter()
         }
