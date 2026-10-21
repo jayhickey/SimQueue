@@ -5,6 +5,14 @@ SimQueue.app is an optional macOS 14+ companion to the existing daemon. Its
 browser dashboard; right-click for the menu. The dashboard retains its private,
 per-session loopback URL, job cancellation and queued-job priority controls.
 
+## Install a published version
+
+Starting with v0.1.4, the Apple silicon release archive includes `SimQueue.app`
+alongside `bin/simq` and `bin/simqd`. Copy the app into `/Applications` or
+`~/Applications`, and keep the installed daemon at the same release version for
+shutdown support. The app is ad-hoc signed and is not notarized; do not disable
+Gatekeeper or remove quarantine attributes to bypass system policy.
+
 ## Build and install
 
 On a shared SimQueue host, build through the queue with bounded workers:
@@ -16,9 +24,8 @@ open /tmp/simqueue-app/SimQueue.app
 ```
 
 The packaging script creates an ad-hoc signed app, suitable for local development.
-Copy it to `/Applications` before enabling **Launch at Login**. This is not a
-notarized public download; the existing CLI release and Homebrew installation
-remain independent. Install/configure SimQueue first (see [INSTALL.md](INSTALL.md)).
+Copy it to `/Applications` before enabling **Launch at Login**. Public release archives include the same app bundle; Homebrew installation and
+daemon service management remain independent. Install/configure SimQueue first (see [INSTALL.md](INSTALL.md)).
 The app connects to the default state directory, or `SIMQ_STATE_DIR` when launched
 with that environment. It does not replace the daemon, reconfigure its service,
 or launch a second daemon. Start the installed daemon using `simq status` or your

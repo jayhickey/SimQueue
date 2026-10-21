@@ -3,7 +3,7 @@
 #
 # Checks that simq and simqd in <bin dir> contain only Mach-O arm64 code and report
 # <version>, then writes <out dir>/simqueue-<version>-macos-arm64.tar.gz (bin/simq,
-# bin/simqd, LICENSE, NOTICE, README.md, AGENTS.md, docs/ and skills/) and a .sha256 file next to it ("<hash>  <file>",
+# bin/simqd, SimQueue.app, LICENSE, NOTICE, README.md, AGENTS.md, docs/ and skills/) and a .sha256 file next to it ("<hash>  <file>",
 # the format `shasum -a 256 -c` reads). Prints the tarball path. macOS only (lipo, shasum).
 set -euo pipefail
 [ $# -eq 3 ] || { echo "usage: $0 <version> <bin dir> <out dir>" >&2; exit 64; }
@@ -31,6 +31,8 @@ stage="$(cd "$stage" && pwd -P)"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$name/bin" "$out"
 cp "$bin/simq" "$bin/simqd" "$stage/$name/bin/"
+"$root/scripts/package-app.sh" "$bin" "$stage/$name" "$version" >&2
+/usr/bin/codesign --verify --strict "$stage/$name/SimQueue.app"
 cp "$root/LICENSE" "$root/NOTICE" "$root/README.md" "$root/AGENTS.md" "$stage/$name/"
 # Export only committed documentation: local notes and editor files must never
 # become part of an installed release. Version stamping changes code, not docs.

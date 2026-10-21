@@ -122,4 +122,5 @@ adjust queued-job priorities directly in the dashboard. See the
 The optional [SimQueue.app](docs/MENU_BAR.md) adds a `square.stack` menu bar item.
 Click to open the dashboard; right-click for status, Launch at Login, and separate
 options to quit the app or stop SimQueue after finishing/canceling active jobs.
-Queued jobs stay saved. See the guide for local builds and service behavior.
+Queued jobs stay saved. Release archives from v0.1.4 include the app. See the guide
+for installation, local builds and service behavior.

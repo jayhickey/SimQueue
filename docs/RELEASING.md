@@ -48,7 +48,7 @@ The tag workflow stamps the version, builds `swift build -c release --arch arm64
 runs `scripts/package-release.sh`. Packaging requires both executables to contain only
 ARM64 code and report the tagged version. It writes
 `simqueue-0.1.0-macos-arm64.tar.gz` and its `.sha256` file, containing `bin/simq`,
-`bin/simqd`, `LICENSE`, `NOTICE`, `README.md`, `AGENTS.md`, full `docs/`, and the optional
+`bin/simqd`, `SimQueue.app`, `LICENSE`, `NOTICE`, `README.md`, `AGENTS.md`, full `docs/`, and the optional
 `skills/simqueue/SKILL.md`.
 
 The separate publish job alone receives `contents: write`. It verifies the uploaded
@@ -73,8 +73,8 @@ is not a substitute for verifying its public URL.
    database schema or discard pending ownership to bypass cleanup.
 
 Record whether testing used an existing account or a fresh environment. Do not infer
-fresh-account onboarding from an existing-account run. Signing/notarization are not
-part of this release; do not instruct users to disable platform security controls.
+fresh-account onboarding from an existing-account run. The app is ad-hoc signed for bundle integrity; Developer ID signing and notarization
+are not part of these archives; do not instruct users to disable platform security controls.
 
 ## Release evidence
 

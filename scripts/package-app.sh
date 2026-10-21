@@ -1,9 +1,15 @@
 #!/bin/bash
-# Assemble an unsigned local macOS app from an existing bounded Swift build.
+# Assemble an ad-hoc signed macOS app from an existing bounded Swift build.
 set -euo pipefail
-[ "$#" -eq 2 ] || { echo 'usage: package-app.sh <bin dir> <output dir>' >&2; exit 64; }
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo 'usage: package-app.sh <bin dir> <output dir> [version]' >&2; exit 64; }
 bin=$1
 out=$2
+version=${3:-0.0.0}
+# Info.plist versions use the numeric part of semantic versions.
+bundle_version=${version%%-*}
+case "$bundle_version" in
+  *[!0-9.]*|'') echo "Invalid bundle version: $version" >&2; exit 64 ;;
+esac
 app="$out/SimQueue.app"
 [ ! -e "$app" ] || { echo "Already exists: $app" >&2; exit 1; }
 [ -x "$bin/SimQueueApp" ] || { echo 'Build SimQueueApp first' >&2; exit 1; }
@@ -23,5 +29,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $bundle_version" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $bundle_version" "$app/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$app"
 echo "$app"
