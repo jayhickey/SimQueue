@@ -188,7 +188,8 @@ public final class DashboardServer {
             return Reply("404 Not Found")
         } catch {
             return Reply(
-                "503 Service Unavailable", "text/plain", Data("Daemon unavailable; retrying automatically.".utf8))
+                "503 Service Unavailable", "text/plain",
+                Data("No confirmed daemon response. Refresh the job state before retrying an action.".utf8))
         }
     }
 }
