@@ -17,9 +17,11 @@ Read `simq agent-guide` for the installed version before submitting managed work
 5. Use the supplied `SIMQ_UDID`, DerivedData and result-bundle paths for managed simulator
    jobs. Keep concurrent builds in separate checkouts. Never infer device ownership from
    a similar name, discard pending cleanup, or kill unrelated simulator services.
-6. Before pushing Swift changes, run `swift build --build-tests` and the relevant tests
-   at the exact proposed commit. Run the full suite for broad changes, and strict Swift
-   format lint. Report commands, commit and results, including skips and limitations.
+6. Push draft changes freely. Before landing Swift changes on main, required CI must
+   pass on the current commit, including build, tests and formatting. Run focused local
+   checks when they provide faster feedback or cover behavior CI cannot exercise.
+   Add regression coverage for behavior changes. Report commands, commit and results,
+   including skips and limitations.
    Follow explicit user instructions about direct commits or pull requests.
 7. Public CI must run untrusted contributions only on disposable GitHub-hosted runners.
    Never register a personal/shared Mac runner to this public repository. Workflows use
