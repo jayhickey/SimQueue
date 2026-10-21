@@ -24,12 +24,11 @@ public struct SimQueueClient: Sendable {
         defer { connection.close() }
         try connection.write(try LineCodec.encode(request))
         while true {
-            if let deadline {
-                let remaining = deadline - Date().timeIntervalSince1970
-                guard remaining > 0 else { throw SocketError.timedOut }
-                connection.setReceiveTimeout(max(0.001, remaining))
+            let lineTimeout = timeoutSeconds > 0 ? Date().timeIntervalSince1970 + timeoutSeconds : nil
+            let lineDeadline = [deadline, lineTimeout].compactMap { $0 }.min()
+            guard let line = try connection.readLine(maxBytes: LineCodec.maxLineBytes, deadline: lineDeadline) else {
+                break
             }
-            guard let line = try connection.readLine(maxBytes: LineCodec.maxLineBytes) else { break }
             let response = try LineCodec.decode(Response.self, from: line)
             if case .event(let job) = response.body {
                 if !onEvent(job) { return nil }

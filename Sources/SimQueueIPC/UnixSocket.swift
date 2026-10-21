@@ -158,8 +158,15 @@ public final class UnixConnection: @unchecked Sendable {
     }
 
     /// Reads one line (without the newline). Nil on clean end of stream.
-    public func readLine(maxBytes: Int) throws -> Data? {
+    /// An absolute deadline bounds the whole line, including peers that send partial
+    /// bytes often enough to avoid an ordinary per-receive timeout.
+    public func readLine(maxBytes: Int, deadline: Double? = nil) throws -> Data? {
         while true {
+            if let deadline {
+                let remaining = deadline - Date().timeIntervalSince1970
+                guard remaining > 0 else { throw SocketError.timedOut }
+                setReceiveTimeout(max(0.001, remaining))
+            }
             if let newline = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[buffer.startIndex..<newline]
                 buffer.removeSubrange(buffer.startIndex...newline)

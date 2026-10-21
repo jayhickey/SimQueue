@@ -68,6 +68,19 @@ let requestTimeoutSeconds: Double = {
     return value
 }()
 
+/// Production observation recovery is bounded to 30 seconds. Debug tests can shorten
+/// that window without making persistent transport failures slow to exercise.
+let observationRecoverySeconds: Double = {
+    #if DEBUG
+        if let text = ProcessInfo.processInfo.environment["SIMQ_TEST_OBSERVATION_RECOVERY_SECONDS"],
+            let value = Double(text), value.isFinite
+        {
+            return min(30, max(0.05, value))
+        }
+    #endif
+    return 30
+}()
+
 func printError(_ message: String) {
     FileHandle.standardError.write(Data("simq: \(message)\n".utf8))
 }
@@ -109,10 +122,19 @@ func call(
     default: observingJob = false
     }
     while true {
+        let now = Date()
+        if let deadline, now.timeIntervalSince1970 >= deadline { throw failure(.waitTimeout) }
+        if let reconnectUntil, now >= reconnectUntil {
+            printError("daemon unavailable at \(connection.paths.socketPath): observation recovery timed out")
+            throw failure(.daemonUnavailable)
+        }
+        // Once recovery starts, even an otherwise unbounded wait must fit the same
+        // recovery window. The caller's absolute wait deadline always takes precedence.
+        let attemptDeadline = [deadline, reconnectUntil?.timeIntervalSince1970].compactMap { $0 }.min()
         do {
             do {
                 response = try connection.client(timeout: timeout).send(
-                    Request(params: params), deadline: deadline, onEvent: onEvent)
+                    Request(params: params), deadline: attemptDeadline, onEvent: onEvent)
             } catch let error as SocketError where AutoStart.isNoDaemon(error) {
                 // Nothing was sent (the connect failed), so one retry after a start is safe.
                 switch AutoStart.ensureDaemon(paths: connection.paths) {
@@ -122,11 +144,11 @@ func call(
                     throw error
                 case .ready:
                     response = try connection.client(timeout: timeout).send(
-                        Request(params: params), deadline: deadline, onEvent: onEvent)
+                        Request(params: params), deadline: attemptDeadline, onEvent: onEvent)
                 }
             }
             break
-        } catch SocketError.timedOut where deadline != nil {
+        } catch SocketError.timedOut where deadline.map({ Date().timeIntervalSince1970 >= $0 }) == true {
             throw failure(.waitTimeout)
         } catch SocketError.timedOut where retryTimeoutsUntil.map({ Date() < $0 }) == true {
             if !notedBusy, !connection.json {
@@ -138,11 +160,11 @@ func call(
         } catch let error as SocketError {
             // Only callers observing an already-submitted job opt in. Never replay a
             // submit or another mutation after an ambiguous disconnect.
-            if observingJob, reconnectFor > 0, isRestartDisconnect(error) {
+            if observingJob, reconnectFor > 0, isObservationInterruption(error) {
                 let now = Date()
                 if reconnectUntil == nil {
-                    reconnectUntil = now.addingTimeInterval(reconnectFor)
-                    if !connection.json { printError("daemon restarting; reconnecting to the existing job") }
+                    reconnectUntil = now.addingTimeInterval(min(reconnectFor, observationRecoverySeconds))
+                    if !connection.json { printError("daemon busy or disconnected; reconnecting to the existing job") }
                 }
                 if let deadline, now.timeIntervalSince1970 >= deadline { throw failure(.waitTimeout) }
                 if let reconnectUntil, now < reconnectUntil {
@@ -173,11 +195,11 @@ func call(
     }
 }
 
-/// A restart can close an established socket or temporarily remove its listener.
-/// Permission, ownership, framing and protocol errors are never retried.
-func isRestartDisconnect(_ error: SocketError) -> Bool {
+/// Observing an existing job can safely retry an unanswered request or a disconnected
+/// socket. Permission, ownership, framing and protocol errors are never retried.
+func isObservationInterruption(_ error: SocketError) -> Bool {
     switch error {
-    case .closed: return true
+    case .closed, .timedOut: return true
     case .system(let call, let code):
         if call == "connect" { return code == ENOENT || code == ECONNREFUSED }
         return code == ECONNRESET || code == EPIPE || code == ENOTCONN
