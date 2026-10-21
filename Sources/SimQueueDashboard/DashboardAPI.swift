@@ -5,7 +5,7 @@ import SimQueueCore
 import SimQueueIPC
 import SimQueueProtocol
 
-/// Only these observations are exposed to the browser; no arbitrary protocol forwarding.
+/// Narrow browser API; never forwards arbitrary daemon methods.
 public struct DashboardAPI {
     public static let historyLimit = 100
     public static let activeLimit = 10_000
@@ -18,11 +18,12 @@ public struct DashboardAPI {
     public init(socketPath: String) {
         self.init { params in
             let client = SimQueueClient(socketPath: socketPath, timeoutSeconds: 2)
-            guard let response = try client.send(Request(params: params)), case .result(let value) = response.body
-            else {
-                throw DashboardError.unavailable
+            guard let response = try client.send(Request(params: params)) else { throw DashboardError.unavailable }
+            switch response.body {
+            case .result(let value): return value
+            case .error(let error): throw error
+            case .event: throw DashboardError.unavailable
             }
-            return value
         }
     }
 
@@ -61,6 +62,25 @@ public struct DashboardAPI {
             return try encoder.encode(logs)
         default: throw DashboardError.notFound
         }
+    }
+
+    public func mutate(path: String) throws -> Data {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2, !parts[1].isEmpty, parts[1].utf8.count <= 128,
+            parts[1].utf8.allSatisfy({
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45
+            })
+        else { throw DashboardError.notFound }
+        let params: RequestParams
+        if parts[0] == "cancel", parts.count == 2 {
+            params = .cancel(CancelParams(jobID: parts[1]))
+        } else if parts[0] == "priority", parts.count == 3, let priority = Int(parts[2]), Priority.isValid(priority) {
+            params = .bump(BumpParams(jobID: parts[1], priority: priority))
+        } else {
+            throw ProtocolError(.invalidArgument, "use cancel/JOB or priority/JOB/0...100")
+        }
+        guard case .job(let job) = try observe(params) else { throw DashboardError.unavailable }
+        return try JSONEncoder().encode(job)
     }
 
     struct Snapshot: Encodable {

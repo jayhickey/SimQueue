@@ -232,7 +232,7 @@ public final class DaemonServer: @unchecked Sendable {
         let response = service.handle(request)
         _ = send(response, on: connection)
         switch request.params {
-        case .submit, .cancel, .drain, .resume, .leaseAcquire, .leaseRelease, .templateBuild, .templateRemove:
+        case .submit, .cancel, .bump, .drain, .resume, .leaseAcquire, .leaseRelease, .templateBuild, .templateRemove:
             requestTick()
         default: break
         }

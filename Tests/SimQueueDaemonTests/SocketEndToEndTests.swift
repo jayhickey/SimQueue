@@ -197,6 +197,35 @@ final class SocketEndToEndTests: XCTestCase {
         XCTAssertEqual(try daemon.job(job.id).state, .queued)
     }
 
+    func testPriorityChangesReorderWaitingJobsWithoutChangingSubmissionTime() throws {
+        try daemon.side.setPaused(true)
+        let first = try daemon.submit(params(priority: 50, submitter: "a")).job
+        let second = try daemon.submit(params(priority: 40, submitter: "b")).job
+        guard case .job(let changed) = try daemon.result(.bump(BumpParams(jobID: second.id, priority: 90))) else {
+            return XCTFail("not a job")
+        }
+        XCTAssertEqual(changed.priority, 90)
+        XCTAssertEqual(changed.queueTime, second.queueTime)
+        let deadline = Date().addingTimeInterval(3)
+        while try daemon.job(second.id).position != 1, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertEqual(try daemon.job(second.id).position, 1)
+        XCTAssertEqual(try daemon.job(first.id).position, 2)
+        XCTAssertEqual(
+            try daemon.protocolError(.bump(BumpParams(jobID: second.id, priority: 101))).code, .invalidArgument)
+        XCTAssertEqual(try daemon.protocolError(.bump(BumpParams(jobID: "missing", priority: 50))).code, .notFound)
+        _ = try daemon.result(.cancel(CancelParams(jobID: second.id)))
+        XCTAssertEqual(try daemon.protocolError(.bump(BumpParams(jobID: second.id, priority: 50))).code, .invalidState)
+    }
+
+    func testPriorityCannotChangeAfterAdmission() throws {
+        let job = try daemon.submit(params(fake: "{\"run_seconds\": 60}")).job
+        let deadline = Date().addingTimeInterval(5)
+        while try daemon.job(job.id).state != .running, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertEqual(try daemon.job(job.id).state, .running)
+        XCTAssertEqual(try daemon.protocolError(.bump(BumpParams(jobID: job.id, priority: 90))).code, .invalidState)
+        _ = try daemon.result(.cancel(CancelParams(jobID: job.id)))
+    }
+
     func testCancel() throws {
         try daemon.side.setPaused(true)
         let job = try daemon.submit(params()).job

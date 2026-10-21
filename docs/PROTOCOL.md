@@ -21,6 +21,8 @@ simq wait J-0001
 
 | Command | Behavior |
 | --- | --- |
+| `simq dashboard [--port PORT] [--no-open]` | Local browser dashboard with cancellation and queued-job priority controls |
+| `simq bump JOB_ID PRIORITY` | Change a queued job’s base priority (integer 0–100); admitted/running/finished jobs are rejected |
 | `simq agent-guide` | Version-matched offline operational guide; no daemon or state creation |
 | `simq docs [--json]` | Resolve full offline docs beside the actual installed executable; no daemon or state creation |
 | `simq init` | Create starter configuration and check Xcode; existing config is kept by default |
@@ -157,3 +159,13 @@ A terminal result can carry `cleanup_pending: true` while owned processes remain
 Jobs retain combined logs, `job.json`/summary and command-produced evidence under `jobs/<UTC date>/<id>`. Log events rotate; persistent daemon output uses its internal bounded writer. Artifact listings are bounded and report truncation. No exactly-once side-effect guarantee or pristine-simulator guarantee is implied.
 
 Use `simq logs <job>` for command output and `simq explain <job> --json` for result and artifact metadata. The [artifact guide](PROOF-JOBS.md) covers screenshots, recordings, result bundles, retention periods, and bounded listings.
+
+### Change a queued job's priority
+
+The `bump` method takes `{"job_id":"J-0001","priority":80}` and returns the
+updated `job` payload. The daemon validates the range and queued state while
+holding its scheduling lock, records a `bumped` audit event, and requests a
+scheduling pass. Submission time, sequence and aging are preserved. Unknown IDs
+return `not_found`, invalid values return `invalid_argument`, and jobs that have
+already been admitted or ended return `invalid_state`. Older daemons do not
+support this additive method.

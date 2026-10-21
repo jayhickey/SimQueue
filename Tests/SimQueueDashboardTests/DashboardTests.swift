@@ -86,6 +86,49 @@ final class DashboardTests: XCTestCase {
         XCTAssertTrue(headers.contains("frame-ancestors 'none'"))
     }
 
+    func testMutationsRequireSameOriginAndExplicitActionHeader() throws {
+        var requests: [RequestParams] = []
+        let job = JobInfo(
+            job: Job(id: "J-1", sequence: 1, project: "test", submitter: "test", queueTime: 0, createdAt: 0),
+            explanation: nil)
+        let api = DashboardAPI { params in
+            requests.append(params); return .job(job)
+        }
+        let prefix = "POST /secret/api/priority/J-1/70 HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n"
+        let valid = "Origin: http://127.0.0.1:9000\r\nX-SimQueue-Action: 1\r\nContent-Length: 0\r\n\r\n"
+        func route(_ headers: String) -> DashboardServer.Reply {
+            DashboardServer.route(request: prefix + headers, authority: "127.0.0.1:9000", token: "secret", api: api)
+        }
+        for headers in [
+            "\r\n",
+            valid.replacingOccurrences(of: "Origin: http://127.0.0.1:9000", with: "Origin: https://attacker.example"),
+            valid.replacingOccurrences(of: "X-SimQueue-Action: 1\r\n", with: ""),
+            valid.replacingOccurrences(of: "Content-Length: 0", with: "Content-Length: 2"),
+            "Transfer-Encoding: chunked\r\n" + valid,
+        ] {
+            XCTAssertEqual(route(headers).status, "403 Forbidden")
+        }
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(route(valid).status, "200 OK")
+        XCTAssertEqual(requests, [.bump(BumpParams(jobID: "J-1", priority: 70))])
+        _ = try api.mutate(path: "cancel/J-1")
+        XCTAssertEqual(requests.last, .cancel(CancelParams(jobID: "J-1")))
+        for path in ["priority/J-1/101", "priority/J-1/-1", "priority/J-1/1.5", "cancel/J-1/extra", "drain/J-1"] {
+            XCTAssertThrowsError(try api.mutate(path: path))
+        }
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    func testStaleJobConflictIsReturnedToTheBrowser() {
+        let api = DashboardAPI { _ in throw ProtocolError(.invalidState, "job already started") }
+        let reply = DashboardServer.route(
+            request:
+                "POST /secret/api/priority/J-1/70 HTTP/1.1\r\nHost: 127.0.0.1:9000\r\nOrigin: http://127.0.0.1:9000\r\nX-SimQueue-Action: 1\r\n\r\n",
+            authority: "127.0.0.1:9000", token: "secret", api: api)
+        XCTAssertEqual(reply.status, "409 Conflict")
+        XCTAssertEqual(String(decoding: reply.body, as: UTF8.self), "job already started")
+    }
+
     func testLogsAreBoundedAndJobDetailsUseExplain() throws {
         var requests: [RequestParams] = []
         let api = DashboardAPI { params in

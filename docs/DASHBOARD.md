@@ -1,6 +1,6 @@
 # Local dashboard
 
-Run `simq dashboard` to open a read-only browser view. The foreground command prints
+Run `simq dashboard` to open a browser view. The foreground command prints
 its private URL and serves until Ctrl-C. It uses an available port on `127.0.0.1`;
 `--port 8765` selects a port, `--no-open` only prints the URL, and `--state-dir`
 selects the daemon state directory. It does not start or replace the daemon. Start
@@ -33,9 +33,27 @@ Polling happens every three seconds after the previous request completes, while
 the tab is visible. On failure, the last snapshot stays visible with a stale-data
 warning. Timing values stop at that snapshot rather than suggesting fresh data.
 
+## Job controls
+
+Cancel waiting, preparing or running jobs using **Cancel**. The browser asks for
+confirmation, then uses the daemon's existing cancellation and ownership-safe
+cleanup. Cancellation acceptance does not mean cleanup has already finished.
+
+Queued jobs also have **↑** and **↓** buttons to change base priority by 10 and a
+**Priority…** button to enter an exact integer from 0 to 100. Higher runs first;
+aging and host resource gates still apply. This does not preempt running jobs or
+bypass admission holds. Once a job is admitted its priority cannot change. Races
+with admission/completion return an error and the next snapshot updates the view.
+The equivalent CLI is `simq bump JOB_ID PRIORITY`.
+
+Mutations are sent once. A lost response is reported as unconfirmed; inspect the
+refreshed job state before retrying. Priority changes require the updated daemon;
+upgrade/restart the daemon along with the CLI.
+
 The listener is loopback-only with a random per-session capability in its URL,
-exact Host checking, no CORS, no external assets, and read-only API routes. Keep
-the URL private: it permits viewing commands and logs, which may contain secrets.
+exact Host checking, no CORS, no external assets, and narrow API routes. Mutations require POST, the exact same Origin, and an
+explicit action header; cross-origin requests have no CORS permission. Keep
+the URL private: it permits controlling jobs and viewing commands and logs, which may contain secrets.
 Other processes/users on the same host are not a security isolation boundary.
-There are no cancellation, retry, drain or arbitrary file/command endpoints.
+There are no retry, drain or arbitrary file/command endpoints.
 No web dependencies or separate asset installation are required.

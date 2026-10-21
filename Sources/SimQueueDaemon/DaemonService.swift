@@ -293,6 +293,7 @@ public final class DaemonService: @unchecked Sendable {
                 case .jobs(let params): return .jobs(try jobs(params))
                 case .explain, .wait: throw ProtocolError(.internalError, "explain and wait are handled above")
                 case .cancel(let params): return .job(try cancel(params))
+                case .bump(let params): return .job(try bump(params))
                 case .logs(let params): return .logs(try logs(params))
                 case .leaseAcquire(let params): return .lease(try leaseAcquire(params))
                 case .leaseRelease(let params): return .lease(try leaseRelease(params))
@@ -849,6 +850,20 @@ public final class DaemonService: @unchecked Sendable {
         try store.jobs(states: params.states, project: params.project, limit: params.limit ?? 100).compactMap {
             try info(for: $0.id)
         }
+    }
+
+    private func bump(_ params: BumpParams) throws -> JobInfo {
+        guard let job = try store.job(id: params.jobID) else {
+            throw ProtocolError(.notFound, "no job \(params.jobID)")
+        }
+        guard job.state == .queued else {
+            throw ProtocolError(
+                .invalidState, "\(job.id) is \(job.state.rawValue); only queued jobs can change priority")
+        }
+        guard try store.bump(jobID: job.id, to: params.priority, now: engine.environment.clock.now()) else {
+            throw ProtocolError(.invalidState, "\(job.id) is no longer queued")
+        }
+        return try requireJob(job.id)
     }
 
     /// Cancels a job. An active job's process groups get SIGTERM and its resources go

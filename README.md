@@ -112,6 +112,7 @@ Licensed under the [MIT License](LICENSE); see [NOTICE](NOTICE).
 
 ## Queue dashboard
 
-Run `simq dashboard` for a live, read-only local browser view of the queue, recent
-results, timings, waiting reasons, commands and bounded logs. See the
+Run `simq dashboard` for a live local browser view of the queue, recent
+results, timings, waiting reasons, commands and bounded logs. Cancel jobs and
+adjust queued-job priorities directly in the dashboard. See the
 [dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.

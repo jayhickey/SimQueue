@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import Foundation
+import SimQueueProtocol
 
 #if canImport(Glibc)
     import Glibc
@@ -144,20 +145,45 @@ public final class DashboardServer {
     static func route(request: String, authority: String, token: String, api: DashboardAPI) -> Reply {
         let lines = request.components(separatedBy: "\r\n")
         let first = (lines.first ?? "").split(separator: " ").map(String.init)
-        let hosts = lines.dropFirst().compactMap { line -> String? in
+        let hosts = lines.dropFirst().prefix(while: { !$0.isEmpty }).compactMap { line -> String? in
             guard let colon = line.firstIndex(of: ":"), line[..<colon].lowercased() == "host" else { return nil }
             return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        guard first.count == 3, first[0] == "GET", first[2] == "HTTP/1.1", hosts == [authority],
+        guard first.count == 3, ["GET", "POST"].contains(first[0]), first[2] == "HTTP/1.1", hosts == [authority],
             first[1].hasPrefix("/\(token)/")
         else { return Reply("403 Forbidden") }
         let path = String(first[1].dropFirst(token.count + 2))
-        if let asset = DashboardAssets.files[path] {
+        if first[0] == "POST" {
+            func header(_ name: String) -> [String] {
+                lines.dropFirst().prefix(while: { !$0.isEmpty }).compactMap { line in
+                    guard let colon = line.firstIndex(of: ":"), line[..<colon].lowercased() == name else { return nil }
+                    return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                }
+            }
+            guard header("origin") == ["http://\(authority)"], header("x-simqueue-action") == ["1"],
+                header("transfer-encoding").isEmpty,
+                header("content-length").isEmpty || header("content-length") == ["0"],
+                request.components(separatedBy: "\r\n\r\n").dropFirst().allSatisfy(\.isEmpty),
+                path.hasPrefix("api/")
+            else { return Reply("403 Forbidden") }
+        }
+        if first[0] == "GET", let asset = DashboardAssets.files[path] {
             return Reply("200 OK", asset.type + "; charset=utf-8", Data(asset.text.utf8))
         }
         guard path.hasPrefix("api/") else { return Reply("404 Not Found") }
         do {
-            return Reply("200 OK", "application/json", try api.response(path: String(path.dropFirst(4))))
+            let route = String(path.dropFirst(4))
+            let body = try first[0] == "POST" ? api.mutate(path: route) : api.response(path: route)
+            return Reply("200 OK", "application/json", body)
+        } catch let error as ProtocolError {
+            let status: String
+            switch error.code {
+            case .notFound: status = "404 Not Found"
+            case .invalidArgument, .badRequest: status = "400 Bad Request"
+            case .invalidState: status = "409 Conflict"
+            default: status = "503 Service Unavailable"
+            }
+            return Reply(status, "text/plain; charset=utf-8", Data(error.message.utf8))
         } catch DashboardError.notFound {
             return Reply("404 Not Found")
         } catch {
