@@ -64,6 +64,9 @@ extension Engine {
             // Pool clones have a separate durable phase/proof protocol. The worker
             // cleans interrupted started operations; inventory presence is never success.
             if Self.isPoolCloneOperation(intent) { continue }
+            // Shutdown keeps the simulator, so presence does not imply failure. The
+            // serial pool worker verifies its state and recovers its handoff barrier.
+            if intent.auditType == Self.pressureShutdownAuditType { continue }
             let present: Bool
             switch intent.target {
             case .processGroup(let pgid): present = try environment.processes.liveProcessGroups().contains(pgid)
