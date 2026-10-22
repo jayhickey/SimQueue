@@ -66,7 +66,7 @@ final class HostSizingConfigTests: XCTestCase {
 
     func testSimulatorBootMemoryOverrideAndDefault() throws {
         for (host, expected) in [
-            ("{}", UInt64(4_380_000_000)),
+            ("{}", 3 * ByteSize.gibibyte),
             (#"{"sim_boot_cost_mib": 1024}"#, ByteSize.gibibyte),
             (#"{"sim_boot_cost_mib": 0}"#, UInt64(0)),
             (#"{"sim_boot_cost_mib": 16777216}"#, UInt64(16777216) * ByteSize.mebibyte),

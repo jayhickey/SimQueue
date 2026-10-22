@@ -43,7 +43,7 @@ For slimmed simulators, you can tune the cold-boot memory allowance in the daemo
 {"host": {"sim_boot_cost_mib": 1024}}
 ```
 
-Merge this into the existing config, then drain and restart the daemon as described in [installation](docs/INSTALL.md). The value is an integer in MiB per simulator that needs booting, including pool warmup. Omit it to keep the default 4,380,000,000 bytes (about 4.08 GiB); `0` disables this allowance. Already-running idle simulators do not incur it. Choose a value based on measurements of your template: this is a scheduling estimate, not a memory limit, and lowering it leaves less protection against memory pressure. Job estimates and the host reserve still apply.
+Merge this into the existing config, then drain and restart the daemon as described in [installation](docs/INSTALL.md). The value is an integer in MiB per simulator that needs booting, including pool warmup. Omit it to keep the default 3 GiB (3,221,225,472 bytes); `0` disables this allowance. Already-running idle simulators do not incur it. Choose a value based on measurements of your template: this is a scheduling estimate, not a memory limit, and lowering it leaves less protection against memory pressure. Job estimates and the host reserve still apply.
 
 
 For a command that needs no simulator:
