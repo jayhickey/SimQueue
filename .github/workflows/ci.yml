@@ -76,7 +76,9 @@ jobs:
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
       - name: Notarization release control flow (fake tools)
-        run: python3 Tests/Release/notarization_test.py
+        run: |
+          python3 Tests/Release/notarization_test.py
+          python3 Tests/Release/release_plan_test.py
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail

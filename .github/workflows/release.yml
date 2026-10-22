@@ -1,14 +1,18 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: Nonpublishing build version
+        description: Optional version for a nonpublishing validation build
         type: string
-        default: 0.1.0
+        default: ""
       notarize:
         description: Sign and notarize the nonpublishing build (requires signing secrets)
         type: boolean
@@ -18,23 +22,57 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-publishing
   cancel-in-progress: false
 
 env:
   SIMQ_NO_AUTOSTART: "1"
 
 jobs:
+  prepare:
+    name: Verify tested source and select release version
+    permissions:
+      contents: read
+      actions: read
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      source: ${{ steps.plan.outputs.source }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      notarize: ${{ steps.plan.outputs.notarize }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Plan exact-commit release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release-plan.py
+
   build:
     name: Apple silicon release archive
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
     runs-on: xcode-27
     timeout-minutes: 35
     outputs:
       version: ${{ steps.version.outputs.version }}
-      publish: ${{ steps.version.outputs.publish }}
+      publish: ${{ needs.prepare.outputs.publish }}
+      source: ${{ needs.prepare.outputs.source }}
+      notarize: ${{ needs.prepare.outputs.notarize }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.source }}
           persist-credentials: false
       - name: ARM64 toolchain and paths
         run: |
@@ -51,17 +89,12 @@ jobs:
       - name: Stamp validated version
         id: version
         env:
-          EVENT: ${{ github.event_name }}
-          DISPATCH_VERSION: ${{ inputs.version }}
+          PLANNED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          set -eu
-          case "$EVENT" in
-            push) VERSION="$(scripts/stamp-version.sh "$GITHUB_REF_NAME")"; PUBLISH=1 ;;
-            workflow_dispatch) VERSION="$(scripts/stamp-version.sh "$DISPATCH_VERSION")"; PUBLISH=0 ;;
-            *) exit 1 ;;
-          esac
+          set -euo pipefail
+          VERSION="$(scripts/stamp-version.sh "$PLANNED_VERSION")"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          { echo "version=$VERSION"; echo "publish=$PUBLISH"; } >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Build ARM64 release
         timeout-minutes: 25
         run: |
@@ -86,7 +119,7 @@ jobs:
   notarize:
     name: Developer ID signing and notarization
     needs: build
-    if: github.event_name == 'push' || inputs.notarize
+    if: needs.build.outputs.notarize == 'true'
     runs-on: xcode-27
     timeout-minutes: 35
     permissions:
@@ -94,6 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.build.outputs.source }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -154,7 +188,7 @@ jobs:
   publish:
     name: Publish tagged release
     needs: [build, notarize]
-    if: github.event_name == 'push' && needs.build.outputs.publish == '1'
+    if: needs.build.outputs.publish == 'true'
     runs-on: xcode-27
     timeout-minutes: 10
     permissions:
@@ -168,6 +202,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ needs.build.outputs.source }}
           DIST: ${{ runner.temp }}/simqueue-dist
         run: |
           set -euo pipefail
@@ -176,6 +211,15 @@ jobs:
           shasum -a 256 -c "$NAME.sha256"
           FLAGS=()
           case "$VERSION" in *-*) FLAGS+=(--prerelease) ;; *) FLAGS+=(--latest) ;; esac
-          gh release create "$GITHUB_REF_NAME" "$NAME" "$NAME.sha256" \
+          TAG="v$VERSION"
+          # Create tags only after signing/notarization; never move an existing tag.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            TAG_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)"
+            [ "$TAG_SHA" = "$SOURCE_SHA" ] || { echo 'Tag belongs to a different source commit' >&2; exit 1; }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$TAG" -f "sha=$SOURCE_SHA" >/dev/null
+          fi
+          gh release create "$TAG" "$NAME" "$NAME.sha256" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "SimQueue $VERSION" \
             --generate-notes "${FLAGS[@]}"

@@ -34,18 +34,40 @@ bytes even when source is unchanged; verify the actual package used for installa
 gh workflow run release.yml --ref main -f version=0.1.0 -f notarize=true
 ```
 
-## Publish v0.1.0
+## Automatic release after main CI
 
-Tag the verified public commit and push the tag:
+The Release workflow listens for a completed `CI` workflow on `main`. A successful
+push from this repository is eligible; pull-request, fork and failed CI runs are
+not. It checks out the exact tested source SHA for both building and signing.
 
-```sh
-git fetch origin
-RELEASE_SHA=REPLACE_WITH_VERIFIED_COMMIT
-git tag -a v0.1.0 "$RELEASE_SHA" -m "SimQueue 0.1.0"
-git push origin v0.1.0
-```
+1. Skip a stale CI result when a newer main commit exists, or a source already
+   associated with a release.
+2. Select the next patch version after the highest stable semantic version tag.
+   For example, `v0.1.5` becomes `v0.1.6`. Prerelease tags do not affect that choice.
+3. Build and package ARM64 executables on a disposable hosted Mac.
+4. Sign, notarize, staple and verify the distribution as described below.
+5. Create the version tag at that exact source SHA only after all checks pass,
+   then publish the notarized archive and checksum to GitHub Releases.
 
-The tag workflow stamps the version, builds `swift build -c release --arch arm64`, and
+The release concurrency group serializes automatic, manually tagged and validation
+runs. A retry skips a source already released; if tag creation succeeded but release
+creation failed, it can reuse that tag only for the same commit. Existing tags and
+published assets are never moved or overwritten. Version tags created with the
+workflow token do not recursively start another tag workflow.
+
+Every successful new main commit is eligible, including documentation-only changes.
+Keep signing secrets configured before merging this workflow. Missing credentials,
+Apple rejection, timeout, stapling or Gatekeeper failure stop publication before an
+automatic tag is created. The workflow does not update Homebrew automatically;
+update the separate tap using the verified public asset below.
+
+Manual `workflow_dispatch` is a validation/recovery tool and never publishes. Its
+optional version defaults to `0.0.0-dev+<source SHA>`; enable `notarize` to test the
+full Apple flow without a release. Explicit `v*` tag pushes remain supported for
+intentional major/minor/prerelease versions, but require successful main CI at that
+exact source commit before building or publishing.
+
+The workflow stamps the planned version, builds `swift build -c release --arch arm64`, and
 runs `scripts/package-release.sh`. Packaging requires both executables to contain only
 ARM64 code and report the tagged version. It writes
 `simqueue-0.1.0-macos-arm64.tar.gz` and its `.sha256` file, containing `bin/simq`,

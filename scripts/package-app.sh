@@ -6,7 +6,7 @@ bin=$1
 out=$2
 version=${3:-0.0.0}
 # Info.plist versions use the numeric part of semantic versions.
-bundle_version=${version%%-*}
+bundle_version=${version%%[-+]*}
 case "$bundle_version" in
   *[!0-9.]*|'') echo "Invalid bundle version: $version" >&2; exit 64 ;;
 esac
