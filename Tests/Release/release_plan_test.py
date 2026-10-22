@@ -55,6 +55,11 @@ class ReleasePlanTests(unittest.TestCase):
             self.assertEqual(result["notarize"], str(notarize).lower())
             self.assertEqual(result["version"], "0.0.0-dev+" + SOURCE[:12])
 
+    def test_manual_validation_defaults_to_signed_and_notarized(self):
+        result, _ = plan("workflow_dispatch", {"inputs": {}}, SOURCE, SOURCE, {}, set(), REPO)
+        self.assertEqual(result["notarize"], "true")
+        self.assertEqual(result["publish"], "false")
+
     def test_invalid_version_or_commit_is_rejected(self):
         with self.assertRaises(ValueError):
             plan("workflow_dispatch", {"inputs": {"version": "1.2.3\nsource=oops"}}, SOURCE, SOURCE, {}, set(), REPO)
