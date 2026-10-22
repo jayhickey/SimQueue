@@ -50,22 +50,6 @@ jobs:
           /usr/sbin/taskpolicy -b /usr/bin/swift build --build-tests --arch arm64 -j 2 \
             --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
             --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security"
-      - name: Full tests without simulator access
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          /usr/sbin/taskpolicy -b /usr/bin/swift test --skip-build --arch arm64 -j 2 \
-            --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
-            --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security" \
-            2>&1 | tee "$RUNNER_TEMP/simqueue-tests.log"
-      - name: Version and fake daemon smoke
-        run: |
-          set -euo pipefail
-          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
-          test "$("$BIN/simq" --version)" = "$("$BIN/simqd" --version)"
-          "$BIN/simq" --help >/dev/null
-          "$BIN/simqd" run --foreground --backend fake --probe fake \
-            --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
       - name: Menu bar app packaging
         run: |
           set -euo pipefail
@@ -96,6 +80,22 @@ jobs:
           path: ${{ runner.temp }}/feed-probe-macos-arm64.tar.gz
           if-no-files-found: error
           retention-days: 7
+      - name: Full tests without simulator access
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          /usr/sbin/taskpolicy -b /usr/bin/swift test --skip-build --arch arm64 -j 2 \
+            --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
+            --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security" \
+            2>&1 | tee "$RUNNER_TEMP/simqueue-tests.log"
+      - name: Version and fake daemon smoke
+        run: |
+          set -euo pipefail
+          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
+          test "$("$BIN/simq" --version)" = "$("$BIN/simqd" --version)"
+          "$BIN/simq" --help >/dev/null
+          "$BIN/simqd" run --foreground --backend fake --probe fake \
+            --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
       - name: Notarization release control flow (fake tools)
