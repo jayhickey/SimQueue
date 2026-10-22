@@ -701,6 +701,78 @@ final class CLIEndToEndTests: XCTestCase {
         XCTAssertEqual(timedOut.code, 3, timedOut.output)
     }
 
+    /// Readable job names with spaces and punctuation go through submit, run, jobs, explain
+    /// and logs unchanged; jobs and explain show local queued and started times.
+    func testReadableJobNamesRunAndDisplayEverywhereWithLocalTimes() throws {
+        try startDaemon(executor: "process")
+        let utc = ["TZ": "UTC"]
+        let names = ["Quotify PR #134 · Unit tests", "Quotify main · Unit + UI tests (full)"]
+        for (index, name) in names.enumerated() {
+            let id = "J-000\(index + 1)"
+            let ran = try simq([
+                "run", "--sims", "0", "--project", "quotify", "--kind", name, "--", "/bin/sh", "-c",
+                #"echo "kind=$SIMQ_KIND"; printf p > "$SIMQ_RUN_DIR/$SIMQ_KIND.png""#,
+            ])
+            XCTAssertEqual(ran.code, 0, ran.output)
+            XCTAssertTrue(ran.output.contains("kind=\(name)\n"), ran.output)
+
+            let logs = try simq(["logs", id])
+            XCTAssertEqual(logs.code, 0, logs.output)
+            XCTAssertTrue(logs.output.contains("\n" + "kind=\(name)\n"), logs.output)
+            let explained = try simq(["explain", id], environment: utc)
+            XCTAssertTrue(
+                explained.output.hasPrefix("\(id)  succeeded  p50  \(name)  quotify  queued at "), explained.output)
+            XCTAssertTrue(explained.output.contains("\(name).png  1 B  image"), explained.output)
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(try simq(["explain", id, "--json"]).output.utf8))
+                    as? [String: Any])
+            XCTAssertEqual(json["kind"] as? String, name)
+            for key in ["queue_time", "started_at"] {
+                let value = try XCTUnwrap(json[key] as? String, key)
+                XCTAssertNotNil(Timestamp(rfc3339: value), "\(key) stays RFC 3339: \(value)")
+            }
+        }
+        // A queued job (behind an exclusive one) has no start yet: a dash.
+        XCTAssertEqual(
+            try simq(["submit", "--sims", "0", "--exclusive", "--project", "quotify", "--", "sleep", "30"]).code, 0)
+        XCTAssertEqual(
+            try simq([
+                "submit", "--sims", "0", "--exclusive", "--project", "quotify", "--kind", "  Quotify UI Tests ",
+                "--", "true",
+            ]).code, 0)
+        let time = #"[A-Z][a-z]{2} [0-9]{1,2}, [0-9]{1,2}:[0-9]{2} [AP]M"#
+        let jobs = try simq(["jobs"], environment: utc)
+        XCTAssertEqual(jobs.code, 0, jobs.output)
+        let lines = jobs.output.split(separator: "\n").map(String.init)
+        let queued = try XCTUnwrap(lines.first { $0.hasPrefix("J-0004") }, jobs.output)
+        XCTAssertNotNil(
+            queued.range(
+                of: "^J-0004  queued  p50  Quotify UI Tests  quotify  queued at \(time)  started at -",
+                options: .regularExpression),
+            "trimmed name, dash before the start: \(queued)")
+        for (index, name) in names.enumerated() {
+            let line = try XCTUnwrap(lines.first { $0.hasPrefix("J-000\(index + 1)") }, jobs.output)
+            XCTAssertNotNil(
+                line.range(
+                    of:
+                        "  \(NSRegularExpression.escapedPattern(for: name))  quotify  queued at \(time)  started at \(time)",
+                    options: .regularExpression),
+                line)
+        }
+        let listed = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(try simq(["jobs", "--json"]).output.utf8)) as? [[String: Any]])
+        XCTAssertEqual(Set(listed.compactMap { $0["kind"] as? String }), Set(names + ["Quotify UI Tests", ""]))
+        XCTAssertNil(listed.first { $0["id"] as? String == "J-0004" }?["started_at"], "no start yet")
+        XCTAssertEqual(try simq(["cancel", "J-0004"]).code, 0)
+        XCTAssertEqual(try simq(["cancel", "J-0003"]).code, 0)
+
+        for bad in ["Quotify\nUnit tests", "tab\there", "esc\u{1B}[31m", "   ", String(repeating: "x", count: 101)] {
+            let rejected = try simq(["submit", "--sims", "0", "--project", "quotify", "--kind", bad, "--", "true"])
+            XCTAssertEqual(rejected.code, 64, "\(bad.debugDescription): \(rejected.output)")
+            XCTAssertTrue(rejected.output.contains("kind must be at most 100 characters"), rejected.output)
+        }
+    }
+
     // MARK: - simq run
 
     private func jobState(_ id: String) throws -> String {

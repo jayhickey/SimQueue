@@ -359,11 +359,13 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try store.finish(jobID: job.id, result: .runnerBootstrapFailure, now: 3).state, .infraFailed)
         sub.kind = ""
         XCTAssertEqual(try store.submit(sub, now: 4).job.kind, "")
+        sub.kind = "Quotify PR #134 · Unit tests"
+        XCTAssertEqual(try store.submit(sub, now: 5).job.kind, "Quotify PR #134 · Unit tests", "stored as given")
     }
 
     func testInvalidKindAndRetryCountAreRejected() throws {
         let store = try JobStore(path: ":memory:", maxQueuedPerSubmitterPerProject: 0)
-        for bad in ["has space", String(repeating: "k", count: 65), "semi;colon"] {
+        for bad in ["new\nline", String(repeating: "k", count: 101), "tab\there", " untrimmed", "   "] {
             var sub = submission()
             sub.kind = bad
             XCTAssertThrowsError(try store.submit(sub, now: 1)) { error in

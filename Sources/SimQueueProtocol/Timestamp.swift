@@ -118,6 +118,23 @@ public struct Timestamp: Sendable, Hashable, Comparable, Codable, CustomStringCo
         try container.encode(rfc3339)
     }
 
+    /// For tables: month, day and 12-hour time in `timeZone` (this Mac's by default), e.g.
+    /// `Oct 22, 12:43 PM`. Always English month names and AM/PM so the column reads the same
+    /// on every Mac; JSON keeps `rfc3339`.
+    public func shortLocal(timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "MMM d, h:mm a"
+        return formatter.string(from: date)
+    }
+
+    /// `shortLocal`, or `-` when there is no time (a job that hasn't started yet).
+    public static func shortLocalOrDash(_ timestamp: Timestamp?, timeZone: TimeZone = .current) -> String {
+        timestamp?.shortLocal(timeZone: timeZone) ?? "-"
+    }
+
     // MARK: - Calendar math (Howard Hinnant's days_from_civil / civil_from_days)
 
     static func days(fromCivil year: Int, _ month: Int, _ day: Int) -> Int64 {

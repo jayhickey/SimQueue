@@ -12,6 +12,8 @@ The dashboard shows:
 - Active jobs with dispatch position, priority and per-job waiting explanations.
 - Up to 100 retained terminal jobs, ordered by submission (matching `simq jobs`).
 - Search by command, project, kind, submitter or ID, plus project/state filters.
+- When each job was queued and when it started, in your local time (`Oct 22, 12:43 PM`;
+  a dash until it starts; hover for the exact timestamp).
 - Separate queue wait, preparation and execution durations, and execution overlap
   for the latest 20 started jobs in the filtered window.
 - Job details from `explain`: exact command argv, directory, commit, submitter,

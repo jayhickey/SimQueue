@@ -674,11 +674,8 @@ public final class DaemonService: @unchecked Sendable {
         guard !params.project.isEmpty, !params.submitter.isEmpty else {
             throw ProtocolError(.invalidArgument, "project and submitter are required")
         }
-        let kind = params.kind ?? ""
-        guard JobKindLabel.isValid(kind) else {
-            throw ProtocolError(
-                .invalidArgument,
-                "kind must be at most \(JobKindLabel.maxLength) characters of letters, digits and ._:/-")
+        guard let kind = JobKindLabel.normalized(params.kind ?? "") else {
+            throw ProtocolError(.invalidArgument, "kind must be \(JobKindLabel.rule)")
         }
         if let retries = params.maxRetries {
             guard (0...JobStore.maxRetriesLimit).contains(retries) else {
