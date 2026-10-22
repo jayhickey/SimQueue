@@ -23,6 +23,8 @@
         private var latest: StatusResult?
         private var stoppingEpoch: Int64?
         private var refreshing = false
+        private var restartingBundled = false
+        private var managingBundled = false
         private var statusLine = NSMenuItem(title: "Connecting…", action: nil, keyEquivalent: "")
 
         func applicationDidFinishLaunching(_ notification: Notification) {
@@ -53,10 +55,13 @@
             add("Open Dashboard", #selector(openDashboard), to: menu)
             add("Launch at Login", #selector(toggleLogin), to: menu)
             menu.items.last?.state = SMAppService.mainApp.status == .enabled ? .on : .off
-            menu.items.last?.isEnabled = stoppingEpoch == nil
+            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled
             menu.addItem(.separator())
+            add("Use Bundled Daemon…", #selector(useBundledDaemon), to: menu)
+            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled
+            add("Background Service Settings…", #selector(backgroundSettings), to: menu)
             add("Stop SimQueue…", #selector(stopQueue), to: menu)
-            menu.items.last?.isEnabled = latest != nil && stoppingEpoch == nil
+            menu.items.last?.isEnabled = latest != nil && stoppingEpoch == nil && !managingBundled
             add(
                 stoppingEpoch == nil ? "Quit Menu Bar App" : "Quit App (Leave Queue Draining)", #selector(quitApp),
                 to: menu)
@@ -103,7 +108,17 @@
                 switch result {
                 case .success(let (status, stopped)):
                     latest = status
-                    if stopped { quitApp(); return }
+                    if stopped {
+                        if restartingBundled {
+                            restartingBundled = false
+                            stoppingEpoch = nil
+                            latest = nil
+                            startBundled(waitForExit: true)
+                        } else {
+                            quitApp()
+                        }
+                        return
+                    }
                     let state =
                         epoch != nil ? "Stopping" : status.draining ? "Draining" : status.paused ? "Paused" : "SimQueue"
                     statusLine.title = "\(state) · \(status.running) running · \(status.queued) queued"
@@ -116,8 +131,67 @@
                     item.button?.toolTip = "SimQueue disconnected. Right-click for options."
                     if stoppingEpoch != nil {
                         stoppingEpoch = nil
+                        restartingBundled = false
+                        managingBundled = false
                         showError(error)
                     }
+                }
+            }
+        }
+
+        private func startBundled(waitForExit: Bool = false) {
+            managingBundled = true
+            let paths = paths
+            Task {
+                let result = await Task.detached {
+                    Result { try BundledDaemon.register(paths: paths, waitForExit: waitForExit) }
+                }.value
+                managingBundled = false
+                switch result {
+                case .success:
+                    if BundledDaemon.service.status == .requiresApproval { backgroundSettings() }
+                    refresh()
+                case .failure(let error): showError(error)
+                }
+            }
+        }
+
+        @objc private func backgroundSettings() { SMAppService.openSystemSettingsLoginItems() }
+
+        @objc private func useBundledDaemon() {
+            guard stoppingEpoch == nil && !managingBundled else { return }
+            do { try BundledDaemon.validate(paths: paths) } catch { showError(error); return }
+            let alert = NSAlert()
+            alert.messageText = "Use the daemon inside SimQueue.app?"
+            alert.informativeText =
+                "The background service keeps running when you quit the menu bar app. If it is already running, jobs will finish before it restarts with this app's version. macOS may ask you to allow background activity or external-drive access."
+            alert.addButton(withTitle: "Use Bundled Daemon")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            managingBundled = true
+            let session = QueueSession(socketPath: paths.socketPath)
+            Task {
+                let result = await Task.detached { () -> Result<StatusResult?, Error> in
+                    Result {
+                        // No answer is not proof the daemon has stopped. Registration
+                        // still checks legacy agents; daemon locks prevent a second owner.
+                        let status: StatusResult
+                        do { status = try session.status() } catch { return nil }
+                        guard try BundledDaemon.owns(status) else { throw BundledDaemon.ServiceError.otherDaemon }
+                        return try session.beginStop(cancelActive: false, expectedEpoch: status.daemon.epoch)
+                    }
+                }.value
+                switch result {
+                case .success(let status):
+                    if let status {
+                        restartingBundled = true
+                        stoppingEpoch = status.daemon.epoch
+                        refresh()
+                    } else {
+                        startBundled()
+                    }
+                case .failure(let error): managingBundled = false; showError(error)
                 }
             }
         }
@@ -180,6 +254,11 @@
     @main
     enum MenuBarApp {
         static func main() throws {
+            if CommandLine.arguments.contains("--register-daemon") {
+                try BundledDaemon.register(paths: .resolve())
+                print("Bundled daemon service: \(BundledDaemon.service.status)")
+                return
+            }
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
             let delegate = AppDelegate()

@@ -35,7 +35,11 @@ class NotarizationTests(unittest.TestCase):
         root = Path(temp.name)
         release = root / "simqueue-1.2.3-macos-arm64"
         (release / "bin").mkdir(parents=True)
-        (release / "SimQueue.app").mkdir()
+        helper_dir = release / "SimQueue.app/Contents/Helpers"
+        helper_dir.mkdir(parents=True)
+        helper = helper_dir / "simqd"
+        helper.write_text("#!/bin/sh\necho 1.2.3\n")
+        helper.chmod(0o700)
         for name in ("simq", "simqd"):
             executable = release / "bin" / name
             executable.write_text("#!/bin/sh\necho 1.2.3\n")
@@ -61,7 +65,10 @@ class NotarizationTests(unittest.TestCase):
         result, calls, out = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
         signs = [call for call in calls if call[0] == "codesign" and "--sign" in call]
-        self.assertEqual(len(signs), 3)
+        self.assertEqual(len(signs), 4)
+        self.assertTrue(signs[0][-1].endswith("SimQueue.app/Contents/Helpers/simqd"))
+        self.assertIn("dev.simqueue.app-daemon", signs[0])
+        self.assertTrue(signs[-1][-1].endswith("SimQueue.app"))
         for call in signs:
             self.assertIn("--timestamp", call)
             self.assertEqual(call[call.index("--options") + 1], "runtime")

@@ -36,6 +36,13 @@ name="simqueue-$version-macos-arm64"
 # Avoid replacing an existing archive, including on failed/retried notarization.
 [ ! -e "$out/$name.tar.gz" ] || { echo 'Output archive already exists' >&2; exit 1; }
 
+helper="$release/SimQueue.app/Contents/Helpers/simqd"
+[ -x "$helper" ] || { echo 'Missing bundled simqd' >&2; exit 1; }
+[ "$("$helper" --version)" = "$version" ] || { echo 'Bundled daemon version mismatch' >&2; exit 1; }
+# Sign nested code first with a stable identity, then seal the enclosing app.
+codesign "${signing[@]}" --identifier dev.simqueue.app-daemon "$helper"
+codesign --verify --strict "$helper"
+
 for executable in "$release/bin/simq" "$release/bin/simqd" "$release/SimQueue.app"; do
   codesign "${signing[@]}" "$executable"
   codesign --verify --strict "$executable"

@@ -13,7 +13,11 @@ esac
 app="$out/SimQueue.app"
 [ ! -e "$app" ] || { echo "Already exists: $app" >&2; exit 1; }
 [ -x "$bin/SimQueueApp" ] || { echo 'Build SimQueueApp first' >&2; exit 1; }
-mkdir -p "$app/Contents/MacOS"
+[ -x "$bin/simqd" ] || { echo 'Build simqd first' >&2; exit 1; }
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Library/LaunchAgents"
+cp "$bin/simqd" "$app/Contents/Helpers/simqd"
+cp "$(dirname "$0")/../deploy/launchd/dev.simqueue.app-daemon.plist" "$app/Contents/Library/LaunchAgents/"
+/usr/bin/codesign --force --sign - --identifier dev.simqueue.app-daemon "$app/Contents/Helpers/simqd"
 cp "$bin/SimQueueApp" "$app/Contents/MacOS/SimQueueApp"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

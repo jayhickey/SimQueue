@@ -72,7 +72,12 @@ jobs:
           BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
           scripts/package-app.sh "$BIN" "$RUNNER_TEMP/app"
           plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist"
-          codesign --verify --strict "$RUNNER_TEMP/app/SimQueue.app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/app/SimQueue.app"
+          test "$("$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" --version)" = "$("$BIN/simqd" --version)"
+          plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Library/LaunchAgents/dev.simqueue.app-daemon.plist"
+          "$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" run --foreground --backend fake --probe fake \
+            --log-to-state --exit-after-startup --state-dir "$SIMQ_CI_ROOT/bundled-smoke"
+          test -s "$SIMQ_CI_ROOT/bundled-smoke/simqd.log"
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
       - name: Notarization release control flow (fake tools)

@@ -113,7 +113,9 @@ write a release.
 
 `scripts/notarize-release.sh VERSION RELEASE_DIRECTORY OUTPUT_DIRECTORY`:
 
-1. Checks release layout, executable versions and credentials.
+1. Checks release layout, executable versions (including the bundled daemon) and credentials.
+   The app includes `Contents/Helpers/simqd` and its Service Management agent plist;
+   sign the helper with identifier `dev.simqueue.app-daemon` before sealing the app.
 2. Signs `simq`, `simqd` and the app with Developer ID, hardened runtime and a secure
    timestamp. Rejects development/ad-hoc identities.
 3. Submits a ZIP of the signed distribution with `notarytool --wait` and requires

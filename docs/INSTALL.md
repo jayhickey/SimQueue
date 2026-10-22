@@ -32,7 +32,8 @@ brew install --cask jayhickey/tap/simqueue-app
 
 The cask also installs the CLI formula if it is missing. Launch the app through
 Spotlight or Applications; Launch at Login is opt-in. Installation does not start
-or restart the daemon. Configure it with `simq init` and the steps below first.
+or restart the daemon. The app can optionally manage its bundled daemon after an
+explicit [safe migration](MENU_BAR.md#use-the-daemon-bundled-with-the-app). Configure it with `simq init` and the steps below first.
 App shutdown controls require daemon v0.1.4 or later; existing installations should
 follow the planned upgrade procedure. App installation, upgrades, uninstall and
 migration from a manually copied app are covered in the [menu bar guide](MENU_BAR.md).

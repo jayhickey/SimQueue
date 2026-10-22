@@ -79,6 +79,9 @@ struct Run: ParsableCommand {
     @Option(help: "Bound daemon stdout/stderr to four rotating 5 MiB log segments at this path.")
     var logFile: String?
 
+    @Flag(help: "Write rotating daemon logs to <state-dir>/simqd.log (for the bundled app agent).")
+    var logToState = false
+
     @Option(help: "Config file. Default: <state-dir>/config.json (optional).")
     var config: String?
 
@@ -92,6 +95,9 @@ struct Run: ParsableCommand {
     )
 
     func validate() throws {
+        guard !(logToState && logFile != nil) else {
+            throw ValidationError("Use either --log-file or --log-to-state.")
+        }
         guard foreground else {
             throw ValidationError("simqd only runs with --foreground in this version.")
         }
@@ -103,8 +109,10 @@ struct Run: ParsableCommand {
     }
 
     func run() throws {
-        if let logFile { try RotatingDaemonLog.redirect(to: logFile) }
         let paths = SimQueuePaths.resolve(explicit: stateDir)
+        if let destination = logFile ?? (logToState ? paths.stateDir + "/simqd.log" : nil) {
+            try RotatingDaemonLog.redirect(to: destination)
+        }
         var daemonConfig: DaemonConfig
         do {
             daemonConfig = try DaemonConfig.load(path: config ?? paths.configPath)
