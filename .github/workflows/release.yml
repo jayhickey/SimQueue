@@ -14,9 +14,9 @@ on:
         type: string
         default: ""
       notarize:
-        description: Sign and notarize the nonpublishing build (requires signing secrets)
+        description: Sign and notarize the nonpublishing build (disable only for unsigned validation)
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read

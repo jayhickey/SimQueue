@@ -50,7 +50,7 @@ def plan(event_name, event, source, main_sha, tags, releases, repo):
         version = inputs.get("version") or f"0.0.0-dev+{source[:12]}"
         if not VERSION.fullmatch(version):
             raise ValueError("Invalid manual build version")
-        notarize = inputs.get("notarize") in (True, "true")
+        notarize = inputs.get("notarize", True) in (True, "true")
         result.update(run="true", version=version, notarize=str(notarize).lower())
         return result, "Manual validation build only; it will not tag or publish"
     raise ValueError("Unsupported release event")

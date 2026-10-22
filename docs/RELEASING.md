@@ -231,3 +231,8 @@ local signatures and a passing package build are narrower evidence.
 To merge a change without publishing a version, include `[skip release]` in the
 main commit message (the squash merge title or body). CI still runs; the automatic
 release planner skips that commit. A later normal merge resumes automatic releases.
+
+Manual workflow-dispatch validation builds sign and notarize by default. Disable
+`notarize` only when intentionally testing unsigned packaging. Manual validation
+still does not tag, publish, update the Sparkle feed, or change Homebrew. Actual
+automatic/tagged releases always require signing and notarization.
