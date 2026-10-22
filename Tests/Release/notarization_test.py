@@ -56,6 +56,10 @@ class NotarizationTests(unittest.TestCase):
         env.update(PATH=str(tools) + os.pathsep + env["PATH"], TOOL_LOG=str(log),
                    SIMQ_SIGNING_IDENTITY="test-identity", SIMQ_NOTARY_PROFILE="test-profile")
         env.update(overrides)
+        if env.get("FAKE_HELPER_VERSION"):
+            helper.write_text("#!/bin/sh\necho " + env["FAKE_HELPER_VERSION"] + "\n")
+        if env.get("FAKE_MISSING_HELPER"):
+            helper.unlink()
         result = subprocess.run(["bash", str(ROOT / "scripts/notarize-release.sh"), "1.2.3", str(release), str(out)],
                                 env=env, capture_output=True, text=True)
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -94,6 +98,14 @@ class NotarizationTests(unittest.TestCase):
         result, calls, _ = self.run_release(FAKE_AUTHORITY="Apple Development: Example")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c[:2] == ["xcrun", "notarytool"] for c in calls))
+
+    def test_missing_or_mismatched_helper_never_signs_or_publishes(self):
+        for overrides in ({"FAKE_MISSING_HELPER": "1"}, {"FAKE_HELPER_VERSION": "0.0.0"}):
+            with self.subTest(overrides=overrides):
+                result, calls, out = self.run_release(**overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(calls)
+                self.assertFalse(list(out.glob("*.tar.gz")))
 
     def test_missing_credentials_fail_before_signing(self):
         result, calls, _ = self.run_release(SIMQ_NOTARY_PROFILE="")
