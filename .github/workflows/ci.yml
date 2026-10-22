@@ -88,10 +88,12 @@ jobs:
             -o "$RUNNER_TEMP/feed-probe/feed-probe"
           ditto "$BIN/Sparkle.framework" "$RUNNER_TEMP/feed-probe/Sparkle.framework"
           python3 Tests/Release/feed_probe_test.py "$RUNNER_TEMP/feed-probe/feed-probe" "$RUNNER_TEMP/app/SimQueue.app"
+          # Preserve framework symlinks and executable permissions across download.
+          tar -czf "$RUNNER_TEMP/feed-probe-macos-arm64.tar.gz" -C "$RUNNER_TEMP" feed-probe
       - uses: actions/upload-artifact@v4
         with:
           name: sparkle-feed-probe-macos-arm64
-          path: ${{ runner.temp }}/feed-probe/
+          path: ${{ runner.temp }}/feed-probe-macos-arm64.tar.gz
           if-no-files-found: error
           retention-days: 7
       - name: Dashboard JavaScript checks
