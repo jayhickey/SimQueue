@@ -23,6 +23,16 @@ final class LogTailTests: XCTestCase {
             else { throw NSError(domain: "test", code: 1) }
             return result
         }
+        guard
+            case .logs(let empty) = try daemon.result(
+                .logs(LogsParams(jobID: id, offset: 999, maxBytes: 8, tailBytes: 8)))
+        else {
+            return XCTFail("missing empty tail")
+        }
+        XCTAssertEqual(empty.offset, 0)
+        XCTAssertEqual(empty.data, "")
+        XCTAssertTrue(empty.atEnd)
+        XCTAssertFalse(empty.jobFinished)
         let text = String(repeating: "x", count: 70_000) + "é😀\nnew\n"
         try write(text)
         let first = try tail(8)

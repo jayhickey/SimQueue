@@ -767,7 +767,7 @@ public final class DaemonService: @unchecked Sendable {
         if let tailBytes = params.tailBytes, tailBytes <= 0 {
             throw ProtocolError(.invalidArgument, "tail_bytes must be positive")
         }
-        var offset = params.offset
+        var offset = params.tailBytes == nil ? params.offset : 0
         let limit = min(max(1, params.maxBytes ?? LogsParams.defaultMaxBytes), LogsParams.maxBytesLimit)
         let groups = try store.liveResources(kinds: [.processGroup]).filter { $0.owner.jobID == job.id }
         let cleanupPending = groups.contains { $0.state == .active }
