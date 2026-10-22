@@ -31,6 +31,12 @@ class ReleasePlanTests(unittest.TestCase):
             result, _ = plan("workflow_run", event(**changes), SOURCE, SOURCE, {}, set(), REPO)
             self.assertEqual(result["run"], "false")
 
+    def test_explicit_skip_release_does_not_publish(self):
+        result, reason = plan("workflow_run", event(head_commit={"message": "Add icon [skip release]"}),
+                              SOURCE, SOURCE, {}, set(), REPO)
+        self.assertEqual(result["run"], "false")
+        self.assertIn("skips", reason)
+
     def test_stale_ci_is_skipped(self):
         result, _ = plan("workflow_run", event(), SOURCE, OTHER, {}, set(), REPO)
         self.assertEqual(result["run"], "false")
