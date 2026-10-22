@@ -109,12 +109,24 @@ enum DashboardAssets {
               button('Cancel',`Cancel ${j.id}`,()=>changeJob(j,'cancel'));
               return cell;
             }
+            let clock = () => Date.now();
+            // Rebuilding rows under a finger or during momentum makes iOS drop the scroll; wait until it settles.
+            const scrollBusy = wrap => wrap.touching || clock() - (wrap.scrolledAt || 0) < 1000;
+            function scroller() {
+              const wrap = el('div', null, 'table-wrap'), release = () => { wrap.touching = false; wrap.scrolledAt = clock(); };
+              wrap.addEventListener('touchstart', () => { wrap.touching = true; }, {passive:true});
+              wrap.addEventListener('touchend', release, {passive:true}); wrap.addEventListener('touchcancel', release, {passive:true});
+              wrap.addEventListener('scroll', () => { wrap.scrolledAt = clock(); }, {passive:true});
+              wrap.addEventListener('click', () => { wrap.scrolledAt = 0; });
+              return wrap;
+            }
             function table(jobs, target) {
               const root=$(target);
               if (!jobs.length) { root.replaceChildren(el('div', 'No jobs in this view.', 'empty')); return; }
               // Keep the scrolling element attached across polling refreshes.
-              const existing=root.firstElementChild;
-              const wrap=existing?.className==='table-wrap' ? existing : el('div',null,'table-wrap');
+              const existing=root.firstElementChild, kept=existing?.className==='table-wrap';
+              if (kept && scrollBusy(existing)) return; // the next poll redraws once the gesture ends
+              const wrap=kept ? existing : scroller();
               const left=wrap.scrollLeft, top=wrap.scrollTop, t=el('table'), head=el('tr');
               for (const name of ['Job / command','State','Priority','Queued','Started','Wait','Prep','Run','Sims','Outcome / hold','Actions']) head.append(el('th',name));
               const thead=el('thead'); thead.append(head); t.append(thead); const body=el('tbody');
@@ -129,7 +141,8 @@ enum DashboardAssets {
               }
               t.append(body); wrap.replaceChildren(t);
               if (wrap!==existing) root.replaceChildren(wrap);
-              wrap.scrollLeft=left; wrap.scrollTop=top;
+              // Restore only what layout clamped: writing scroll offsets cancels iOS momentum.
+              if (wrap.scrollLeft!==left) wrap.scrollLeft=left; if (wrap.scrollTop!==top) wrap.scrollTop=top;
             }
             function render() {
               if (!snapshot) return;
