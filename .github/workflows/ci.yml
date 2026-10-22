@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
           mkdir -p "$RUNNER_TEMP/feed-probe" "$RUNNER_TEMP/feed-fixture"
-          /usr/bin/swiftc -j 2 -parse-as-library -F "$BIN" -framework Sparkle \
+          /usr/bin/swiftc -j 2 -target arm64-apple-macos14.0 -parse-as-library -F "$BIN" -framework Sparkle \
             -Xlinker -rpath -Xlinker @executable_path Tests/Release/feed_probe.swift \
             -o "$RUNNER_TEMP/feed-probe/feed-probe"
           ditto "$BIN/Sparkle.framework" "$RUNNER_TEMP/feed-probe/Sparkle.framework"
