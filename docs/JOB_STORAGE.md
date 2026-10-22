@@ -31,6 +31,6 @@ intentionally recreated on the internal disk. Cleanup checks availability too.
 
 This is basic availability protection. It does not pin a volume UUID, detect a
 replacement disk, or guarantee writes/cleanup through a disconnect/replacement race.
-Do not disconnect storage during jobs or cleanup. The existing state-volume disk
-admission threshold is unchanged; output free space is diagnostic, not an additional
-threshold. A command may still choose its own output paths outside managed storage.
+Do not disconnect storage during jobs or cleanup. The state-volume disk admission
+threshold (`host.min_free_disk_gib`, default 20 GiB) is the only disk floor; output free
+space is diagnostic, not an additional threshold. A command may still choose its own output paths outside managed storage.

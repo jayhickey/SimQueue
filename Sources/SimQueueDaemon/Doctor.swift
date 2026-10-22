@@ -271,6 +271,7 @@ public enum DoctorBuilder {
         let config = live.engine.scheduler.config
         if let host = try? live.engine.environment.probe.sample(now: now) {
             let free = host.freeDiskBytes
+            // Same floor the scheduler uses: warn below it, fail below half of it (0: always ok).
             let diskLevel: DoctorCheck.Level =
                 free < config.minFreeDiskBytes / 2 ? .fail : free < config.minFreeDiskBytes ? .warn : .ok
             checks.append(

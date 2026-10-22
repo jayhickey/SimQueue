@@ -188,7 +188,7 @@ final class SchedulerTests: XCTestCase {
             LoadThrottlePolicy(load5Above: 30, load1Above: 30, load5WithLoad1Above: 15, clearBelowLoad5: 20))
         XCTAssertEqual(config.pressureStop, .warn)
         XCTAssertEqual(config.maxSwapUsedBytes, 3 * gib)
-        XCTAssertEqual(config.minFreeDiskBytes, 40 * gib)
+        XCTAssertEqual(config.minFreeDiskBytes, 20 * gib)
     }
 
     func testLoad5AboveThirtyThrottlesUntilShortAverageRecovers() {
@@ -325,15 +325,33 @@ final class SchedulerTests: XCTestCase {
         )
     }
 
-    func testDiskBelowFortyGiBStopsAdmission() {
+    func testDiskBelowTwentyGiBStopsAdmission() {
         XCTAssertEqual(
-            scheduler.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 39))).reasonCodes(
+            scheduler.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 19))).reasonCodes(
                 for: "J-1"),
             ["disk_low"]
         )
         XCTAssertEqual(
-            scheduler.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 40))).admittedIDs,
+            scheduler.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 20))).admittedIDs,
             ["J-1"])
+    }
+
+    func testConfiguredDiskFloorGatesAdmission() {
+        var config = testConfig()
+        config.minFreeDiskBytes = 50 * gib
+        let strict = Scheduler(config: config)
+        XCTAssertEqual(
+            strict.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 49))).reasonCodes(
+                for: "J-1"),
+            ["disk_low"])
+        XCTAssertEqual(
+            strict.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 50))).admittedIDs, ["J-1"])
+
+        config.minFreeDiskBytes = 0
+        let off = Scheduler(config: config)
+        XCTAssertEqual(
+            off.plan(input(queued: [makeJob("J-1", seq: 1)], host: makeHost(freeDiskGiB: 0))).admittedIDs, ["J-1"],
+            "a 0 floor turns the disk gate off")
     }
 
     func testPausedAndDrainingStopAdmissionAndReportAllReasons() {

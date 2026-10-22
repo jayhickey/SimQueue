@@ -101,6 +101,21 @@ final class HostSizingConfigTests: XCTestCase {
         }
     }
 
+    func testMinFreeDiskGiBSetsTheSchedulerFloor() throws {
+        XCTAssertEqual(try DaemonConfig.parse(Data("{}".utf8)).scheduler.minFreeDiskBytes, 20 * ByteSize.gibibyte)
+        var config = try DaemonConfig.parse(Data(#"{"host": {"min_free_disk_gib": 35}}"#.utf8))
+        config.applyHostSizing(cpuCount: 10, totalMemoryBytes: 32 * ByteSize.gibibyte)
+        XCTAssertEqual(config.scheduler.minFreeDiskBytes, 35 * ByteSize.gibibyte, "host sizing keeps the floor")
+        XCTAssertEqual(
+            try DaemonConfig.parse(Data(#"{"host": {"min_free_disk_gib": 7.5}}"#.utf8)).scheduler.minFreeDiskBytes,
+            15 * ByteSize.gibibyte / 2)
+        XCTAssertEqual(
+            try DaemonConfig.parse(Data(#"{"host": {"min_free_disk_gib": 0}}"#.utf8)).scheduler.minFreeDiskBytes, 0)
+        for bad in [#"{"host": {"min_free_disk_gib": -1}}"#, #"{"host": {"min_free_disk_gib": 1000000}}"#] {
+            XCTAssertThrowsError(try DaemonConfig.parse(Data(bad.utf8)), bad)
+        }
+    }
+
     func testReserveMiBZeroMeansNoReserve() throws {
         var config = try DaemonConfig.parse(Data(#"{"host": {"reserve_mib": 0}}"#.utf8))
         config.applyHostSizing(cpuCount: 10, totalMemoryBytes: 32 * ByteSize.gibibyte)

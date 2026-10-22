@@ -30,7 +30,8 @@ public struct SchedulerConfig: Sendable, Equatable {
     /// Boot-only gate: a boot is allowed only when load1 <= factor x cpuCount. Default 2.0
     /// from manzanas. Stricter than the host-wide load throttle on hosts with few cores.
     public var bootLoadFactor: Double
-    /// Spec `min_free_disk_gb = 40`.
+    /// Free-space floor on the state-directory volume: admissions and pool boots hold below
+    /// it. Default 20 GiB; config `host.min_free_disk_gib` overrides it (0 turns the gate off).
     public var minFreeDiskBytes: UInt64
     /// Spec `swap_growth_limit_mb_per_min = 50`.
     public var swapGrowthLimitBytesPerMinute: Double
@@ -62,7 +63,7 @@ public struct SchedulerConfig: Sendable, Equatable {
         maxConcurrentBoots: Int = 1,
         maxConcurrentExclusive: Int = 1,
         bootLoadFactor: Double = 2.0,
-        minFreeDiskBytes: UInt64 = 40 * ByteSize.gibibyte,
+        minFreeDiskBytes: UInt64 = 20 * ByteSize.gibibyte,
         swapGrowthLimitBytesPerMinute: Double = Double(50 * ByteSize.mebibyte),
         maxSwapUsedBytes: UInt64 = 3 * ByteSize.gibibyte,
         pressureStop: MemoryPressure = .warn,
