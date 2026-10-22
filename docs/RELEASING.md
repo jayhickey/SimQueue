@@ -226,3 +226,7 @@ including an active job, deferred termination, background-service restart, app
 relaunch and retained external-volume permission. Verify the published feed and
 ZIP anonymously and confirm the app rejects a tampered ZIP. Fake delegate tests,
 local signatures and a passing package build are narrower evidence.
+
+To merge a change without publishing a version, include `[skip release]` in the
+main commit message (the squash merge title or body). CI still runs; the automatic
+release planner skips that commit. A later normal merge resumes automatic releases.

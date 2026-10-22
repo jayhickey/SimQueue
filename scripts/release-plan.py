@@ -20,6 +20,8 @@ def plan(event_name, event, source, main_sha, tags, releases, repo):
                 and run.get("head_branch") == "main" and run.get("head_sha") == source
                 and run.get("head_repository", {}).get("full_name") == repo):
             return result, "Ignoring CI that is not a successful push to this repository's main"
+        if "[skip release]" in run.get("head_commit", {}).get("message", "").lower():
+            return result, "This commit explicitly skips automatic release"
         if source != main_sha:
             return result, "A newer main commit exists; wait for its CI instead"
         matching = sorted((tag for tag, sha in tags.items() if sha == source and STABLE.fullmatch(tag)),

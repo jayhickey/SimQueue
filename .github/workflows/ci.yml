@@ -56,6 +56,10 @@ jobs:
           BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
           scripts/package-app.sh "$BIN" "$RUNNER_TEMP/app"
           plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist")" = true
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist")" = SimQueue.icns
+          test -s "$RUNNER_TEMP/app/SimQueue.app/Contents/Resources/SimQueue.icns"
+          iconutil -c iconset "$RUNNER_TEMP/app/SimQueue.app/Contents/Resources/SimQueue.icns" -o "$RUNNER_TEMP/verified.iconset"
           codesign --verify --deep --strict "$RUNNER_TEMP/app/SimQueue.app"
           test "$("$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" --version)" = "$("$BIN/simqd" --version)"
           plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Library/LaunchAgents/dev.simqueue.app-daemon.plist"

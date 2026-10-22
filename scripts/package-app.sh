@@ -21,6 +21,16 @@ cp "$(dirname "$0")/../deploy/launchd/dev.simqueue.app-daemon.plist" "$app/Conte
 cp "$bin/SimQueueApp" "$app/Contents/MacOS/SimQueueApp"
 [ -d "$bin/Sparkle.framework" ] || { echo 'Build the Sparkle dependency first' >&2; exit 1; }
 mkdir -p "$app/Contents/Frameworks" "$app/Contents/Resources"
+# Build the Finder/application icon at native and Retina sizes.
+iconset="$out/SimQueue.iconset"
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$(dirname "$0")/../assets/SimQueue.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+  retina=$((size * 2))
+  sips -z "$retina" "$retina" "$(dirname "$0")/../assets/SimQueue.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/SimQueue.icns"
+rm -r "$iconset"
 cp "$(dirname "$0")/../docs/licenses/Sparkle.txt" "$app/Contents/Resources/Sparkle-LICENSE.txt"
 ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 # SwiftPM executables normally resolve frameworks beside the executable. A
@@ -33,6 +43,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>dev.simqueue.menubar</string>
 <key>CFBundleName</key><string>SimQueue</string>
 <key>CFBundleExecutable</key><string>SimQueueApp</string>
+<key>CFBundleIconFile</key><string>SimQueue.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
