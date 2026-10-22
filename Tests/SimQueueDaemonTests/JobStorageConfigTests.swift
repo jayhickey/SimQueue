@@ -32,6 +32,8 @@ final class JobStorageConfigTests: XCTestCase {
         XCTAssertThrowsError(try JobStorage.check(root))
         let files = StorageFileSystem(base: RootedFileSystem(roots: [root]), roots: [root])
         XCTAssertThrowsError(try files.createDirectory(root + "/2026-01-01/J-1"))
+        XCTAssertTrue(files.fileExists(root + "/pending-cleanup"), "offline is not proof of deletion")
+        XCTAssertThrowsError(try files.removeItem(root + "/pending-cleanup"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root))
     }
 

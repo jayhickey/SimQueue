@@ -56,7 +56,9 @@ public struct StorageFileSystem: FileSystem {
         for root in roots where path == root || path.hasPrefix(root + "/") { try JobStorage.check(root) }
     }
     public func fileExists(_ path: String) -> Bool {
-        (try? check(path)) != nil && base.fileExists(path)
+        // Recovery must not mistake an offline volume for confirmed deletion.
+        guard (try? check(path)) != nil else { return true }
+        return base.fileExists(path)
     }
     public func children(of path: String) throws -> [String] {
         // An unavailable old root must not prevent retention on available roots.
