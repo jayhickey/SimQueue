@@ -263,11 +263,12 @@ public struct Scheduler: Sendable {
                     // work hands its memory back. If it can't fit even then, holding the
                     // headroom just idles the Mac (2:20 PM: one 6 GiB waiter kept 30 small
                     // jobs queued with 0-1 running); it still goes first whenever it fits.
-                    let releasable = (input.active.map { job in
-                        job.resources.memoryCost(sims: job.grantedSims, minimum: config.minimumJobMemoryBytes)
-                    } + admissions.map(\.chargedMemoryBytes)).reduce(UInt64(0)) {
-                        $0.addingReportingOverflow($1).overflow ? .max : $0 + $1
-                    }
+                    let releasable =
+                        (input.active.map { job in
+                            job.resources.memoryCost(sims: job.grantedSims, minimum: config.minimumJobMemoryBytes)
+                        } + admissions.map(\.chargedMemoryBytes)).reduce(UInt64(0)) {
+                            $0.addingReportingOverflow($1).overflow ? .max : $0 + $1
+                        }
                     let reachable = free.addingReportingOverflow(releasable)
                     if reachable.overflow || reachable.partialValue >= memory {
                         state.availableMemory -= min(memory, free)

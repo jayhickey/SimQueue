@@ -11,7 +11,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR pushes supersede each other; main runs must finish because Release follows them.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SIMQ_NO_AUTOSTART: "1"

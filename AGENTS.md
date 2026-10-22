@@ -20,6 +20,8 @@ Read `simq agent-guide` for the installed version before submitting managed work
 6. Push draft changes freely. Before landing Swift changes on main, required CI must
    pass on the current commit, including build, tests and formatting. Run focused local
    checks when they provide faster feedback or cover behavior CI cannot exercise.
+   Before every push, run CI's formatter check (there is no hook): `swift format lint --strict
+   --recursive Package.swift Sources Tests` (fix with `swift format format -i <files>`).
    Add regression coverage for behavior changes. Report commands, commit and results,
    including skips and limitations.
    Follow explicit user instructions about direct commits or pull requests.
