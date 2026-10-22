@@ -211,6 +211,7 @@ extension Engine {
         let isDerived = path.hasSuffix("/DerivedData")
         let dir = isDerived ? String(path.dropLast("/DerivedData".count)) : path
         guard let id = dir.split(separator: "/").last.map(String.init) else { return false }
+        guard !artifactWritersInFlight.contains(id) else { return false }
         guard let job = try store.job(id: id) else { return !isDerived }
         if let now, try isPinned(job) {
             // Pins expire by age, but never by the budget or DerivedData's shorter TTL.
@@ -324,7 +325,8 @@ extension Engine {
 
     /// Whether retention may remove a whole job directory: the job ended and is not pinned.
     func isRemovable(_ job: Job) throws -> Bool {
-        try job.state.isTerminal && !isPinned(job) && !hasOwnedCommandProcesses(job)
+        try job.state.isTerminal && !artifactWritersInFlight.contains(job.id) && !isPinned(job)
+            && !hasOwnedCommandProcesses(job)
     }
 
     private func hasOwnedCommandProcesses(_ job: Job) throws -> Bool {

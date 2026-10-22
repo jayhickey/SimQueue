@@ -396,6 +396,22 @@ public enum ProcessSpawner {
         executable: String, argv: [String], environment: [String: String], cwd: String?, outputPath: String,
         newSession: Bool = false
     ) throws -> Int32 {
+        let outputFD = open(outputPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
+        guard outputFD >= 0 else {
+            throw ProcessControlError.system(call: "open \(outputPath)", errno: errno)
+        }
+        defer { close(outputFD) }
+        return try spawn(
+            executable: executable, argv: argv, environment: environment, cwd: cwd,
+            outputDescriptor: outputFD, newSession: newSession)
+    }
+
+    /// Uses an already-open log descriptor. Ownership remains with the caller; no job
+    /// output path is opened here. Preparation can open slow storage away from the tick.
+    public static func spawn(
+        executable: String, argv: [String], environment: [String: String], cwd: String?,
+        outputDescriptor outputFD: Int32, newSession: Bool = false
+    ) throws -> Int32 {
         precondition(!argv.isEmpty, "argv must not be empty")
         var file = executable
         var arguments = argv
@@ -407,12 +423,6 @@ public enum ProcessSpawner {
                 ["/bin/sh", "-c", "cd -- \"$1\" || exit 126; shift; exec \"$@\"", "simq-job", cwd, executable]
                 + argv.dropFirst()
         }
-        let outputFD = open(outputPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
-        guard outputFD >= 0 else {
-            throw ProcessControlError.system(call: "open \(outputPath)", errno: errno)
-        }
-        defer { close(outputFD) }
-
         #if canImport(Darwin)
             var actions: posix_spawn_file_actions_t? = nil
             var attributes: posix_spawnattr_t? = nil

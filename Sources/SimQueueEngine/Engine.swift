@@ -193,6 +193,9 @@ public final class Engine {
     var templateBuildsInFlight: Set<Int64> = []
     /// Host actions released from the service lock remain owned by their worker.
     var hostActionIntentsInFlight: Set<Int64> = []
+    /// Live daemon artifact preparation writers. Updated under the service lock; their
+    /// canceled jobs cannot be garbage-collected until the writer has returned.
+    public var artifactWritersInFlight: Set<String> = []
     #if DEBUG
         /// Fault injection after the durable marker and before claim. Absent in release builds.
         public var admissionAttemptRecorded: @Sendable (String) -> Void = { _ in }

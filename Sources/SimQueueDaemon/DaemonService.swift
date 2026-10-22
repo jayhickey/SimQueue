@@ -37,7 +37,8 @@ public final class DaemonService: @unchecked Sendable {
     public var nextTickInterval: Double {
         locked {
             let busy =
-                poolPassRunning || artifactCleanupRunning || ((try? store.activeJobs().isEmpty) == false)
+                poolPassRunning || artifactCleanupRunning || !engine.artifactWritersInFlight.isEmpty
+                || ((try? store.activeJobs().isEmpty) == false)
                 || ((try? store.queuedJobs().isEmpty) == false)
                 || ((try? store.liveResources(kinds: [.processGroup]).isEmpty) == false)
             return busy ? min(1, config.tickIntervalSeconds) : min(5, max(1, config.tickIntervalSeconds * 5))
@@ -59,6 +60,7 @@ public final class DaemonService: @unchecked Sendable {
     /// Sim preparation (`reset_apps`, `fresh_sim`) runs here, one job at a time, off the
     /// tick and the service lock: an erase can take minutes.
     private let simPrepQueue = DispatchQueue(label: "simqd.sim-prep")
+    private let startPreparationQueue = DispatchQueue(label: "simqd.job-start-preparation")
     private let log: @Sendable (String) -> Void
 
     public var store: JobStore { engine.store }
@@ -91,6 +93,7 @@ public final class DaemonService: @unchecked Sendable {
         }
         self.info = info
         self.executor = executor
+        (executor as? ProcessExecutor)?.asynchronousPreparation = true
         self.eventLog = EventLog(
             path: ((info.statePath as NSString).deletingLastPathComponent as NSString)
                 .appendingPathComponent("events.jsonl"))
@@ -156,6 +159,7 @@ public final class DaemonService: @unchecked Sendable {
         artifactQueue.sync {}
         artifactRequests.wait()
         simPrepQueue.sync {}
+        startPreparationQueue.sync {}
     }
 
     // MARK: - Run loop step
@@ -217,7 +221,13 @@ public final class DaemonService: @unchecked Sendable {
             }
             startSimPrep()
             executor?.heldJobIDs = engine.jobsAwaitingSimPrep
-            try executor?.step(store: store, epoch: engine.epoch, now: now)
+            do {
+                try executor?.step(store: store, epoch: engine.epoch, now: now)
+            } catch {
+                startProcessPreparations()
+                throw error
+            }
+            startProcessPreparations()
             do {
                 try eventLog?.append(from: store)
             } catch {
@@ -791,11 +801,21 @@ public final class DaemonService: @unchecked Sendable {
         }
         var offset = params.tailBytes == nil ? params.offset : 0
         let limit = min(max(1, params.maxBytes ?? LogsParams.defaultMaxBytes), LogsParams.maxBytesLimit)
+        let path = artifacts.logPath(for: job)
+        let preparing = (executor as? ProcessExecutor)?.preparingJobIDs.contains(job.id) ?? false
+        if preparing {
+            // A log reader must not reopen the same stalled output root while its
+            // writer prepares it. Preserve the cursor until a complete chunk exists.
+            return LogsResult(
+                jobID: job.id, path: path, offset: params.offset, nextOffset: params.offset,
+                data: "", jobFinished: false, atEnd: true,
+                tailBytes: params.tailBytes.map { min($0, limit) })
+        }
         let groups = try store.liveResources(kinds: [.processGroup]).filter { $0.owner.jobID == job.id }
         let cleanupPending = groups.contains { $0.state == .active }
         let cleanupBlocked = groups.contains { $0.state == .orphaned }
-        let finished = job.state.isTerminal && (cleanupBlocked || (!executorBusy(job.id) && !cleanupPending))
-        let path = artifacts.logPath(for: job)
+        let finished =
+            job.state.isTerminal && !preparing && (cleanupBlocked || (!executorBusy(job.id) && !cleanupPending))
         var bytes = Data()
         var size: Int64 = 0
         if let handle = FileHandle(forReadingAtPath: path) {
@@ -843,7 +863,26 @@ public final class DaemonService: @unchecked Sendable {
 
     /// True while the executor still owns the job's command (it can still write output).
     private func executorBusy(_ jobID: String) -> Bool {
-        (executor as? ProcessExecutor)?.runningJobIDs.contains(jobID) ?? false
+        guard let real = executor as? ProcessExecutor else { return false }
+        return real.runningJobIDs.contains(jobID) || real.preparingJobIDs.contains(jobID)
+    }
+
+    /// Registers the artifact writer before releasing the state lock. A canceled
+    /// job's directory remains protected until its blocked preparation actually exits.
+    private func startProcessPreparations() {
+        guard let real = executor as? ProcessExecutor else { return }
+        engine.artifactWritersInFlight = real.preparingJobIDs
+        for work in real.takePreparationWork() {
+            startPreparationQueue.async { [self] in
+                let result = ProcessExecutor.performPreparation(work)
+                locked {
+                    guard let current = executor as? ProcessExecutor else { return }
+                    current.finishPreparation(work, result: result)
+                    engine.artifactWritersInFlight = current.preparingJobIDs
+                }
+                wakeScheduler()
+            }
+        }
     }
 
     // MARK: - Alerts
@@ -926,7 +965,7 @@ public final class DaemonService: @unchecked Sendable {
         var drainComplete = false
         if engine.maintenanceDraining && active.isEmpty && !historyRunning && !artifactCleanupRunning
             && !poolPassRunning && hostWorkInFlight == 0
-            && !engine.hasTemplateBuildsInFlight
+            && !engine.hasTemplateBuildsInFlight && engine.artifactWritersInFlight.isEmpty
         {
             let groups = try store.liveResources(kinds: [.processGroup])
             let sims = try store.poolSims()

@@ -78,6 +78,89 @@ public final class ProcessExecutor: JobExecutor {
     /// Leftover groups being stopped, by resource id.
     private var draining: [Int64: Draining] = [:]
 
+    /// Service mode prepares filesystem work on its own serial lane. Direct executor
+    /// users retain synchronous preparation. All bookkeeping stays under the service lock.
+    var asynchronousPreparation = false
+    enum PreparationStage: Equatable, Sendable { case directories, logOpen }
+    /// Internal deterministic filesystem boundary for concurrency regressions.
+    var beforePreparationStage: (@Sendable (PreparationStage) -> Void)?
+
+    struct PreparationWork: Sendable {
+        let job: Job
+        let directory: String
+        let logPath: String
+        let root: String
+        let now: Double
+        let hook: (@Sendable (PreparationStage) -> Void)?
+        let environment: [String: String]
+        let gitCheckout: GitCheckout
+    }
+
+    /// Immutable descriptor ownership transferred from the serial preparation worker to
+    /// the state-locked consumer. No worker touches it after publishing its result.
+    final class PreparedStart: @unchecked Sendable {
+        let descriptor: Int32
+        let executable: String
+        init(descriptor: Int32, executable: String) {
+            self.descriptor = descriptor; self.executable = executable
+        }
+        deinit { close(descriptor) }
+    }
+
+    struct PreparationFailure: Error {
+        let result: ResultClass
+        let message: String
+        var exitCode: Int32? = nil
+    }
+
+    private enum PreparationState {
+        case queued(PreparationWork)
+        case working(PreparationWork)
+        case ready(PreparationWork, Result<PreparedStart, PreparationFailure>)
+        var work: PreparationWork {
+            switch self {
+            case .queued(let work), .working(let work), .ready(let work, _): return work
+            }
+        }
+    }
+    private var preparations: [String: PreparationState] = [:]
+    var preparingJobIDs: Set<String> { Set(preparations.keys) }
+
+    func takePreparationWork() -> [PreparationWork] {
+        var work: [PreparationWork] = []
+        for id in preparations.keys.sorted() {
+            if case .queued(let item) = preparations[id] {
+                preparations[id] = .working(item); work.append(item)
+            }
+        }
+        return work
+    }
+
+    func finishPreparation(_ work: PreparationWork, result: Result<PreparedStart, PreparationFailure>) {
+        guard let current = preparations[work.job.id], Self.sameAttempt(current.work.job, work.job) else { return }
+        preparations[work.job.id] = .ready(work, result)
+    }
+
+    private static func sameAttempt(_ left: Job, _ right: Job) -> Bool {
+        left.id == right.id && left.attempt == right.attempt && left.ownerEpoch == right.ownerEpoch
+            && left.fenceToken == right.fenceToken
+    }
+
+    private func discardStalePreparations(store: JobStore, epoch: Int64) throws {
+        for (id, state) in preparations {
+            let current = try store.job(id: id)
+            let valid =
+                current.map {
+                    $0.state == .admitted && $0.ownerEpoch == epoch && Self.sameAttempt($0, state.work.job)
+                } ?? false
+            if !valid {
+                // The live writer retains its GC/drain fence until its syscall returns.
+                if case .working = state { continue }
+                preparations[id] = nil
+            }
+        }
+    }
+
     public init(
         artifacts: JobArtifacts,
         processes: any ProcessTable,
@@ -100,6 +183,7 @@ public final class ProcessExecutor: JobExecutor {
     public var runningJobIDs: [String] { leaders.keys.sorted() }
 
     public func step(store: JobStore, epoch: Int64, now: Double) throws {
+        try discardStalePreparations(store: store, epoch: epoch)
         samplePeakMemory(store: store)
         try reapLeaders(store: store, now: now)
         for job in try store.activeJobs()
@@ -154,6 +238,78 @@ public final class ProcessExecutor: JobExecutor {
         }
     }
 
+    private func preparationWork(_ job: Job, now: Double) -> PreparationWork {
+        var environment = baseEnvironment.merging(job.command?.environment ?? [:]) { _, job in job }
+        for key in secretEnvironmentKeys { environment[key] = nil }
+        return PreparationWork(
+            job: job, directory: artifacts.directory(for: job), logPath: artifacts.logPath(for: job),
+            root: job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root,
+            now: now, hook: beforePreparationStage, environment: environment, gitCheckout: gitCheckout)
+    }
+
+    /// Only immutable inputs and host I/O: never touches the store or executor state.
+    func prepareStart(_ work: PreparationWork) -> Result<PreparedStart, PreparationFailure> {
+        Self.performPreparation(work)
+    }
+
+    static func performPreparation(_ work: PreparationWork) -> Result<PreparedStart, PreparationFailure> {
+        guard let command = work.job.command else {
+            return .failure(.init(result: .commandFailure, message: "job has no command"))
+        }
+        do {
+            try JobStorage.check(work.root)
+            work.hook?(.directories)
+            let fileSystem = RootedFileSystem(roots: [work.root])
+            try fileSystem.createDirectory(work.directory)
+            try fileSystem.createDirectory(Self.tmpDirectory(directory: work.directory))
+            let header =
+                "=== simq \(work.job.id) attempt \(work.job.attempt) at \(Timestamp(work.now).rfc3339): "
+                + command.argv.joined(separator: " ") + (command.cwd.map { " (in \($0))" } ?? "") + "\n"
+            work.hook?(.logOpen)
+            let descriptor = open(work.logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            guard descriptor >= 0 else {
+                throw ProcessControlError.system(call: "open \(work.logPath)", errno: errno)
+            }
+            var transferred = false
+            defer { if !transferred { close(descriptor) } }
+            try Self.append(header, descriptor: descriptor)
+            func preparationFailure(_ result: ResultClass, _ message: String, exitCode: Int32? = nil) -> Result<
+                PreparedStart, PreparationFailure
+            > {
+                try? Self.append("=== simq: \(message)\n", descriptor: descriptor)
+                return .failure(.init(result: result, message: message, exitCode: exitCode))
+            }
+            if let cwd = command.cwd {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue
+                else {
+                    return preparationFailure(.commandFailure, "working directory \(cwd) does not exist")
+                }
+            }
+            if let sha = work.job.gitSHA, let tree = work.job.worktree ?? command.cwd {
+                do { try work.gitCheckout.requireHead(sha, in: tree) } catch let failure as GitCheckout.Failure {
+                    switch failure {
+                    case .mismatch, .unknownCommit:
+                        return preparationFailure(.commandFailure, "worktree changed since submit: \(failure)")
+                    case .notACheckout, .gitUnavailable:
+                        return preparationFailure(
+                            .runnerBootstrapFailure, "could not check git_sha before start: \(failure)")
+                    }
+                }
+            }
+            guard
+                let executable = ProcessSpawner.resolveExecutable(
+                    command.argv[0], path: work.environment["PATH"], cwd: command.cwd)
+            else {
+                return preparationFailure(.commandFailure, "command not found: \(command.argv[0])", exitCode: 127)
+            }
+            transferred = true
+            return .success(PreparedStart(descriptor: descriptor, executable: executable))
+        } catch {
+            return .failure(.init(result: .artifactFailure, message: "cannot write \(work.logPath): \(error)"))
+        }
+    }
+
     private func start(_ job: Job, store: JobStore, epoch: Int64, now: Double) throws {
         guard let command = job.command else {
             _ = try store.finish(
@@ -162,59 +318,57 @@ public final class ProcessExecutor: JobExecutor {
             return
         }
         let directory = artifacts.directory(for: job)
-        let logPath = artifacts.logPath(for: job)
-        do {
-            try JobStorage.check(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)
-            try FileManager.default.createDirectory(
-                atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try FileManager.default.createDirectory(
-                atPath: Self.tmpDirectory(directory: directory), withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700])
-            let header =
-                "=== simq \(job.id) attempt \(job.attempt) at \(Timestamp(now).rfc3339): "
-                + command.argv.joined(separator: " ") + (command.cwd.map { " (in \($0))" } ?? "") + "\n"
-            try Self.append(header, to: logPath)
-        } catch {
+        let prepared: PreparedStart
+        let outcome: Result<PreparedStart, PreparationFailure>
+        if asynchronousPreparation {
+            if let state = preparations[job.id] {
+                guard Self.sameAttempt(state.work.job, job) else { return }
+                guard case .ready(_, let result) = state else { return }
+                outcome = result
+                preparations[job.id] = nil
+            } else {
+                preparations[job.id] = .queued(preparationWork(job, now: now))
+                return
+            }
+        } else {
+            outcome = prepareStart(preparationWork(job, now: now))
+        }
+        // Preparation may have yielded to cancellation, retry or lease recovery. The
+        // caller holds the state lock here; no stale attempt may cross the spawn barrier.
+        guard let current = try store.job(id: job.id), current.state == .admitted,
+            current.ownerEpoch == epoch, Self.sameAttempt(current, job),
+            try store.currentEpoch() == epoch, !heldJobIDs.contains(job.id)
+        else { return }
+
+        switch outcome {
+        case .success(let value): prepared = value
+        case .failure(let failure):
             _ = try store.finish(
-                jobID: job.id, result: .artifactFailure, message: "cannot write \(logPath): \(error)", now: now)
+                jobID: job.id, result: failure.result, message: failure.message,
+                commandExitCode: failure.exitCode, now: now)
+            // Preserve pre-start command/git failure artifacts. Completion summary I/O
+            // is still synchronous, as it is for a normally completed command.
+            if failure.result != .artifactFailure { try writeSummary(jobID: job.id, store: store) }
             return
         }
-        if let cwd = command.cwd {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
-                let message = "working directory \(cwd) does not exist"
-                try? Self.append("=== simq: \(message)\n", to: logPath)
-                _ = try store.finish(jobID: job.id, result: .commandFailure, message: message, now: now)
-                try writeSummary(jobID: job.id, store: store)
-                return
-            }
-        }
-
-        // The worktree may have moved since submit (a bot checked out another branch while
-        // the job queued). Never test a different commit under the submitted sha. This runs
-        // under the service lock, so it's one `rev-parse HEAD` with a short timeout.
+        // The off-lock check may be older than this tick. Preserve the existing bounded
+        // start-time SHA check rather than accepting a moved worktree after preparation.
         if let sha = job.gitSHA, let tree = job.worktree ?? command.cwd {
-            var outcome: (result: ResultClass, message: String)?
-            do {
-                try gitCheckout.requireHead(sha, in: tree)
-            } catch let failure as GitCheckout.Failure {
+            do { try gitCheckout.requireHead(sha, in: tree) } catch let failure as GitCheckout.Failure {
+                let result: ResultClass
+                let message: String
                 switch failure {
                 case .mismatch, .unknownCommit:
-                    outcome = (.commandFailure, "worktree changed since submit: \(failure)")
+                    result = .commandFailure; message = "worktree changed since submit: \(failure)"
                 case .notACheckout, .gitUnavailable:
-                    // Git couldn't answer (timed out, missing, unreadable checkout): an infra
-                    // failure, so a retryable job retries instead of failing as moved.
-                    outcome = (.runnerBootstrapFailure, "could not check git_sha before start: \(failure)")
+                    result = .runnerBootstrapFailure; message = "could not check git_sha before start: \(failure)"
                 }
-            }
-            if let outcome {
-                try? Self.append("=== simq: \(outcome.message)\n", to: logPath)
-                _ = try store.finish(jobID: job.id, result: outcome.result, message: outcome.message, now: now)
+                try? Self.append("=== simq: \(message)\n", descriptor: prepared.descriptor)
+                _ = try store.finish(jobID: job.id, result: result, message: message, now: now)
                 try writeSummary(jobID: job.id, store: store)
                 return
             }
         }
-
         var environment = baseEnvironment.merging(command.environment) { _, job in job }
         for key in secretEnvironmentKeys { environment[key] = nil }
         environment["SIMQ_JOB_ID"] = job.id
@@ -248,17 +402,6 @@ public final class ProcessExecutor: JobExecutor {
         environment["SIMQ_TMPDIR"] = tmp
         if command.environment["TMPDIR"] == nil { environment["TMPDIR"] = tmp }
 
-        guard
-            let executable = ProcessSpawner.resolveExecutable(
-                command.argv[0], path: environment["PATH"], cwd: command.cwd)
-        else {
-            let message = "command not found: \(command.argv[0])"
-            try? Self.append("=== simq: \(message)\n", to: logPath)
-            _ = try store.finish(
-                jobID: job.id, result: .commandFailure, message: message, commandExitCode: 127, now: now)
-            try writeSummary(jobID: job.id, store: store)
-            return
-        }
         // Write-ahead: the group's row exists before the spawn, tagged with a token the
         // child inherits, so a daemon that dies before recording the pid can still find
         // (and fence) the group after a restart instead of leaking it or running a copy.
@@ -277,11 +420,11 @@ public final class ProcessExecutor: JobExecutor {
         let pid: Int32
         do {
             pid = try ProcessSpawner.spawn(
-                executable: executable, argv: command.argv, environment: environment, cwd: command.cwd,
-                outputPath: logPath)
+                executable: prepared.executable, argv: command.argv, environment: environment, cwd: command.cwd,
+                outputDescriptor: prepared.descriptor)
         } catch {
             try? store.markResourceReleased(id: intent.id, reason: "never started", now: now)
-            try? Self.append("=== simq: could not start the command: \(error)\n", to: logPath)
+            try? Self.append("=== simq: could not start the command: \(error)\n", descriptor: prepared.descriptor)
             _ = try store.finish(
                 jobID: job.id, result: .runnerBootstrapFailure, message: "could not start the command: \(error)",
                 now: now)
@@ -512,13 +655,17 @@ public final class ProcessExecutor: JobExecutor {
             throw ProcessControlError.system(call: "open \(path)", errno: errno)
         }
         defer { close(descriptor) }
+        try append(text, descriptor: descriptor)
+    }
+
+    private static func append(_ text: String, descriptor: Int32) throws {
         let bytes = Array(text.utf8)
         var written = 0
         while written < bytes.count {
             let result = bytes[written...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
             if result < 0 {
                 if errno == EINTR { continue }
-                throw ProcessControlError.system(call: "write \(path)", errno: errno)
+                throw ProcessControlError.system(call: "write log", errno: errno)
             }
             written += result
         }
