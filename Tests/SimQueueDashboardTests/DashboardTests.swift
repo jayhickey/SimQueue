@@ -142,4 +142,30 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(logs.maxBytes, 32_768)
         XCTAssertEqual(job.jobID, "J-42")
     }
+    func testTailRouteIsBoundedAndRejectsOldDaemonResponses() throws {
+        var requests: [RequestParams] = []
+        let api = DashboardAPI { params in
+            requests.append(params)
+            return .logs(
+                LogsResult(
+                    jobID: "J-1", path: "output", offset: 100, nextOffset: 104,
+                    data: "tail", jobFinished: false, atEnd: true, tailBytes: 32_768))
+        }
+        _ = try api.response(path: "logs/J-1/tail")
+        XCTAssertEqual(requests, [.logs(LogsParams(jobID: "J-1", maxBytes: 32_768, tailBytes: 32_768))])
+        for path in ["logs/J-1/tail/extra", "job/J-1/tail", "logs/J-1/arbitrary"] {
+            XCTAssertThrowsError(try api.response(path: path))
+        }
+        XCTAssertEqual(requests.count, 1)
+        let old = DashboardAPI { _ in
+            .logs(
+                LogsResult(
+                    jobID: "J-1", path: "output", offset: 0,
+                    nextOffset: 4, data: "head", jobFinished: false, atEnd: false))
+        }
+        XCTAssertThrowsError(try old.response(path: "logs/J-1/tail")) { error in
+            XCTAssertEqual((error as? ProtocolError)?.code, .invalidState)
+        }
+    }
+
 }

@@ -32,7 +32,7 @@ enum DashboardAssets {
             'use strict';
             const $ = id => document.getElementById(id);
             const el = (tag, text, className) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (className) n.className = className; return n; };
-            let snapshot, selected = null, detailGeneration = 0;
+            let snapshot, selected = null, detailGeneration = 0, logView = null;
             const pendingActions = new Set();
             const states = ['queued','admitted','running','succeeded','failed','canceled','interrupted','infra_failed','timed_out','expired'];
             for (const state of states) { const o = el('option', state.replaceAll('_',' ')); o.value = state; $('state').append(o); }
@@ -48,7 +48,7 @@ enum DashboardAssets {
             }
             async function get(path) {
               const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 12000);
-              try { const r = await fetch(`api/${path}`, {cache:'no-store', signal:controller.signal}); if (!r.ok) throw new Error('Unavailable'); return await r.json(); }
+              try { const r = await fetch(`api/${path}`, {cache:'no-store', signal:controller.signal}); if (!r.ok) { const error=new Error(r.status===409 ? await r.text() : 'Unavailable'); error.status=r.status; throw error; } return await r.json(); }
               finally { clearTimeout(timeout); }
             }
             function matches(j) {
@@ -133,13 +133,70 @@ enum DashboardAssets {
               if (!jobs.length) { root.append(el('p','No execution history in this view.','muted')); return; }
               const start=Math.min(...jobs.map(j=>epoch(j.started_at))), end=Math.max(...jobs.map(j=>epoch(j.finished_at) ?? now())), span=Math.max(1000,end-start);
               for (const j of jobs) { const row=el('div',null,'timeline-row'), name=el('button',label(j),'job-button timeline-label'), track=el('div',null,'track'), bar=el('div',null,'bar');
-                name.addEventListener('click',()=>openDetail(j.id)); bar.style.left=`${100*(epoch(j.started_at)-start)/span}%`; bar.style.width=`${100*((epoch(j.finished_at) ?? now())-epoch(j.started_at))/span}%`;
+                name.title=label(j); name.addEventListener('click',()=>openDetail(j.id)); bar.style.left=`${100*(epoch(j.started_at)-start)/span}%`; bar.style.width=`${100*((epoch(j.finished_at) ?? now())-epoch(j.started_at))/span}%`;
                 track.title=`${j.started_at} → ${j.finished_at || 'running'} (${timings(j)[2]})`; track.append(bar); row.append(name,track); root.append(row); }
             }
+            function stopTail() {
+              if (logView) clearTimeout(logView.timer);
+              logView=null;
+            }
+            function pauseTail(view) {
+              if (view!==logView || view.finished) return;
+              view.paused=true; clearTimeout(view.timer);
+              view.pause.textContent='Resume live output'; view.status.textContent='Paused · resume to jump to the latest output.';
+            }
+            function resumeTail(view) {
+              if (view!==logView || view.finished) return;
+              view.paused=false; view.pause.textContent='Pause live output';
+              view.output.scrollTop=view.output.scrollHeight; clearTimeout(view.timer);
+              pollTail(view);
+            }
+            async function pollTail(view) {
+              if (view!==logView || view.paused || view.finished || view.busy) return;
+              view.busy=true;
+              try {
+                if (document.hidden) return;
+                const data=await get(`logs/${encodeURIComponent(view.id)}/tail`);
+                if (view!==logView || view.paused) return;
+                const text=data.data || 'No output yet.';
+                if (view.output.textContent!==text) view.output.textContent=text;
+                view.output.scrollTop=view.output.scrollHeight;
+                view.finished=Boolean(data.job_finished && data.at_end);
+                let status=view.finished ? 'Complete · final output.' : 'Live · refreshes every second.';
+                if (data.offset>0) status+=' Showing the last 32 KiB; earlier output is available with simq logs '+view.id+'.';
+                if (view.status.textContent!==status) view.status.textContent=status;
+                view.pause.disabled=view.finished; view.latest.disabled=view.finished;
+              } catch (error) {
+                if (view===logView && !view.paused) {
+                  if (error.status===409) { view.finished=true; view.pause.disabled=true; view.latest.disabled=true; view.status.textContent=error.message; }
+                  else view.status.textContent='Log connection lost · displayed output is stale · retrying…';
+                }
+              } finally {
+                view.busy=false;
+                if (view===logView && !view.paused && !view.finished) view.timer=setTimeout(()=>pollTail(view),1000);
+              }
+            }
+            function createTail(id) {
+              const panel=el('section'), heading=el('h3','Live output · last 32 KiB'), toolbar=el('div',null,'log-toolbar');
+              const pause=el('button','Pause live output'), latest=el('button','Jump to latest'), status=el('p','Connecting…','muted');
+              status.setAttribute('role','status');
+              const output=el('pre','Loading output…','live-log'); output.tabIndex=0; output.setAttribute('aria-label','Job output');
+              const view={id,panel,pause,latest,status,output,paused:false,finished:false,busy:false,timer:null};
+              pause.addEventListener('click',()=>view.paused ? resumeTail(view) : pauseTail(view));
+              latest.addEventListener('click',()=>resumeTail(view));
+              output.addEventListener('scroll',()=>{
+                if (output.scrollHeight-output.clientHeight-output.scrollTop>24) pauseTail(view);
+              });
+              toolbar.append(pause,latest); panel.append(heading,toolbar,status,output,el('p','Scroll up to pause. Resume or jump to latest to follow new output.','muted'));
+              return view;
+            }
             async function openDetail(id) {
-              selected=id; const generation=++detailGeneration; $('detail-body').replaceChildren(el('p','Loading…'));
+              stopTail(); selected=id; const generation=++detailGeneration;
+              logView=createTail(id); const metadata=el('div','Loading…'); metadata.id='job-metadata';
+              $('detail-body').replaceChildren(metadata,logView.panel);
               if (!$('detail').open) $('detail').showModal();
-              try { await updateDetail(id,generation); } catch { if (generation===detailGeneration) $('detail-body').replaceChildren(el('p','Job details unavailable. Close and reopen to retry.')); }
+              pollTail(logView);
+              try { await updateDetail(id,generation); } catch { if (generation===detailGeneration) metadata.textContent='Job details unavailable. Close and reopen to retry.'; }
             }
             async function updateDetail(id,generation) {
               const j=await get(`job/${encodeURIComponent(id)}`);
@@ -149,14 +206,12 @@ enum DashboardAssets {
                 if (value != null && value !== '') dl.append(el('dt',key),el('dd',String(value)));
               }
               const command=el('pre',JSON.stringify(j.command || [],null,2));
-              const logs=el('pre','Loading output…'); const actions=el('table'), actionRow=el('tr'); actionRow.append(controls(j)); actions.append(actionRow); root.replaceChildren(actions,dl,el('h3','Command · exact argv'),command,el('h3','Output · first 32 KiB'),logs);
-              if (j.artifacts_truncated) root.append(el('p','Artifact listing is truncated.','muted'));
-              try { const data=await get(`logs/${encodeURIComponent(id)}`); if (generation!==detailGeneration) return;
-                logs.textContent=data.data || 'No output yet.'; if (!data.at_end) logs.append(document.createTextNode('\n… More output available with simq logs '+id));
-              } catch { logs.textContent='Log unavailable for this job.'; }
+              const actions=el('table'), actionRow=el('tr'); actionRow.append(controls(j)); actions.append(actionRow);
+              const metadata=$('job-metadata'); metadata.replaceChildren(actions,dl,el('h3','Command · exact argv'),command);
+              if (j.artifacts_truncated) metadata.append(el('p','Artifact listing is truncated.','muted'));
             }
             $('close').addEventListener('click',()=>$('detail').close());
-            $('detail').addEventListener('close',()=>{selected=null; ++detailGeneration;});
+            $('detail').addEventListener('close',()=>{selected=null; ++detailGeneration; stopTail();});
             for (const id of ['search','project','state']) $(id).addEventListener('input',render);
             async function refresh() {
               if (!document.hidden) {
@@ -176,7 +231,7 @@ enum DashboardAssets {
         "style.css": (
             "text/css",
             #"""
-            :root{color-scheme:dark;--bg:#101516;--panel:#192123;--line:#2b393b;--text:#e5efed;--muted:#9cadaa;--accent:#a7e2ba}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding:20px 4vw}.brand{font-weight:800;color:var(--accent)}.brand span{margin-left:16px;color:var(--text);font-size:17px}.badge,.eyebrow{font-size:11px;letter-spacing:.14em;color:var(--accent)}main{max-width:1500px;margin:auto;padding:32px 4vw}.heading{display:flex;justify-content:space-between;align-items:center;gap:20px}h1{font-size:clamp(26px,3vw,42px);font-weight:550;letter-spacing:-.04em;margin:5px 0}h2{font-size:19px;font-weight:550;margin-bottom:4px}h2 span{color:var(--muted);margin-left:8px}.muted,footer{color:var(--muted)}.overview{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0 16px}.metric{padding:18px 22px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.metric strong{display:block;font-size:30px;font-weight:500}.metric span{color:var(--muted)}.notice{color:var(--accent);white-space:pre-wrap}.filters{display:flex;gap:10px;margin:28px 0}input,select,button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}input{flex:1;min-width:120px}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}td button+button{margin-left:5px}#action-status{white-space:pre-wrap;color:var(--accent)}button:hover,button:focus-visible{border-color:var(--accent)}section{margin:28px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:9px}table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:var(--panel)}td,th{padding:13px 16px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}td:first-child{max-width:330px;white-space:normal}td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted);overflow-wrap:anywhere}.job-button{border:0;padding:0;background:none;text-align:left;color:var(--accent);font-weight:600}.pill{font-size:12px;color:#d6c9a3}.pill.succeeded,.pill.running{color:var(--accent)}.pill.failed,.pill.infra_failed,.pill.timed_out{color:#f0a59c}.empty{padding:25px;border:1px dashed var(--line);border-radius:8px;color:var(--muted)}#timeline{display:grid;gap:8px;max-height:300px;overflow:auto}.timeline-row{display:grid;grid-template-columns:160px 1fr;gap:16px;align-items:center}.timeline-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.track{height:15px;background:var(--panel);border-radius:3px;position:relative;overflow:hidden}.bar{height:100%;position:absolute;background:#629e78;min-width:2px;border-radius:3px}footer{font-size:12px;border-top:1px solid var(--line);padding:22px 0}dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:12px;width:min(850px,94vw);max-height:88vh;padding:24px}dialog::backdrop{background:#0009}.dialog-heading{display:flex;justify-content:space-between;align-items:center}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel);padding:15px;border-radius:6px;max-height:350px;overflow:auto;font-size:12px}dl{display:grid;grid-template-columns:150px 1fr;gap:8px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}#connection{color:var(--muted);font-size:12px}#connection.error{color:#f0a59c}@media(max-width:650px){.overview{grid-template-columns:repeat(2,1fr)}.filters,.heading{flex-wrap:wrap}.filters input{flex-basis:100%}.timeline-row{grid-template-columns:100px 1fr}dl{grid-template-columns:100px 1fr}}
+            :root{color-scheme:dark;--bg:#101516;--panel:#192123;--line:#2b393b;--text:#e5efed;--muted:#9cadaa;--accent:#a7e2ba}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding:20px 4vw}.brand{font-weight:800;color:var(--accent)}.brand span{margin-left:16px;color:var(--text);font-size:17px}.badge,.eyebrow{font-size:11px;letter-spacing:.14em;color:var(--accent)}main{max-width:1500px;margin:auto;padding:32px 4vw}.heading{display:flex;justify-content:space-between;align-items:center;gap:20px}h1{font-size:clamp(26px,3vw,42px);font-weight:550;letter-spacing:-.04em;margin:5px 0}h2{font-size:19px;font-weight:550;margin-bottom:4px}h2 span{color:var(--muted);margin-left:8px}.muted,footer{color:var(--muted)}.overview{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0 16px}.metric{padding:18px 22px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.metric strong{display:block;font-size:30px;font-weight:500}.metric span{color:var(--muted)}.notice{color:var(--accent);white-space:pre-wrap}.filters{display:flex;gap:10px;margin:28px 0}input,select,button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}input{flex:1;min-width:120px}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}td button+button{margin-left:5px}#action-status{white-space:pre-wrap;color:var(--accent)}button:hover,button:focus-visible{border-color:var(--accent)}section{margin:28px 0}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:9px}table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:var(--panel)}td,th{padding:13px 16px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}td:first-child{max-width:330px;white-space:normal}td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted);overflow-wrap:anywhere}.job-button{border:0;padding:0;background:none;text-align:left;color:var(--accent);font-weight:600}.pill{font-size:12px;color:#d6c9a3}.pill.succeeded,.pill.running{color:var(--accent)}.pill.failed,.pill.infra_failed,.pill.timed_out{color:#f0a59c}.empty{padding:25px;border:1px dashed var(--line);border-radius:8px;color:var(--muted)}#timeline{display:grid;gap:8px;max-height:300px;overflow:auto}.timeline-row{display:grid;grid-template-columns:minmax(160px,28%) minmax(0,1fr);gap:16px;align-items:center}.timeline-label{white-space:normal;overflow-wrap:anywhere;line-height:1.35}.track{height:15px;background:var(--panel);border-radius:3px;position:relative;overflow:hidden}.bar{height:100%;position:absolute;background:#629e78;min-width:2px;border-radius:3px}.log-toolbar{display:flex;gap:8px;flex-wrap:wrap}.live-log{min-height:140px;max-height:350px;overscroll-behavior:contain}footer{font-size:12px;border-top:1px solid var(--line);padding:22px 0}dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:12px;width:min(850px,94vw);max-height:88vh;padding:24px}dialog::backdrop{background:#0009}.dialog-heading{display:flex;justify-content:space-between;align-items:center}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel);padding:15px;border-radius:6px;max-height:350px;overflow:auto;font-size:12px}dl{display:grid;grid-template-columns:150px 1fr;gap:8px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}#connection{color:var(--muted);font-size:12px}#connection.error{color:#f0a59c}@media(max-width:650px){.overview{grid-template-columns:repeat(2,1fr)}.filters,.heading{flex-wrap:wrap}.filters input{flex-basis:100%}.timeline-row{grid-template-columns:140px minmax(0,1fr)}dl{grid-template-columns:140px minmax(0,1fr)}}
             """#
         ),
     ]

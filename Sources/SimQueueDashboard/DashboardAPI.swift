@@ -43,7 +43,8 @@ public struct DashboardAPI {
                 ))
         }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2, !parts[1].isEmpty, parts[1].utf8.count <= 128,
+        guard (parts.count == 2 || (parts.count == 3 && parts[0] == "logs" && parts[2] == "tail")), !parts[1].isEmpty,
+            parts[1].utf8.count <= 128,
             parts[1].utf8.allSatisfy({
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45
             })
@@ -55,9 +56,19 @@ public struct DashboardAPI {
             }
             return try encoder.encode(job)
         case "logs":
-            guard case .logs(let logs) = try observe(.logs(LogsParams(jobID: parts[1], offset: 0, maxBytes: 32_768)))
+            guard
+                case .logs(let logs) = try observe(
+                    .logs(
+                        LogsParams(
+                            jobID: parts[1], offset: 0, maxBytes: 32_768, tailBytes: parts.count == 3 ? 32_768 : nil)))
             else {
                 throw DashboardError.unavailable
+            }
+            if parts.count == 3, logs.tailBytes == nil {
+                throw ProtocolError(
+                    .invalidState,
+                    "Live tail requires an updated daemon. Upgrade and restart simqd using the planned upgrade procedure."
+                )
             }
             return try encoder.encode(logs)
         default: throw DashboardError.notFound

@@ -179,3 +179,17 @@ after sending the acknowledgement. With `false`, the native companion unloads it
 PID-matched standard login service after acknowledgement, preventing KeepAlive
 restart. Queued rows remain intact. A stale epoch or incomplete drain returns
 `invalid_state`. This method is not exposed through the browser dashboard.
+
+### Bounded log tails
+
+The `logs` method accepts optional `tail_bytes` (positive integer). When present,
+the daemon ignores the starting offset and reads a window at the current end of
+the job's combined log. The window is limited by `max_bytes` and the existing
+128 KiB response cap. A tail window skips partial UTF-8 characters at its start.
+Omitting `tail_bytes` preserves existing offset-based reads and CLI following.
+
+Responses include `tail_bytes` when the daemon honored the request, alongside
+actual `offset`, `next_offset`, `at_end`, and `job_finished`. Clients must check
+for that field before treating a response from an older daemon as a tail. Polling
+new windows naturally handles truncation; stop following only when both
+`job_finished` and `at_end` are true.

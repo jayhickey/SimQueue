@@ -6,10 +6,10 @@ const assert = require('node:assert/strict');
 const source = readFileSync('Sources/SimQueueDashboard/DashboardAssets.swift','utf8');
 const script = source.match(/"app\.js":\s*\(\s*"text\/javascript",\s*#"""\n([\s\S]*?)"""#/)[1];
 class Element {
-  constructor(tag) { this.tag=tag; this.children=[]; this.value=''; this.style={}; this.textContent=''; }
+  constructor(tag) { this.tag=tag; this.children=[]; this.value=''; this.style={}; this.textContent=''; this.listeners={}; this.scrollTop=0; this.scrollHeight=500; this.clientHeight=200; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children=children; }
-  addEventListener() {}
+  addEventListener(name,fn) { this.listeners[name]=fn; }
   setAttribute(name,value) { this[name]=value; }
 }
 const elements = new Map();
@@ -61,5 +61,57 @@ assert.equal(run("controls({id:'J-1',state:'succeeded'}).children.length"),0);
   await run("changeJob({id:'J-1'},'cancel')");
   assert.equal(posts,2,'ambiguous mutations are never automatically retried');
   assert.match(elements.get('action-status').textContent,/No confirmed response/);
+  // Exercise the real log polling functions with deferred responses and a fake clock.
+  let reads=0, resolveRead;
+  context.fetch=async () => { reads++; return {ok:true,json:async()=>({data:'first\n',offset:50,at_end:true,job_finished:false})}; };
+  context.document.hidden=false;
+  run("logView=createTail('J-live')");
+  await run('pollTail(logView)');
+  assert.equal(run('logView.output.textContent'),'first\n');
+  assert.equal(run('logView.output.scrollTop'),500,'live output follows the bottom');
+  run('pauseTail(logView)');
+  await run('pollTail(logView)');
+  assert.equal(reads,1,'paused output does not request more logs');
+  context.fetch=async()=>({ok:false,status:503});
+  run('logView.paused=false');
+  await run('pollTail(logView)');
+  assert.equal(run('logView.output.textContent'),'first\n','disconnect preserves displayed output');
+  assert.match(run('logView.status.textContent'),/stale/);
+  context.fetch=()=>{reads++; return new Promise(resolve=>{resolveRead=resolve;});};
+  const pending=run('pollTail(logView)');
+  const inFlightReads=reads;
+  await run('pollTail(logView)');
+  assert.equal(reads,inFlightReads,'tail requests cannot overlap');
+  run("stopTail(); logView=createTail('J-other')");
+  resolveRead({ok:true,json:async()=>({data:'stale job',job_finished:false,at_end:true})});
+  await pending;
+  assert.equal(run('logView.output.textContent'),'Loading output…','late responses cannot overwrite another job');
+  context.fetch=async()=>{ reads++; return {ok:true,json:async()=>({data:'done\n',offset:0,job_finished:true,at_end:true})}; };
+  await run('pollTail(logView)');
+  const finishedReads=reads;
+  await run('pollTail(logView)');
+  assert.equal(reads,finishedReads);
+  assert.equal(run('logView.finished'),true);
+  assert.equal(run('logView.pause.disabled'),true);
+  context.fetch=async()=>({ok:false,status:409,text:async()=>'Upgrade the daemon for live tail'});
+  run("stopTail(); logView=createTail('J-old')");
+  await run('pollTail(logView)');
+  assert.match(run('logView.status.textContent'),/Upgrade the daemon/);
+  assert.equal(run('logView.finished'),true,'unsupported daemons do not get polled forever');
+  run("stopTail(); logView=createTail('J-scroll')");
+  run('logView.output.listeners.scroll()');
+  assert.equal(run('logView.paused'),true,'scrolling up pauses the live view');
+  run('logView.paused=false');
+  context.document.hidden=true;
+  const hiddenReads=reads;
+  await run('pollTail(logView)');
+  assert.equal(reads,hiddenReads,'hidden tabs do not fetch log data');
+  context.document.hidden=false;
+  run("snapshot={status:{},active:[{id:'J-label',project:'example',kind:'a very long untruncated activity label',state:'running',started_at:1}],recent:[],generatedAt:2}");
+  elements.get('search').value=''; elements.get('project').value=''; elements.get('state').value='';
+  run('render()');
+  assert.equal(elements.get('timeline').children[0].children[0].title,'example · a very long untruncated activity label');
+  run('stopTail()');
+  console.log('Dashboard live-tail polling, pause, completion, stale-response and error checks passed');
   console.log('Dashboard job control checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

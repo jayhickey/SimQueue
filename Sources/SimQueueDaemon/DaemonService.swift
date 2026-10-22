@@ -764,22 +764,43 @@ public final class DaemonService: @unchecked Sendable {
         guard params.offset >= 0 else {
             throw ProtocolError(.invalidArgument, "offset must be >= 0")
         }
+        if let tailBytes = params.tailBytes, tailBytes <= 0 {
+            throw ProtocolError(.invalidArgument, "tail_bytes must be positive")
+        }
+        var offset = params.offset
         let limit = min(max(1, params.maxBytes ?? LogsParams.defaultMaxBytes), LogsParams.maxBytesLimit)
+        let groups = try store.liveResources(kinds: [.processGroup]).filter { $0.owner.jobID == job.id }
+        let cleanupPending = groups.contains { $0.state == .active }
+        let cleanupBlocked = groups.contains { $0.state == .orphaned }
+        let finished = job.state.isTerminal && (cleanupBlocked || (!executorBusy(job.id) && !cleanupPending))
         let path = artifacts.logPath(for: job)
         var bytes = Data()
         var size: Int64 = 0
         if let handle = FileHandle(forReadingAtPath: path) {
             defer { try? handle.close() }
             size = Int64(try handle.seekToEnd())
-            if params.offset < size {
-                try handle.seek(toOffset: UInt64(params.offset))
-                bytes = try handle.read(upToCount: limit) ?? Data()
+            if let tailBytes = params.tailBytes {
+                offset = max(0, size - Int64(min(tailBytes, limit)))
             }
+            if offset < size {
+                try handle.seek(toOffset: UInt64(offset))
+                bytes = try handle.read(upToCount: limit) ?? Data()
+                size = Int64(try handle.seekToEnd())
+            }
+        }
+        if params.tailBytes != nil, offset > 0 {
+            // A tail window can start inside a UTF-8 scalar. Skip its remaining bytes.
+            var leading = 0
+            while leading < min(3, bytes.count), bytes[bytes.startIndex + leading] & 0xC0 == 0x80 {
+                leading += 1
+            }
+            bytes.removeFirst(leading)
+            offset += Int64(leading)
         }
         // Don't split a multi-byte character: back off over trailing continuation bytes
         // when the chunk ends inside one (unless that would return nothing).
         var cut = bytes.count
-        if Int64(bytes.count) + params.offset < size || bytes.count == limit {
+        if Int64(bytes.count) + offset < size || bytes.count == limit {
             var lead = cut
             while lead > 0, lead > cut - 4, bytes[bytes.startIndex + lead - 1] & 0xC0 == 0x80 { lead -= 1 }
             if lead > 0 {
@@ -790,15 +811,12 @@ public final class DaemonService: @unchecked Sendable {
             if cut == 0 { cut = bytes.count }
         }
         let chunk = bytes.prefix(cut)
-        let next = params.offset + Int64(chunk.count)
-        let groups = try store.liveResources(kinds: [.processGroup]).filter { $0.owner.jobID == job.id }
-        let cleanupPending = groups.contains { $0.state == .active }
-        let cleanupBlocked = groups.contains { $0.state == .orphaned }
+        let next = offset + Int64(chunk.count)
         return LogsResult(
-            jobID: job.id, path: path, offset: params.offset, nextOffset: max(next, params.offset),
+            jobID: job.id, path: path, offset: offset, nextOffset: max(next, offset),
             data: String(decoding: chunk, as: UTF8.self),
-            jobFinished: job.state.isTerminal && (cleanupBlocked || (!executorBusy(job.id) && !cleanupPending)),
-            atEnd: next >= size)
+            jobFinished: finished,
+            atEnd: next >= size, tailBytes: params.tailBytes.map { min($0, limit) })
     }
 
     /// True while the executor still owns the job's command (it can still write output).

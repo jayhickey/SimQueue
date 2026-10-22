@@ -515,17 +515,21 @@ public struct LogsParams: Sendable, Equatable, Codable {
     public var jobID: String
     public var offset: Int64
     public var maxBytes: Int?
+    /// Read a bounded window at the current end; offset is ignored when present.
+    public var tailBytes: Int?
 
-    public init(jobID: String, offset: Int64 = 0, maxBytes: Int? = nil) {
+    public init(jobID: String, offset: Int64 = 0, maxBytes: Int? = nil, tailBytes: Int? = nil) {
         self.jobID = jobID
         self.offset = offset
         self.maxBytes = maxBytes
+        self.tailBytes = tailBytes
     }
 
     enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
         case offset
         case maxBytes = "max_bytes"
+        case tailBytes = "tail_bytes"
     }
 
     public init(from decoder: Decoder) throws {
@@ -533,6 +537,7 @@ public struct LogsParams: Sendable, Equatable, Codable {
         jobID = try container.decode(String.self, forKey: .jobID)
         offset = try container.decodeIfPresent(Int64.self, forKey: .offset) ?? 0
         maxBytes = try container.decodeIfPresent(Int.self, forKey: .maxBytes)
+        tailBytes = try container.decodeIfPresent(Int.self, forKey: .tailBytes)
     }
 }
 
@@ -1286,9 +1291,12 @@ public struct LogsResult: Sendable, Equatable, Codable {
     public var jobFinished: Bool
     /// True when `next_offset` is the current end of the file.
     public var atEnd: Bool
+    /// Present when the daemon honored a tail-window request.
+    public var tailBytes: Int?
 
     public init(
-        jobID: String, path: String, offset: Int64, nextOffset: Int64, data: String, jobFinished: Bool, atEnd: Bool
+        jobID: String, path: String, offset: Int64, nextOffset: Int64, data: String, jobFinished: Bool, atEnd: Bool,
+        tailBytes: Int? = nil
     ) {
         self.jobID = jobID
         self.path = path
@@ -1297,6 +1305,7 @@ public struct LogsResult: Sendable, Equatable, Codable {
         self.data = data
         self.jobFinished = jobFinished
         self.atEnd = atEnd
+        self.tailBytes = tailBytes
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1305,6 +1314,7 @@ public struct LogsResult: Sendable, Equatable, Codable {
         case nextOffset = "next_offset"
         case jobFinished = "job_finished"
         case atEnd = "at_end"
+        case tailBytes = "tail_bytes"
     }
 }
 
