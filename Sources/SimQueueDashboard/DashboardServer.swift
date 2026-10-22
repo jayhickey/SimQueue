@@ -13,6 +13,10 @@ import SimQueueProtocol
 /// through a reverse proxy. Job controls also require a matching HTTP(S) Origin.
 public final class DashboardServer {
     private let listener: Int32
+    private let lifecycle = NSCondition()
+    private var stopping = false
+    private var running = false
+    private var closed = false
     private let token = UUID().uuidString
     private let api: DashboardAPI
     private let authority: String
@@ -29,6 +33,12 @@ public final class DashboardServer {
         guard descriptor >= 0 else { throw DashboardError.unavailable }
         do {
             _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+            _ = fcntl(descriptor, F_SETFL, O_NONBLOCK)
+            var reuse: Int32 = 1
+            guard setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0
+            else {
+                throw DashboardError.unavailable
+            }
             var address = sockaddr_in()
             address.sin_family = sa_family_t(AF_INET)
             address.sin_port = port.bigEndian
@@ -54,13 +64,45 @@ public final class DashboardServer {
         api = DashboardAPI(socketPath: socketPath)
     }
 
-    deinit { _ = close(listener) }
+    deinit { stop() }
+
+    /// Stop only this HTTP listener and wait for its bounded current request.
+    /// Descriptor ownership is serialized so a later listener cannot be closed by an old worker.
+    public func stop() {
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
+        stopping = true
+        if !closed { _ = shutdown(listener, Int32(SHUT_RDWR)) }
+        while running { lifecycle.wait() }
+        if !closed { _ = close(listener); closed = true }
+    }
+
+    private var isStopping: Bool {
+        lifecycle.lock()
+        defer { lifecycle.unlock() }
+        return stopping
+    }
 
     public func run() throws {
-        while true {
+        lifecycle.lock()
+        guard !stopping && !running else { lifecycle.unlock(); return }
+        running = true
+        lifecycle.unlock()
+        defer {
+            lifecycle.lock()
+            running = false
+            if !closed { _ = close(listener); closed = true }
+            lifecycle.broadcast()
+            lifecycle.unlock()
+        }
+        while !isStopping {
+            guard ready(listener, events: Int16(POLLIN), until: ProcessInfo.processInfo.systemUptime + 0.2) else {
+                continue
+            }
             let peer = accept(listener, nil, nil)
             if peer < 0 {
-                if errno == EINTR { continue }
+                if isStopping { return }
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw DashboardError.unavailable
             }
             serve(peer)

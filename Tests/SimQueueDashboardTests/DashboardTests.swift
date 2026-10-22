@@ -7,7 +7,36 @@ import XCTest
 
 @testable import SimQueueDashboard
 
+private final class ServerWorker: @unchecked Sendable {
+    let server: DashboardServer
+    init(_ server: DashboardServer) { self.server = server }
+}
+
 final class DashboardTests: XCTestCase {
+    func testStoppedListenerReleasesPortAndCannotRestart() throws {
+        let server = try DashboardServer(socketPath: "/unused-test-socket")
+        let port = try XCTUnwrap(URLComponents(string: server.url)?.port)
+        server.stop()
+        server.stop()
+        XCTAssertNoThrow(try server.run())
+        let replacement = try DashboardServer(port: UInt16(port), socketPath: "/unused-test-socket")
+        replacement.stop()
+    }
+
+    func testStopUnblocksRunningListener() throws {
+        let worker = ServerWorker(try DashboardServer(socketPath: "/unused-test-socket"))
+        let finished = expectation(description: "Listener stopped")
+        let started = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            started.signal()
+            try? worker.server.run()
+            finished.fulfill()
+        }
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        worker.server.stop()
+        wait(for: [finished], timeout: 3)
+    }
+
     func testListenerDefaultsToLoopbackAndAllowsExplicitIPv4Bindings() throws {
         for address in [nil, "127.0.0.1", "0.0.0.0"] as [String?] {
             let server: DashboardServer
