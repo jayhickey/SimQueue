@@ -17,6 +17,7 @@ public struct SchedulerInput: Sendable {
     public var allowNewBoots: Bool
     public var lastAdmissionAt: Double?
     public var defaultHostTemplate: String?
+    public var templateCapacityKeys: [String: String]
     public var readySimsByTemplate: [String: Int]?
     public var storageFailure: String?
     public var cleanupJobIDs: Set<String>
@@ -36,7 +37,8 @@ public struct SchedulerInput: Sendable {
         cleanupJobIDs: Set<String> = [],
         storageFailure: String? = nil,
         readySimsByTemplate: [String: Int]? = nil,
-        defaultHostTemplate: String? = nil
+        defaultHostTemplate: String? = nil,
+        templateCapacityKeys: [String: String] = [:]
     ) {
         self.now = now
         self.queued = queued
@@ -53,6 +55,7 @@ public struct SchedulerInput: Sendable {
         self.storageFailure = storageFailure
         self.readySimsByTemplate = readySimsByTemplate
         self.defaultHostTemplate = defaultHostTemplate
+        self.templateCapacityKeys = templateCapacityKeys
     }
 }
 
@@ -223,7 +226,8 @@ public struct Scheduler: Sendable {
             }
 
             var allocationState = state
-            let templateKey = job.command?.template ?? input.defaultHostTemplate ?? ""
+            let label = job.command?.template ?? input.defaultHostTemplate ?? ""
+            let templateKey = input.templateCapacityKeys[label] ?? label
             if let readyByTemplate {
                 allocationState.idleRunning = min(state.idleRunning, readyByTemplate[templateKey, default: 0])
                 allocationState.idleParked = 0

@@ -493,7 +493,8 @@ public final class Engine {
             cleanupJobIDs: cleanupOwners,
             storageFailure: admissionStorageFailure,
             readySimsByTemplate: try readySimsByTemplate(),
-            defaultHostTemplate: defaultHostTemplate
+            defaultHostTemplate: defaultHostTemplate,
+            templateCapacityKeys: try templateCapacityKeys()
         )
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {

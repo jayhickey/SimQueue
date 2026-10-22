@@ -709,6 +709,32 @@ final class CLIEndToEndTests: XCTestCase {
         return match.map { String(explained.output[$0]).components(separatedBy: "\"")[3] } ?? "?"
     }
 
+    func testConfiguredOutputRootExportsPathsAndKeepsOldJobEvidence() throws {
+        try startDaemon(executor: "process")
+        let first = try simq(["run", "--sims", "0", "--project", "demo", "--", "/bin/echo", "old evidence"])
+        XCTAssertEqual(first.code, 0, first.output)
+        XCTAssertEqual(try simq(["drain", "--timeout", "10s"]).code, 0)
+        let outputRoot = stateDir + ".output"
+        defer { try? FileManager.default.removeItem(atPath: outputRoot) }
+        let data = try JSONSerialization.data(withJSONObject: ["job_output_root": outputRoot])
+        try data.write(to: URL(fileURLWithPath: stateDir + "/config.json"))
+        try startDaemon(executor: "process")
+        let second = try simq([
+            "run", "--sims", "0", "--project", "demo", "--", "/bin/sh", "-c",
+            #"echo "rd=$SIMQ_RUN_DIR"; echo "dd=$SIMQ_DERIVED_DATA"; echo "rb=$SIMQ_RESULT_BUNDLE"; echo "tmp=$SIMQ_TMPDIR"; echo "system_tmp=$TMPDIR""#,
+        ])
+        XCTAssertEqual(second.code, 0, second.output)
+        XCTAssertTrue(second.output.contains("rd=" + outputRoot + "/"), second.output)
+        for suffix in ["/DerivedData", "/Result.xcresult", "/tmp"] {
+            XCTAssertTrue(second.output.contains(suffix), second.output)
+        }
+        let old = try simq(["logs", "J-0001"])
+        XCTAssertTrue(old.output.contains("old evidence"), old.output)
+        let status = try simq(["status", "--json"])
+        XCTAssertTrue(status.output.contains(outputRoot), status.output)
+        XCTAssertTrue(status.output.contains("job_output_root"), status.output)
+    }
+
     func testRunStreamsOutputExportsPathsAndExitsWithTheCommandsStatus() throws {
         try startDaemon(executor: "process")
         let ran = try simq([

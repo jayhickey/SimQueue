@@ -960,9 +960,19 @@ extension Engine {
         var counts: [String: Int] = [:]
         for name in [""] + hostTemplates.keys.sorted() {
             let plan = try planForTemplate(name.isEmpty ? nil : name)
-            counts[name] = ready.filter { matches($0, plan: plan) }.count
+            counts[plan.sourceRef?.udid ?? plan.source ?? ""] = ready.filter { matches($0, plan: plan) }.count
         }
         return counts
+    }
+
+    public func templateCapacityKeys() throws -> [String: String] {
+        guard !hostTemplates.isEmpty else { return [:] }
+        var keys: [String: String] = [:]
+        for name in [""] + hostTemplates.keys.sorted() {
+            let plan = try planForTemplate(name.isEmpty ? nil : name)
+            keys[name] = plan.sourceRef?.udid ?? plan.source ?? ""
+        }
+        return keys
     }
 
     func nextDemandedTemplate() throws -> String? {
