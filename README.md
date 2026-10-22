@@ -150,9 +150,11 @@ tailing, with pause/resume and auto-follow controls. See the
 
 ### macOS menu bar app
 
-Install the CLI and daemon with `brew install jayhickey/tap/simqueue`. Add the
-optional app with `brew install --cask jayhickey/tap/simqueue-app`; the cask installs
-it into `/Applications` and pulls in the CLI formula if missing.
+Install the CLI and daemon with `brew install jayhickey/tap/simqueue`, or the app
+setup with `brew install --cask jayhickey/tap/simqueue-app`. The cask installs the
+app into `/Applications` (or the `--appdir` you pass) and links the app's own `simq`;
+it does not install or need the formula. Use one setup: see
+[switching between the formula and the cask](docs/INSTALL.md#switching-between-the-formula-and-the-cask).
 
 The optional [SimQueue.app](docs/MENU_BAR.md) adds a `square.stack` menu bar item.
 Click to open the dashboard; right-click for status, Launch at Login, and separate

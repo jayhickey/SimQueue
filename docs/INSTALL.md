@@ -23,18 +23,32 @@ simq init
 
 ### Optional menu bar app
 
-CLI-only users can keep using the formula above. To use `SimQueue.app` in
-`/Applications` instead, uninstall the formula and install the cask:
+CLI-only users can keep using the formula above. To use `SimQueue.app` instead,
+uninstall the formula and install the cask:
 
 ```sh
 brew uninstall simqueue   # only if the CLI-only formula is installed
 brew install --cask jayhickey/tap/simqueue-app
 ```
 
+The cask installs `SimQueue.app` into `/Applications`. To use `~/Applications`
+instead, pass `--appdir=~/Applications` to every `brew install`, `reinstall` and
+`upgrade` of the cask, or set it once in your shell profile (for example `~/.zprofile`):
+
+```sh
+export HOMEBREW_CASK_OPTS="--appdir=~/Applications"
+```
+
+Keep the same app folder on every reinstall and upgrade. The bundled daemon runs
+from inside the app, so moving the app changes its path. A reinstall with a different
+`--appdir` moves the app but can leave an empty `SimQueue.app` folder in the old
+location; remove that empty folder.
+
 The two setups conflict because both provide `simq`. The cask links
 `$(brew --prefix)/bin/simq` to `SimQueue.app/Contents/Helpers/simq`, next to the app's
-`simqd`, so Sparkle updates the CLI and daemon together. If the formula is still linked,
-Homebrew warns and skips the cask's link. `simq docs` finds the bundled documentation in
+`simqd`, so Sparkle updates the CLI and daemon together. Homebrew does not stop you
+from installing both; see [switching](#switching-between-the-formula-and-the-cask).
+`simq docs` finds the bundled documentation in
 `SimQueue.app/Contents/Resources/doc/simqueue`. Launch the app through
 Spotlight or Applications; Launch at Login is opt-in. Installation does not start
 or restart the daemon. The app can optionally manage its bundled daemon after an
@@ -43,6 +57,39 @@ App shutdown controls require daemon v0.1.4 or later; existing installations sho
 follow the planned upgrade procedure. App installation, upgrades, uninstall and
 migration from a manually copied app are covered in the [menu bar guide](MENU_BAR.md).
 Uninstalling the cask removes the app and its `simq` link but leaves queue data intact.
+
+### Switching between the formula and the cask
+
+Uninstall one setup before installing the other. If both end up installed, the
+link at `$(brew --prefix)/bin/simq` depends on the order:
+
+- **Cask, then formula:** `brew install jayhickey/tap/simqueue` succeeds and takes
+  over the cask's link (`Warning: Overwrote symlinks from the simqueue-app cask`).
+  Removing the formula then leaves no `simq` on `PATH`. To go back to the app's `simq`:
+
+  ```sh
+  brew uninstall simqueue
+  brew link --cask simqueue-app
+  ```
+
+- **Formula, then cask:** `brew install --cask jayhickey/tap/simqueue-app` succeeds
+  but skips its link (`It seems there is already a Binary at '/opt/homebrew/bin/simq'
+  from formula simqueue; skipping link.`). Removing the formula then leaves no `simq`
+  on `PATH` until you reinstall the cask with the same app folder:
+
+  ```sh
+  brew uninstall simqueue
+  brew reinstall --cask jayhickey/tap/simqueue-app
+  ```
+
+  A reinstall replaces the app. If its bundled daemon is registered, drain and stop
+  it first with `SimQueueApp --stop-bundled-daemon`, then register it again with
+  `SimQueueApp --register-daemon` or **Use Bundled Daemon…** (see the
+  [menu bar guide](MENU_BAR.md#use-the-daemon-bundled-with-the-app)).
+
+Check which setup owns `simq` with `readlink "$(brew --prefix)/bin/simq"`: the app
+setup points into `SimQueue.app/Contents/Helpers/simq`, the formula into
+`Cellar/simqueue`. Then run `simq --version` and `simq doctor`.
 
 The public formula downloads the tagged release archive without GitHub authentication. Homebrew is the supported installation path; changing Gatekeeper/quarantine settings is not part of installation.
 

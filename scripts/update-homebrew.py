@@ -59,8 +59,9 @@ def link_bundled_cli(cask):
     """Setup B: the app cask links the simq bundled in the app instead of needing the formula.
 
     Homebrew rejects `conflicts_with formula:` (only `cask:` is a valid key), which would make
-    the cask unloadable. The two setups share bin/simq instead: while the formula is linked,
-    Homebrew warns and skips the cask's link, and the caveat says to uninstall the formula.
+    the cask unloadable. The two setups share bin/simq instead: a linked formula makes the cask
+    skip its link, and a formula installed after the cask overwrites the cask's link. The tap's
+    caveats (edited in the tap, not here) say to uninstall the formula and how to relink.
     """
     if APP_LINE not in cask:
         raise ValueError("Missing cask app stanza")
