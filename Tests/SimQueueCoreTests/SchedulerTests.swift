@@ -32,6 +32,19 @@ final class SchedulerTests: XCTestCase {
 
     // MARK: - Memory and reserve
 
+    func testHostBootMemoryOverrideChangesColdAdmission() {
+        var config = testConfig()
+        let request = input(
+            queued: [makeJob("probe", seq: 1, resources: sims(1, memory: gib / 2))],
+            host: makeHost(availableGiB: 5))
+        config.simBootCostBytes = 4_380_000_000
+        XCTAssertEqual(Scheduler(config: config).plan(request).reasonCodes(for: "probe"), ["insufficient_memory"])
+        var pool: SimPoolConfig?
+        HostSizing(reserveBytes: config.reserveBytes, simBootCostBytes: gib).apply(
+            cpuCount: 10, totalMemoryBytes: 32 * gib, to: &config, pool: &pool)
+        XCTAssertEqual(Scheduler(config: config).plan(request).admittedIDs, ["probe"])
+    }
+
     func testReserveIsHeldBackInBytes() {
         let host = makeHost(availableGiB: 5)
         let tooBig = makeJob("J-1", seq: 1, resources: sims(0, memory: 3 * gib))

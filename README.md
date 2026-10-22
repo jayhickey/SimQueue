@@ -37,6 +37,15 @@ Replace the workspace and scheme with yours. The single quotes let the queued sh
 
 Without a hint, SimQueue uses 512 MiB minimum accounting per command, alongside host resource checks and gradual admission. This is a fallback, not a measured estimate of your workload. A realistic hint can help schedule memory-heavy builds before their usage appears in host readings.
 
+For slimmed simulators, you can tune the cold-boot memory allowance in the daemon config:
+
+```json
+{"host": {"sim_boot_cost_mib": 1024}}
+```
+
+Merge this into the existing config, then drain and restart the daemon as described in [installation](docs/INSTALL.md). The value is an integer in MiB per simulator that needs booting, including pool warmup. Omit it to keep the default 4,380,000,000 bytes (about 4.08 GiB); `0` disables this allowance. Already-running idle simulators do not incur it. Choose a value based on measurements of your template: this is a scheduling estimate, not a memory limit, and lowering it leaves less protection against memory pressure. Job estimates and the host reserve still apply.
+
+
 For a command that needs no simulator:
 
 ```sh
@@ -140,3 +149,5 @@ for installation, local builds and service behavior.
 
 Job output can use a dedicated [storage root](docs/JOB_STORAGE.md), and jobs can
 select [named host templates](docs/TEMPLATE.md#named-host-templates) from one shared pool.
+
+The default host memory reserve is 10% of total RAM with a 1 GiB minimum. For example, a 16 GiB Mac keeps about 1.6 GiB of reserve. `host.min_reserve_mib` overrides the minimum; `host.reserve_mib` sets a fixed reserve instead of the percentage. Existing explicit settings are preserved.
