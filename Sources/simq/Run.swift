@@ -140,7 +140,10 @@ struct Run: ParsableCommand {
         let signals = SignalForwarder(connection: connection)
         signals.install()
         if let signal = signals.received { throw ExitCode(128 + signal) }
-        guard case .submit(let response) = try call(connection, .submit(params)) else { throw failure(.protocolError) }
+        guard
+            case .submit(let response) = try call(
+                connection, .submit(params), reconnect: true, stopRetrying: { signals.received != nil })
+        else { throw failure(.protocolError) }
         let jobID = response.job.id
         printError("queued \(jobID)")
         #if DEBUG
@@ -159,7 +162,7 @@ struct Run: ParsableCommand {
         do {
             _ = try call(
                 connection, .wait(WaitParams(jobID: jobID, stream: false, untilAdmitted: true)), timeout: 0,
-                deadline: deadline, reconnectFor: 30)
+                deadline: deadline, reconnect: true, stopRetrying: { signals.received != nil })
         } catch let exit as ExitCode where exit.rawValue == SimQExitCode.waitTimeout.rawValue {
             _ = try? call(connection, .cancel(CancelParams(jobID: jobID)))
             printError("\(jobID) didn't start within --wait-timeout; canceled")
@@ -172,7 +175,8 @@ struct Run: ParsableCommand {
         while true {
             guard
                 case .logs(let chunk) = try call(
-                    connection, .logs(LogsParams(jobID: jobID, offset: offset)), reconnectFor: 30)
+                    connection, .logs(LogsParams(jobID: jobID, offset: offset)), reconnect: true,
+                    stopRetrying: { signals.received != nil })
             else {
                 throw failure(.protocolError)
             }
@@ -185,7 +189,10 @@ struct Run: ParsableCommand {
         splitter.finish()
 
         // 3. Exit with the command's status.
-        guard case .job(let job) = try call(connection, .explain(JobRef(jobID: jobID)), reconnectFor: 30) else {
+        guard
+            case .job(let job) = try call(
+                connection, .explain(JobRef(jobID: jobID)), reconnect: true, stopRetrying: { signals.received != nil })
+        else {
             throw failure(.protocolError)
         }
         if let resultFile { try Self.writeResult(job, to: resultFile) }

@@ -24,6 +24,7 @@ final class MemoryHintCLITests: XCTestCase {
         process.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         environment["SIMQ_NO_AUTOSTART"] = "1"
+        environment["SIMQ_RECONNECT_SECONDS"] = "0"
         environment["SIMQ_STATE_DIR"] = testScratchRoot() + "/sqmh-" + UUID().uuidString.prefix(8)
         process.environment = environment
         let pipe = Pipe()
