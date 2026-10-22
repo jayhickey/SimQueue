@@ -78,6 +78,22 @@ jobs:
           "$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" run --foreground --backend fake --probe fake \
             --log-to-state --exit-after-startup --state-dir "$SIMQ_CI_ROOT/bundled-smoke"
           test -s "$SIMQ_CI_ROOT/bundled-smoke/simqd.log"
+      - name: Build and test the read-only Sparkle feed probe
+        run: |
+          set -euo pipefail
+          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
+          mkdir -p "$RUNNER_TEMP/feed-probe" "$RUNNER_TEMP/feed-fixture"
+          /usr/bin/swiftc -j 2 -parse-as-library -F "$BIN" -framework Sparkle \
+            -Xlinker -rpath -Xlinker @executable_path Tests/Release/feed_probe.swift \
+            -o "$RUNNER_TEMP/feed-probe/feed-probe"
+          ditto "$BIN/Sparkle.framework" "$RUNNER_TEMP/feed-probe/Sparkle.framework"
+          python3 Tests/Release/feed_probe_test.py "$RUNNER_TEMP/feed-probe/feed-probe" "$RUNNER_TEMP/app/SimQueue.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sparkle-feed-probe-macos-arm64
+          path: ${{ runner.temp }}/feed-probe/
+          if-no-files-found: error
+          retention-days: 7
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
       - name: Notarization release control flow (fake tools)
