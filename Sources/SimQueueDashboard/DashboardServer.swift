@@ -9,7 +9,7 @@ import SimQueueProtocol
     import Darwin
 #endif
 
-/// Foreground, loopback-only server. A private capability URL grants access, including
+/// Foreground server, bound to loopback by default. A private capability URL grants access, including
 /// through a reverse proxy. Job controls also require a matching HTTP(S) Origin.
 public final class DashboardServer {
     private let listener: Int32
@@ -18,7 +18,9 @@ public final class DashboardServer {
     private let authority: String
     public var url: String { "http://\(authority)/\(token)/" }
 
-    public init(port: UInt16 = 0, socketPath: String) throws {
+    public init(port: UInt16 = 0, bindAddress: String = "127.0.0.1", socketPath: String) throws {
+        var bindIP = in_addr()
+        guard inet_pton(AF_INET, bindAddress, &bindIP) == 1 else { throw DashboardError.invalidBindAddress }
         #if canImport(Glibc)
             let descriptor = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #else
@@ -30,7 +32,7 @@ public final class DashboardServer {
             var address = sockaddr_in()
             address.sin_family = sa_family_t(AF_INET)
             address.sin_port = port.bigEndian
-            address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+            address.sin_addr = bindIP
             let bound = withUnsafePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
@@ -42,7 +44,8 @@ public final class DashboardServer {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &size) }
             }
             guard named == 0 else { throw DashboardError.unavailable }
-            authority = "127.0.0.1:\(UInt16(bigEndian: address.sin_port))"
+            let browserHost = bindAddress == "0.0.0.0" ? "127.0.0.1" : bindAddress
+            authority = "\(browserHost):\(UInt16(bigEndian: address.sin_port))"
         } catch {
             _ = close(descriptor)
             throw error

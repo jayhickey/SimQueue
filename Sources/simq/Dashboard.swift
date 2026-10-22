@@ -9,11 +9,15 @@ struct Dashboard: ParsableCommand {
         abstract: "Open a local queue dashboard (Ctrl-C to stop).")
 
     @OptionGroup var connection: Connection
-    @Option(help: "Loopback port; 0 chooses an available port.") var port: UInt16 = 0
+    @Option(help: "Listen port; 0 chooses an available port.") var port: UInt16 = 0
+    @Option(
+        name: .customLong("bind"),
+        help: "IPv4 address to listen on; defaults to localhost. Use a LAN or Tailscale IP for a remote proxy.")
+    var bindAddress = "127.0.0.1"
     @Flag(help: "Print the URL without opening a browser.") var noOpen = false
 
     func run() throws {
-        let server = try DashboardServer(port: port, socketPath: connection.paths.socketPath)
+        let server = try DashboardServer(port: port, bindAddress: bindAddress, socketPath: connection.paths.socketPath)
         FileHandle.standardOutput.write(Data("SimQueue dashboard: \(server.url)\n".utf8))
         FileHandle.standardOutput.write(
             Data("Ctrl-C to stop. Keep this URL private: it grants job control and access to commands and logs.\n".utf8)

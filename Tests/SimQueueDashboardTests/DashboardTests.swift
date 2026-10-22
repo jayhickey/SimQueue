@@ -8,6 +8,32 @@ import XCTest
 @testable import SimQueueDashboard
 
 final class DashboardTests: XCTestCase {
+    func testListenerDefaultsToLoopbackAndAllowsExplicitIPv4Bindings() throws {
+        for address in [nil, "127.0.0.1", "0.0.0.0"] as [String?] {
+            let server: DashboardServer
+            if let address {
+                server = try DashboardServer(bindAddress: address, socketPath: "/unused-test-socket")
+            } else {
+                server = try DashboardServer(socketPath: "/unused-test-socket")
+            }
+            let url = try XCTUnwrap(URLComponents(string: server.url))
+            XCTAssertEqual(url.host, "127.0.0.1")
+            XCTAssertGreaterThan(try XCTUnwrap(url.port), 0)
+        }
+    }
+
+    func testUnavailableAddressDoesNotFallBackToLoopbackOrWildcard() {
+        XCTAssertThrowsError(try DashboardServer(bindAddress: "192.0.2.123", socketPath: "/unused-test-socket"))
+    }
+
+    func testInvalidBindingsNeverFallBackToWildcard() {
+        for address in ["", "localhost", "999.0.0.1", "127.0.0.1:8765", "::1", "https://example.com"] {
+            XCTAssertThrowsError(try DashboardServer(bindAddress: address, socketPath: "/unused-test-socket")) {
+                guard case DashboardError.invalidBindAddress = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
+    }
+
     func testSnapshotSeparatesActiveFromBoundedHistory() throws {
         var requests: [RequestParams] = []
         let status = try JSONDecoder().decode(

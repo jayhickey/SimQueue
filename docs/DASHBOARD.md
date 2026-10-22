@@ -75,7 +75,7 @@ Mutations are sent once. A lost response is reported as unconfirmed; inspect the
 refreshed job state before retrying. Priority changes require the updated daemon;
 upgrade/restart the daemon along with the CLI.
 
-The listener is loopback-only with a random per-session capability in its URL,
+The listener defaults to loopback with a random per-session capability in its URL,
 one valid Host header, no CORS, no external assets, and narrow API routes. Mutations require POST, an HTTP(S) Origin matching the request Host, and an
 explicit action header; cross-origin requests have no CORS permission. Keep
 the URL private: it permits controlling jobs and viewing commands and logs, which may contain secrets.
@@ -125,3 +125,26 @@ responses, logs, actions or app shell are stored in an offline cache. An offline
 launch shows a connection message; there is no offline job control, background
 sync or push notification support. Tailscale must be connected for remote access.
 Restarting the dashboard changes its private URL, so reinstall from the new link.
+
+## Reverse proxy on another machine
+
+To let a separate proxy machine reach the dashboard, bind to this Mac’s numeric
+IPv4 LAN or Tailscale address instead of the default `127.0.0.1`:
+
+```sh
+simq dashboard --bind 100.101.102.103 --port 8765 --no-open
+```
+
+Replace that example with an address actually assigned to the dashboard Mac.
+Use its Tailscale IP for private tailnet access, or its LAN IP for local-network
+access. `--bind 0.0.0.0` listens on every IPv4 interface; the printed localhost URL
+is for the hosting Mac, so use its reachable address from another machine.
+Hostnames and IPv6 bind addresses are not supported. An invalid or unavailable
+address fails startup rather than falling back to another interface.
+
+Point the remote proxy at `http://<dashboard-ip>:8765`, preserve the browser’s
+Host header, and forward the complete private path (including the trailing slash).
+For Caddy, `reverse_proxy <dashboard-ip>:8765` preserves Host by default for an HTTP
+upstream. Terminate HTTPS at the proxy. Restrict access to trusted devices: the URL
+grants job controls and access to logs. The app’s own dashboard and existing local
+Tailscale Serve setups keep their loopback default.
