@@ -54,10 +54,9 @@ public struct SystemResourceProbe: ResourceProbe {
                 guard host_page_size(Self.hostPort, &pageSize) == KERN_SUCCESS else {
                     throw ProbeError.reading("host_page_size")
                 }
-                // speculative_count is included in free_count (vm_statistics.h).
-                // Keep reclaimable estimates conservative rather than double count
-                // overlapping purgeable/speculative categories.
-                available = (UInt64(stats.free_count) + UInt64(stats.inactive_count)) * UInt64(pageSize)
+                available = Self.availableBytes(
+                    freeIncludingSpeculative: UInt64(stats.free_count), inactive: UInt64(stats.inactive_count),
+                    purgeable: UInt64(stats.purgeable_count), pageSize: UInt64(pageSize))
                 var swap = xsw_usage(); var swapSize = MemoryLayout<xsw_usage>.size
                 guard sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 else {
                     throw ProbeError.reading("vm.swapusage")
@@ -96,7 +95,20 @@ public struct SystemResourceProbe: ResourceProbe {
         return (available, swapUsed, pressure)
     }
 
-    /// Free + inactive + purgeable + speculative pages from `vm_stat` output.
+    /// Memory macOS hands back on demand without compressing or swapping anyone's working
+    /// set: free (which already includes speculative, per vm_statistics.h) + inactive +
+    /// purgeable. `memory_pressure`'s "free percentage" (kern.memorystatus_level) is wider:
+    /// it is active + inactive + free + speculative over total RAM, so it also counts pages
+    /// processes are actively using. Admission uses the reclaimable subset here and lets the
+    /// kernel pressure level (warn/critical) and swap growth back it off.
+    public static func availableBytes(
+        freeIncludingSpeculative free: UInt64, inactive: UInt64, purgeable: UInt64, pageSize: UInt64
+    ) -> UInt64 {
+        (free + inactive + purgeable) * pageSize
+    }
+
+    /// Free + speculative + inactive + purgeable pages from `vm_stat` output (`Pages free`
+    /// there excludes speculative pages, so they are added back).
     public static func availableBytes(vmStat: String) -> UInt64? {
         var pageSize: UInt64?
         var pages: [String: UInt64] = [:]

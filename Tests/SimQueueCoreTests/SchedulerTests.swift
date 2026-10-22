@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+import SimQueueHost
 import XCTest
 
 @testable import SimQueueCore
@@ -419,7 +420,9 @@ final class SchedulerTests: XCTestCase {
             makeJob("J-sim", seq: 2, priority: 50, retryable: true, resources: sims(1, perSim: 0)),
             makeJob("J-small", seq: 3, priority: 10, resources: sims(0, memory: 100 * mib)),
         ]
-        let plan = scheduler.plan(input(queued: queued, host: host, pool: PoolSnapshot(idleRunning: 1)))
+        // 3 GiB headroom + 1 GiB from the running job covers J-high's 4 GiB, so it holds.
+        let plan = scheduler.plan(
+            input(queued: queued, active: [settledActive(memory: gib)], host: host, pool: PoolSnapshot(idleRunning: 1)))
         XCTAssertEqual(plan.reservedFor, "J-high")
         XCTAssertEqual(plan.warmupHint, 1)
         XCTAssertEqual(plan.reasonCodes(for: "J-sim"), ["insufficient_memory"])
@@ -467,7 +470,8 @@ final class SchedulerTests: XCTestCase {
             makeJob("small", seq: 2, resources: sims(0, memory: gib)),
         ]
         for _ in 0..<5 {
-            let held = scheduler.plan(input(queued: queued, host: makeHost(availableGiB: 10)))
+            let held = scheduler.plan(
+                input(queued: queued, active: [settledActive(memory: gib)], host: makeHost(availableGiB: 10)))
             XCTAssertEqual(held.reservedFor, "large")
             XCTAssertTrue(held.admittedIDs.isEmpty)
         }
@@ -593,5 +597,55 @@ final class SchedulerTests: XCTestCase {
             ["insufficient_memory"])
         active.admittedAt = -120
         XCTAssertEqual(scheduler.plan(input(queued: [job], active: [active], host: host)).admittedIDs, ["J-1"])
+    }
+
+    // MARK: - 2:20 PM Mac mini regression
+
+    private func settledActive(_ id: String = "A-1", memory: UInt64) -> Job {
+        var job = makeJob(id, seq: 0, project: "other", resources: sims(0, memory: memory))
+        job.state = .running
+        job.admittedAt = -600
+        return job
+    }
+
+    /// 2026-10-22 2:20 PM on the 32 GiB Mac mini: memory_pressure said 45% free, load 3.4,
+    /// one job running and ~30 queued, each "needs 0.5 GiB but only 3.2 GiB available with
+    /// 3.2 GiB reserve". A 6 GiB waiter at the head held all headroom it could never use.
+    func testTwoTwentyPMNumbersAdmitSmallJobsBehindAnUnfittableWaiter() {
+        let vmStat = """
+            Mach Virtual Memory Statistics: (page size of 16384 bytes)
+            Pages free:                               107000.
+            Pages active:                             480000.
+            Pages inactive:                           392000.
+            Pages speculative:                         18000.
+            Pages purgeable:                            6000.
+            """
+        let available = SystemResourceProbe.availableBytes(vmStat: vmStat)
+        XCTAssertEqual(available, (107_000 + 392_000 + 18_000 + 6_000) * 16_384)  // ~7.98 GiB
+        XCTAssertEqual(
+            SystemResourceProbe.availableBytes(
+                freeIncludingSpeculative: 125_000, inactive: 392_000, purgeable: 6_000, pageSize: 16_384),
+            available, "native host_statistics64 and vm_stat paths agree")
+
+        var config = testConfig(maxRunningPerProject: 0)
+        config.minimumJobMemoryBytes = 512 * mib
+        var pool: SimPoolConfig?
+        HostSizing().apply(cpuCount: 10, totalMemoryBytes: 32 * gib, to: &config, pool: &pool)
+        XCTAssertEqual(config.reserveBytes, 3_435_973_836)  // 3.2 GiB
+        var host = makeHost(load1: 3.4, load5: 3.4)
+        host.availableMemoryBytes = available ?? 0
+        let queued =
+            [makeJob("J-0915", seq: 1, priority: 70, project: "quotify", resources: sims(0, memory: 6 * gib))]
+            + (2...5).map { makeJob("J-\($0)", seq: Int64($0), project: "quotify", resources: sims(0)) }
+        let plan = Scheduler(config: config).plan(
+            input(queued: queued, active: [settledActive("J-0906", memory: gib / 2)], host: host,
+                pool: PoolSnapshot(idleRunning: 4)))
+        XCTAssertEqual(plan.reasonCodes(for: "J-0915"), ["insufficient_memory"])
+        XCTAssertEqual(plan.admittedIDs, ["J-2", "J-3", "J-4", "J-5"])
+
+        // Real pressure still backs admission off with the same numbers.
+        host.memoryPressure = .warn
+        XCTAssertTrue(
+            Scheduler(config: config).plan(input(queued: queued, host: host)).admissions.isEmpty)
     }
 }
