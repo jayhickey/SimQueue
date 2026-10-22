@@ -75,11 +75,13 @@ jobs:
           codesign --verify --strict "$RUNNER_TEMP/app/SimQueue.app"
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
+      - name: Notarization release control flow (fake tools)
+        run: python3 Tests/Release/notarization_test.py
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
-          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh
+          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh
       - name: Preserve test log
         if: always()
         uses: actions/upload-artifact@v4
