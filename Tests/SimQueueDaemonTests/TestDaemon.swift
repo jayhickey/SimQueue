@@ -59,7 +59,8 @@ final class TestDaemon: @unchecked Sendable {
         )
         (engine, _, _) = try Engine.start(
             store: store, environment: environment, config: config.scheduler, reliability: config.reliability,
-            timeouts: config.timeouts, watchdog: config.watchdog, ownerID: "test", pid: 1)
+            timeouts: config.timeouts, watchdog: config.watchdog, includeArtifactRetention: false,
+            ownerID: "test", pid: 1)
         let info = DaemonInfo(
             version: SimQueueVersion.current, pid: 1, epoch: engine.epoch, backend: "fake", startedAt: 0,
             statePath: paths.databasePath, socketPath: paths.socketPath,

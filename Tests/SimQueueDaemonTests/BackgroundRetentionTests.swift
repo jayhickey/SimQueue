@@ -12,7 +12,7 @@ import XCTest
 final class BackgroundRetentionTests: XCTestCase {
     /// Block an actual filesystem boundary, rather than delaying the daemon's clock.
     private final class BlockingFileSystem: FileSystem, @unchecked Sendable {
-        enum Operation: Equatable { case size, remove }
+        enum Operation: Equatable { case children, exists, size, remove, empty }
         let base = FakeFileSystem()
         let entered = DispatchSemaphore(value: 0)
         let resume = DispatchSemaphore(value: 0)
@@ -34,8 +34,14 @@ final class BackgroundRetentionTests: XCTestCase {
                 _ = resume.wait(timeout: .now() + 15)
             }
         }
-        func fileExists(_ path: String) -> Bool { base.fileExists(path) }
-        func children(of path: String) throws -> [String] { try base.children(of: path) }
+        func fileExists(_ path: String) -> Bool {
+            pause(.exists, path: path)
+            return base.fileExists(path)
+        }
+        func children(of path: String) throws -> [String] {
+            pause(.children, path: path)
+            return try base.children(of: path)
+        }
         func createDirectory(_ path: String) throws { try base.createDirectory(path) }
         func sizeOfItem(_ path: String) -> UInt64? {
             pause(.size, path: path)
@@ -44,6 +50,10 @@ final class BackgroundRetentionTests: XCTestCase {
         func removeItem(_ path: String) throws {
             pause(.remove, path: path)
             try base.removeItem(path)
+        }
+        func removeEmptyDirectory(_ path: String) throws -> Bool {
+            pause(.empty, path: path)
+            return try base.removeEmptyDirectory(path)
         }
     }
 
@@ -66,6 +76,96 @@ final class BackgroundRetentionTests: XCTestCase {
         let job = try daemon.submit(params).job
         XCTAssertEqual(try daemon.wait(job.id).state, .succeeded)
         return job
+    }
+
+    func testStartupDefersBlockedInventoryAndKeepsStatusTicksAndAdmissionResponsive() throws {
+        let fs = BlockingFileSystem()
+        let state = testScratchRoot() + "/retention-" + UUID().uuidString.prefix(8)
+        fs.block(.children, path: state + "/jobs")
+        let started = ProcessInfo.processInfo.systemUptime
+        let daemon = try TestDaemon(config: config(), stateDir: state, fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 3, "startup must not walk artifacts")
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        let before = try XCTUnwrap(status(daemon).lastTickAt)
+        let submitted = ProcessInfo.processInfo.systemUptime
+        _ = try endedJob(daemon)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - submitted, 1)
+        XCTAssertGreaterThan(try XCTUnwrap(status(daemon).lastTickAt), before)
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+    }
+
+    func testDrainingDoesNotStartAnotherInventoryWorker() throws {
+        let fs = BlockingFileSystem()
+        let daemon = try TestDaemon(config: config(), fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        daemon.stop()
+        _ = daemon.service.handle(Request(params: .drain))
+        fs.block(.children, path: daemon.paths.jobsRoot)
+        Thread.sleep(forTimeInterval: 0.06)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 0.1), .timedOut)
+        daemon.service.waitForBackgroundWork()
+    }
+
+    func testBlockedExistenceInventoryUsesFreshPinsAndProtectsActiveJobs() throws {
+        let fs = BlockingFileSystem()
+        let daemon = try TestDaemon(config: config(), fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        let ended = try endedJob(daemon)
+        let active = try daemon.submit(
+            SubmitParams(
+                project: "retention", submitter: "test", minSims: 0,
+                payloadJSON: #"{"fake":{"run_seconds":60}}"#)
+        ).job
+        let directory = daemon.paths.jobsRoot + "/2020-01-01/" + ended.id
+        let activeDirectory = daemon.paths.jobsRoot + "/2020-01-01/" + active.id
+        fs.base.sizes[directory] = 100
+        fs.base.sizes[activeDirectory] = 100
+        fs.block(.exists, path: directory + "/DerivedData")
+        try fs.createDirectory(directory + "/DerivedData")
+        try fs.createDirectory(activeDirectory)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        try daemon.side.audit(
+            Engine.artifactKeepAuditType, jobID: ended.id, detail: "--keep", now: Date().timeIntervalSince1970)
+        _ = try endedJob(daemon)
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertTrue(fs.fileExists(directory + "/DerivedData"), "fresh pin applies after disk discovery")
+        XCTAssertTrue(fs.fileExists(activeDirectory), "active directories are not budget candidates")
+        XCTAssertTrue(fs.base.removed.isEmpty)
+    }
+
+    func testEmptyDayRemovalIsUnlockedAndCannotDeleteANewJobInThatDay() throws {
+        let fs = BlockingFileSystem()
+        let daemon = try TestDaemon(config: config(), fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        let ended = try endedJob(daemon)
+        let day = daemon.paths.jobsRoot + "/2020-01-01"
+        let directory = day + "/" + ended.id
+        fs.base.sizes[directory] = 100
+        fs.block(.empty, path: day)
+        try fs.createDirectory(directory)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        XCTAssertFalse(fs.fileExists(directory))
+        let submitted = ProcessInfo.processInfo.systemUptime
+        let active = try daemon.submit(
+            SubmitParams(
+                project: "retention", submitter: "test", minSims: 0,
+                payloadJSON: #"{"fake":{"run_seconds":60}}"#)
+        ).job
+        let newDirectory = day + "/" + active.id
+        try fs.createDirectory(newDirectory)
+        _ = try status(daemon)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - submitted, 1)
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertTrue(fs.fileExists(newDirectory), "atomic empty-only removal must keep a newly populated day")
+        XCTAssertFalse(fs.base.removed.contains(day))
+        XCTAssertFalse(try daemon.side.auditEntries().contains { $0.detail == "removed empty \(day)" })
     }
 
     func testSlowSizingDoesNotBlockTicksOrNewJobsAndRechecksNewPins() throws {

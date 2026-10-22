@@ -112,6 +112,17 @@ public struct RootedFileSystem: FileSystem {
         try Self.removeTree(path)
     }
 
+    public func removeEmptyDirectory(_ path: String) throws -> Bool {
+        try check(path, allowRoot: false)
+        guard Self.isRealDirectory(path) else { return false }
+        if rmdir(path) == 0 { return true }
+        let failure = errno
+        if failure == ENOTEMPTY || failure == EEXIST || failure == ENOENT || failure == ENOTDIR {
+            return false
+        }
+        throw PathSafetyError.system(call: "rmdir", path: path, errno: failure)
+    }
+
     /// Removes `path` and everything under it without following any symlink: a link is
     /// unlinked, a real directory is emptied then removed. Missing is fine.
     public static func removeTree(_ path: String) throws {

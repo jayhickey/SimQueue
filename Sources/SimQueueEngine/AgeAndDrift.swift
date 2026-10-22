@@ -99,19 +99,28 @@ extension Engine {
         return (removed, failures)
     }
 
-    /// Date directories left empty by removals go too.
-    public func removeEmptyDayDirectories(after removed: [String], now: Double) throws {
-        guard !removed.isEmpty else { return }
-        for root in environment.allArtifactsRoots {
-            let fileSystem = environment.fileSystem
-            for day in try fileSystem.children(of: root) where Self.dayStart(day.split(separator: "/").last) != nil {
-                guard try fileSystem.children(of: day).isEmpty else { continue }
-                if (try? fileSystem.removeItem(day)) != nil, !fileSystem.fileExists(day) {
-                    try store.audit(Self.artifactRemovedAuditType, detail: "removed empty \(day)", now: now)
-                }
+    /// Atomic empty-only removal stays safe if a new job creates files concurrently.
+    public static func removeEmptyArtifactDays(roots: [String], fileSystem: any FileSystem) throws -> [String] {
+        var removed: [String] = []
+        for root in roots {
+            for day in try fileSystem.children(of: root) {
+                guard let name = day.split(separator: "/").last, Self.dayStart(name) != nil,
+                    day == "\(root)/\(name)"
+                else { continue }
+                if try fileSystem.removeEmptyDirectory(day) { removed.append(day) }
             }
         }
+        return removed
+    }
 
+    /// Single-threaded engine callers; the daemon runs the disk half outside its lock.
+    public func removeEmptyDayDirectories(after removed: [String], now: Double) throws {
+        guard !removed.isEmpty else { return }
+        for day in try Self.removeEmptyArtifactDays(
+            roots: environment.allArtifactsRoots, fileSystem: environment.fileSystem)
+        {
+            try store.audit(Self.artifactRemovedAuditType, detail: "removed empty \(day)", now: now)
+        }
     }
 
     /// Audit type that pins a job's artifacts (`simq submit --keep`).
@@ -123,8 +132,40 @@ extension Engine {
         return false
     }
 
-    /// `simq gc`'s store half (under the service lock): the age rules' candidates and the
-    /// budget's view of every job directory. No sizes are read here.
+    /// Immutable filesystem discovery, gathered without the daemon state lock.
+    public struct GCInventory: Sendable {
+        public struct Directory: Sendable {
+            public let root: String
+            public let path: String
+            public let jobID: String
+            public let dayStart: Double
+            public let hasDerivedData: Bool
+        }
+        public let roots: [String]
+        public let directories: [Directory]
+    }
+
+    public static func gcInventory(roots: [String], fileSystem: any FileSystem) throws -> GCInventory {
+        var directories: [GCInventory.Directory] = []
+        for root in roots {
+            for day in try fileSystem.children(of: root) {
+                guard let name = day.split(separator: "/").last, let dayStart = Self.dayStart(name),
+                    day == "\(root)/\(name)"
+                else { continue }
+                for path in try fileSystem.children(of: day) {
+                    guard let id = path.split(separator: "/").last.map(String.init), path == "\(day)/\(id)"
+                    else { continue }
+                    directories.append(
+                        .init(
+                            root: root, path: path, jobID: id, dayStart: dayStart,
+                            hasDerivedData: fileSystem.fileExists(path + "/DerivedData")))
+                }
+            }
+        }
+        return GCInventory(roots: roots, directories: directories)
+    }
+
+    /// The store half consumes an immutable inventory: no directory, existence or size I/O.
     public struct GCPlan: Sendable {
         public var aged: [(path: String, reason: String)]
         public var entries: [BudgetEntry]
@@ -132,22 +173,31 @@ extension Engine {
     }
 
     public func gcPlan(now: Double) throws -> GCPlan {
-        let aged = try ageCandidates(now: now)
-        let budget = reliability.ageRules.artifactRetention.budgetBytes
-        guard !environment.allArtifactsRoots.isEmpty, budget != nil else {
-            return GCPlan(aged: aged, entries: [], budget: budget)
+        try gcPlan(
+            now: now,
+            inventory: Self.gcInventory(
+                roots: environment.allArtifactsRoots, fileSystem: environment.fileSystem))
+    }
+
+    public func gcPlan(now: Double, inventory: GCInventory) throws -> GCPlan {
+        let aged = try inventory.roots.flatMap { root in
+            try ageCandidates(directories: inventory.directories.filter { $0.root == root }, now: now)
         }
-        return GCPlan(
-            aged: aged,
-            entries: try environment.allArtifactsRoots.flatMap {
-                try budgetEntries(root: $0, already: aged.map(\.path))
-            }, budget: budget)
+        let budget = reliability.ageRules.artifactRetention.budgetBytes
+        var entries: [BudgetEntry] = []
+        if budget != nil {
+            entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path))
+        }
+        return GCPlan(aged: aged, entries: entries, budget: budget)
     }
 
     /// `simq gc`'s disk half (no lock needed): sizes, the budget's picks, and each
     /// candidate's size.
     public func gcCandidates(_ plan: GCPlan) -> [GarbageCollection.Candidate] {
-        let fileSystem = environment.fileSystem
+        Self.gcCandidates(plan, fileSystem: environment.fileSystem)
+    }
+
+    public static func gcCandidates(_ plan: GCPlan, fileSystem: any FileSystem) -> [GarbageCollection.Candidate] {
         let picked = plan.budget.map { Self.overBudget(plan.entries, budget: $0, size: fileSystem.sizeOfItem) } ?? []
         return (plan.aged + picked).map {
             .init(path: $0.path, reason: $0.reason, bytes: fileSystem.sizeOfItem($0.path))
@@ -221,37 +271,26 @@ extension Engine {
     /// job ended `derived_data` ago, then (with `budgetBytes`) ended jobs' directories over
     /// the size budget. An active job's directory is never a candidate.
     func retentionCandidates(now: Double) throws -> [(path: String, reason: String)] {
-        let aged = try ageCandidates(now: now)
-        guard !environment.allArtifactsRoots.isEmpty, let budget = reliability.ageRules.artifactRetention.budgetBytes
-        else { return aged }
-        let entries = try environment.allArtifactsRoots.flatMap {
-            try budgetEntries(root: $0, already: aged.map(\.path))
-        }
-        return aged + Self.overBudget(entries, budget: budget, size: environment.fileSystem.sizeOfItem)
+        let plan = try gcPlan(now: now)
+        guard let budget = plan.budget else { return plan.aged }
+        return plan.aged + Self.overBudget(plan.entries, budget: budget, size: environment.fileSystem.sizeOfItem)
     }
 
     /// The age rules' candidates: whole directories past retention, then DerivedData.
-    func ageCandidates(now: Double) throws -> [(path: String, reason: String)] {
-        try environment.allArtifactsRoots.flatMap { try ageCandidates(root: $0, now: now) }
-    }
-
-    private func ageCandidates(root: String, now: Double) throws -> [(path: String, reason: String)] {
-        let expired = try expiredJobDirectories(root: root, now: now)
+    private func ageCandidates(directories: [GCInventory.Directory], now: Double) throws -> [(
+        path: String, reason: String
+    )] {
+        let expired = try expiredJobDirectories(directories: directories, now: now)
         var result = expired.map { (path: $0, reason: "past retention") }
         let removed = Set(expired)
         let retention = reliability.ageRules.artifactRetention
-        let fileSystem = environment.fileSystem
-        for day in try fileSystem.children(of: root) {
-            guard let name = day.split(separator: "/").last, Self.dayStart(name) != nil, day == "\(root)/\(name)"
+        for directory in directories where !removed.contains(directory.path) {
+            guard let job = try store.job(id: directory.jobID), retention.keepSeconds(for: job.state) != nil,
+                try !isPinned(job), try !hasOwnedCommandProcesses(job),
+                now - (job.finishedAt ?? job.createdAt) >= retention.derivedDataSeconds
             else { continue }
-            for path in try fileSystem.children(of: day) where !removed.contains(path) {
-                guard let id = path.split(separator: "/").last.map(String.init), path == "\(day)/\(id)",
-                    let job = try store.job(id: id), retention.keepSeconds(for: job.state) != nil,
-                    try !isPinned(job), try !hasOwnedCommandProcesses(job),
-                    now - (job.finishedAt ?? job.createdAt) >= retention.derivedDataSeconds
-                else { continue }
-                let derived = path + "/DerivedData"
-                if fileSystem.fileExists(derived) { result.append((derived, "DerivedData past retention")) }
+            if directory.hasDerivedData {
+                result.append((directory.path + "/DerivedData", "DerivedData past retention"))
             }
         }
         return result
@@ -268,27 +307,17 @@ extension Engine {
         public var derivedAlreadyRemoved: Bool
     }
 
-    /// Every job directory with what the budget needs to know, read from the store (under
-    /// the service lock). Cheap: a directory listing and a job lookup per directory.
-    func budgetEntries(root: String, already: [String]) throws -> [BudgetEntry] {
-        let fileSystem = environment.fileSystem
+    /// Store lookups only; paths came from the unlocked filesystem inventory.
+    private func budgetEntries(directories: [GCInventory.Directory], already: [String]) throws -> [BudgetEntry] {
         let removed = Set(already)
         var entries: [BudgetEntry] = []
-        for day in try fileSystem.children(of: root) {
-            guard let name = day.split(separator: "/").last, let dayStart = Self.dayStart(name),
-                day == "\(root)/\(name)"
-            else { continue }
-            for path in try fileSystem.children(of: day) {
-                guard let id = path.split(separator: "/").last.map(String.init), !id.hasPrefix("."),
-                    path == "\(day)/\(id)", !removed.contains(path)
-                else { continue }
-                let job = try store.job(id: id)
-                entries.append(
-                    BudgetEntry(
-                        path: path, removable: try job.map(isRemovable) ?? true, failed: job?.state != .succeeded,
-                        endedAt: job.map { $0.finishedAt ?? $0.createdAt } ?? dayStart + 86_400,
-                        derivedAlreadyRemoved: removed.contains(path + "/DerivedData")))
-            }
+        for directory in directories where !directory.jobID.hasPrefix(".") && !removed.contains(directory.path) {
+            let job = try store.job(id: directory.jobID)
+            entries.append(
+                BudgetEntry(
+                    path: directory.path, removable: try job.map(isRemovable) ?? true, failed: job?.state != .succeeded,
+                    endedAt: job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400,
+                    derivedAlreadyRemoved: removed.contains(directory.path + "/DerivedData")))
         }
         return entries
     }
@@ -342,26 +371,16 @@ extension Engine {
     }
 
     /// Whole job directories past their age-based retention, oldest first.
-    private func expiredJobDirectories(root: String, now: Double) throws -> [String] {
+    private func expiredJobDirectories(directories: [GCInventory.Directory], now: Double) throws -> [String] {
         let retention = reliability.ageRules.artifactRetention
         var expired: [(endedAt: Double, path: String)] = []
-        for day in try environment.fileSystem.children(of: root) {
-            guard let name = day.split(separator: "/").last, let dayStart = Self.dayStart(name),
-                day == "\(root)/\(name)"
-            else { continue }
-            for path in try environment.fileSystem.children(of: day) {
-                guard let id = path.split(separator: "/").last.map(String.init), !id.hasPrefix("."),
-                    path == "\(day)/\(id)"
-                else { continue }
-                let job = try store.job(id: id)
-                if let job, try hasOwnedCommandProcesses(job) { continue }
-                let pinned = try job.map { try isPinned($0) } ?? false
-                guard let keep = retention.keepSeconds(for: job?.state, pinned: pinned) else { continue }
-                let endedAt = job.map { $0.finishedAt ?? $0.createdAt } ?? dayStart + 86_400
-                if now - endedAt >= keep {
-                    expired.append((endedAt, path))
-                }
-            }
+        for directory in directories where !directory.jobID.hasPrefix(".") {
+            let job = try store.job(id: directory.jobID)
+            if let job, try hasOwnedCommandProcesses(job) { continue }
+            let pinned = try job.map { try isPinned($0) } ?? false
+            guard let keep = retention.keepSeconds(for: job?.state, pinned: pinned) else { continue }
+            let endedAt = job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400
+            if now - endedAt >= keep { expired.append((endedAt, directory.path)) }
         }
         return expired.sorted { ($0.endedAt, $0.path) < ($1.endedAt, $1.path) }.map(\.path)
     }

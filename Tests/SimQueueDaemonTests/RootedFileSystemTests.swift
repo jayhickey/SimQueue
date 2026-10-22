@@ -80,6 +80,21 @@ final class RootedFileSystemTests: XCTestCase {
         XCTAssertTrue(files.fileExists(atPath: outside + "/keep/file"))
     }
 
+    func testEmptyOnlyRemovalNeverRecursesOrFollowsLinks() throws {
+        let empty = root + "/runs/empty"
+        try fs.createDirectory(empty)
+        XCTAssertTrue(try fs.removeEmptyDirectory(empty))
+        XCTAssertFalse(try fs.removeEmptyDirectory(empty))
+        try fs.createDirectory(empty + "/new-job")
+        XCTAssertFalse(try fs.removeEmptyDirectory(empty))
+        XCTAssertTrue(fs.fileExists(empty + "/new-job"))
+        let link = root + "/runs/linked"
+        try files.createSymbolicLink(atPath: link, withDestinationPath: outside + "/keep")
+        XCTAssertFalse(try fs.removeEmptyDirectory(link))
+        XCTAssertTrue(files.fileExists(atPath: outside + "/keep/file"))
+        XCTAssertThrowsError(try fs.removeEmptyDirectory(root), "the managed root is never removed")
+    }
+
     func testDryRunFileSystemReadsButNeverWrites() throws {
         let lines = FSLogLines()
         let dry = DryRunFileSystem(fs, log: { lines.append($0) })

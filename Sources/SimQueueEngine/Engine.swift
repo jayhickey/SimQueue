@@ -229,6 +229,7 @@ public final class Engine {
         reliability: ReliabilityConfig = ReliabilityConfig(),
         timeouts: TimeoutConfig = TimeoutConfig(),
         watchdog: WatchdogConfig = WatchdogConfig(),
+        includeArtifactRetention: Bool = true,
         ownerID: String,
         pid: Int32
     ) throws -> (Engine, RecoveryReport, ReconcileReport) {
@@ -256,7 +257,9 @@ public final class Engine {
         engine.refreshDefaultTemplate()
         engine.startupTimeouts = try engine.enforceTimeouts(now: now)
         // The startup reconcile is the first full watchdog pass of this epoch.
-        let reconcile = try engine.watchdogPass(.full, config: watchdog).reconcile
+        let reconcile = try engine.watchdogPass(
+            .full, config: watchdog, includeArtifactRetention: includeArtifactRetention
+        ).reconcile
         return (engine, recovery, reconcile)
     }
 

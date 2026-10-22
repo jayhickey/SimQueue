@@ -68,6 +68,10 @@ public struct StorageFileSystem: FileSystem {
     }
     public func createDirectory(_ path: String) throws { try check(path); try base.createDirectory(path) }
     public func removeItem(_ path: String) throws { try check(path); try base.removeItem(path) }
+    public func removeEmptyDirectory(_ path: String) throws -> Bool {
+        try check(path)
+        return try base.removeEmptyDirectory(path)
+    }
     public func sizeOfItem(_ path: String) -> UInt64? {
         guard (try? check(path)) != nil else { return nil }
         return base.sizeOfItem(path)
