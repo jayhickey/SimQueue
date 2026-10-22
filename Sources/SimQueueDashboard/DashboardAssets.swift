@@ -110,9 +110,12 @@ enum DashboardAssets {
               return cell;
             }
             function table(jobs, target) {
-              const root=$(target); root.replaceChildren();
-              if (!jobs.length) { root.append(el('div', 'No jobs in this view.', 'empty')); return; }
-              const wrap=el('div',null,'table-wrap'), t=el('table'), head=el('tr');
+              const root=$(target);
+              if (!jobs.length) { root.replaceChildren(el('div', 'No jobs in this view.', 'empty')); return; }
+              // Keep the scrolling element attached across polling refreshes.
+              const existing=root.firstElementChild;
+              const wrap=existing?.className==='table-wrap' ? existing : el('div',null,'table-wrap');
+              const left=wrap.scrollLeft, top=wrap.scrollTop, t=el('table'), head=el('tr');
               for (const name of ['Job / command','State','Priority','Queued','Started','Wait','Prep','Run','Sims','Outcome / hold','Actions']) head.append(el('th',name));
               const thead=el('thead'); thead.append(head); t.append(thead); const body=el('tbody');
               for (const j of jobs) {
@@ -124,7 +127,9 @@ enum DashboardAssets {
                 for (const time of timings(j)) row.append(el('td',time));
                 row.append(el('td',j.granted_sims),el('td',j.wait_reasons?.map(r=>r.summary).join('; ') || j.result_class || j.message || '—'),controls(j)); body.append(row);
               }
-              t.append(body); wrap.append(t); root.append(wrap);
+              t.append(body); wrap.replaceChildren(t);
+              if (wrap!==existing) root.replaceChildren(wrap);
+              wrap.scrollLeft=left; wrap.scrollTop=top;
             }
             function render() {
               if (!snapshot) return;

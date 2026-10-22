@@ -6,7 +6,8 @@ const assert = require('node:assert/strict');
 const source = readFileSync('Sources/SimQueueDashboard/DashboardAssets.swift','utf8');
 const script = source.match(/"app\.js":\s*\(\s*"text\/javascript",\s*#"""\n([\s\S]*?)"""#/)[1];
 class Element {
-  constructor(tag) { this.tag=tag; this.children=[]; this.value=''; this.style={}; this.textContent=''; this.listeners={}; this.scrollTop=0; this.scrollHeight=500; this.clientHeight=200; }
+  constructor(tag) { this.tag=tag; this.children=[]; this.value=''; this.style={}; this.textContent=''; this.listeners={}; this.scrollLeft=0; this.scrollTop=0; this.scrollHeight=500; this.clientHeight=200; }
+  get firstElementChild() { return this.children[0] || null; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children=children; }
   addEventListener(name,fn) { this.listeners[name]=fn; }
@@ -57,6 +58,28 @@ assert.equal(cells[3].title,'2026-10-22T19:43:00Z');
 assert.equal(cells[4].textContent,'—','not started yet');
 elements.get('search').value='';
 console.log('Dashboard JavaScript timing, filtering and safe-text checks passed');
+
+// Independent table offsets survive refreshed rows and updated durations.
+run("table([{id:'J-scroll',project:'test',state:'running',priority:50,queue_time:1,started_at:2}], 'active'); table([{id:'J-done',project:'test',state:'succeeded',priority:50,queue_time:1,started_at:2,finished_at:3}], 'recent')");
+const activeScroller=elements.get('active').firstElementChild;
+const recentScroller=elements.get('recent').firstElementChild;
+activeScroller.scrollLeft=340; activeScroller.scrollTop=12;
+recentScroller.scrollLeft=620;
+const oldTable=activeScroller.firstElementChild;
+run("snapshot={generatedAt:120}; table([{id:'J-scroll',project:'test',state:'running',priority:50,queue_time:1,started_at:2}], 'active'); table([{id:'J-done',project:'test',state:'succeeded',priority:50,queue_time:1,started_at:2,finished_at:4}], 'recent')");
+assert.equal(elements.get('active').firstElementChild,activeScroller,'polling retains the live scroll container');
+assert.equal(elements.get('recent').firstElementChild,recentScroller);
+assert.equal(activeScroller.scrollLeft,340);
+assert.equal(activeScroller.scrollTop,12);
+assert.equal(recentScroller.scrollLeft,620,'each table retains its own horizontal position');
+assert.notEqual(activeScroller.firstElementChild,oldTable,'row data still refreshes');
+assert.equal(activeScroller.firstElementChild.children[1].children[0].children[7].textContent,'1m 58s');
+run("table([], 'active')");
+assert.equal(elements.get('active').firstElementChild.textContent,'No jobs in this view.');
+run("table([{id:'J-new',project:'test',state:'running',priority:50,queue_time:1,started_at:2}], 'active')");
+assert.equal(elements.get('active').firstElementChild.scrollLeft,0,'new table after empty state starts normally');
+console.log('Dashboard refresh scroll preservation checks passed');
+
 
 assert.equal(run("controls({id:'J-1',state:'queued',priority:100}).children[0].disabled"),true);
 assert.equal(run("controls({id:'J-1',state:'running',priority:50}).children.length"),1);
