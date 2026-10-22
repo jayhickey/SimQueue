@@ -60,9 +60,21 @@ public struct QueueSession: Sendable {
         service: @Sendable (StatusResult) throws -> (@Sendable () throws -> Void)?,
         poll: @Sendable () async throws -> Void
     ) async throws {
+        try Task.checkCancellation()
         _ = try beginStop(cancelActive: false, expectedEpoch: expectedEpoch)
-        while try !finishStop(expectedEpoch: expectedEpoch, service: service) {
+        while true {
+            try Task.checkCancellation()
+            if try finishStop(expectedEpoch: expectedEpoch, service: service) { return }
             try await poll()
+        }
+    }
+
+    /// Used only when an update wait is canceled before the final stop request.
+    /// The daemon also rejects resume after its final stop acknowledgement.
+    public func resumeAfterCanceledUpdate(expectedEpoch: Int64) throws {
+        guard try status().daemon.epoch == expectedEpoch else { throw SessionError.daemonChanged }
+        guard case .status(let resumed) = try request(.resume), resumed.daemon.epoch == expectedEpoch else {
+            throw SessionError.daemonChanged
         }
     }
 

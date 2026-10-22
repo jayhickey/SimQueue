@@ -27,6 +27,8 @@
         private var managingBundled = false
         private var updater: AppUpdater!
         private var updateTerminationPending = false
+        private var updateHandoffComplete = false
+        private var updateWorker: Task<Result<Void, Error>, Never>?
         nonisolated private static let resumeAfterUpdateKey = "ResumeBundledDaemonAfterUpdate"
         private var statusLine = NSMenuItem(title: "Connecting…", action: nil, keyEquivalent: "")
 
@@ -40,6 +42,31 @@
             updater.mayCheck = { [weak self] in
                 guard let self else { return false }
                 return self.stoppingEpoch == nil && !self.managingBundled && !self.updateTerminationPending
+            }
+            updater.onAbort = { [weak self] in
+                guard let self else { return }
+                self.updateWorker?.cancel()
+                if self.updateHandoffComplete && !self.updateTerminationPending {
+                    self.updateHandoffComplete = false
+                    self.startBundled(waitForExit: true)
+                }
+            }
+            updater.deferInstallation = { [weak self] install in
+                guard let self, BundledDaemon.service.status == .enabled else { return false }
+                self.prepareForUpdate { result in
+                    switch result {
+                    case .success:
+                        if self.updater.installationPending {
+                            install()
+                        } else {
+                            self.updateHandoffComplete = false
+                            self.startBundled(waitForExit: true)
+                        }
+                    case .failure(let error):
+                        if !(error is CancellationError) { self.showError(error) }
+                    }
+                }
+                return true
             }
             if UserDefaults.standard.bool(forKey: Self.resumeAfterUpdateKey) {
                 startBundled(waitForExit: true)
@@ -67,17 +94,19 @@
             add("Check for Updates…", #selector(checkForUpdates), to: menu)
             menu.items.last?.isEnabled =
                 updater.controller.updater.canCheckForUpdates && stoppingEpoch == nil && !managingBundled
+                && !updateTerminationPending
             add("Automatically Check for Updates", #selector(toggleUpdateChecks), to: menu)
             menu.items.last?.state = updater.controller.updater.automaticallyChecksForUpdates ? .on : .off
             add("Launch at Login", #selector(toggleLogin), to: menu)
             menu.items.last?.state = SMAppService.mainApp.status == .enabled ? .on : .off
-            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled
+            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled && !updateTerminationPending
             menu.addItem(.separator())
             add("Use Bundled Daemon…", #selector(useBundledDaemon), to: menu)
-            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled
+            menu.items.last?.isEnabled = stoppingEpoch == nil && !managingBundled && !updateTerminationPending
             add("Background Service Settings…", #selector(backgroundSettings), to: menu)
             add("Stop SimQueue…", #selector(stopQueue), to: menu)
-            menu.items.last?.isEnabled = latest != nil && stoppingEpoch == nil && !managingBundled
+            menu.items.last?.isEnabled =
+                latest != nil && stoppingEpoch == nil && !managingBundled && !updateTerminationPending
             add(
                 stoppingEpoch == nil ? "Quit Menu Bar App" : "Quit App (Leave Queue Draining)", #selector(quitApp),
                 to: menu)
@@ -162,53 +191,86 @@
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-            guard updater?.installationPending == true else { return .terminateNow }
-            if updateTerminationPending { return .terminateLater }
-            guard stoppingEpoch == nil && !managingBundled else {
-                showError(
-                    NSError(
-                        domain: "SimQueue.Update", code: 2,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "Wait for the daemon operation to finish, then retry the update."
-                        ]))
-                return .terminateCancel
-            }
+            // A deferred installation is already waiting for jobs. Keep the app
+            // available until that handoff calls Sparkle's continuation.
+            if updateTerminationPending { return .terminateCancel }
+            guard updater?.installationPending == true, !updateHandoffComplete else { return .terminateNow }
+            guard stoppingEpoch == nil && !managingBundled else { return .terminateCancel }
             guard BundledDaemon.service.status == .enabled else { return .terminateNow }
-            updateTerminationPending = true
-            statusLine.title = "Waiting for jobs before updating…"
-            let session = QueueSession(socketPath: paths.socketPath)
-            Task {
-                let result = await Task.detached { () -> Result<Void, Error> in
-                    do {
-                        let status = try session.status()
-                        guard try BundledDaemon.owns(status) else { throw BundledDaemon.ServiceError.otherDaemon }
-                        UserDefaults.standard.set(true, forKey: Self.resumeAfterUpdateKey)
-                        let deadline = Date().addingTimeInterval(30 * 60)
-                        try await session.stopForUpdate(
-                            expectedEpoch: status.daemon.epoch, service: LoginDaemon.stopAction
-                        ) {
-                            guard Date() < deadline else {
-                                throw NSError(
-                                    domain: "SimQueue.Update", code: 3,
-                                    userInfo: [
-                                        NSLocalizedDescriptionKey:
-                                            "Timed out waiting for jobs or cleanup. The queue remains drained; inspect it before retrying."
-                                    ])
-                            }
-                            try await Task.sleep(for: .seconds(1))
-                        }
-                        return .success(())
-                    } catch { return .failure(error) }
-                }.value
-                updateTerminationPending = false
+            prepareForUpdate { result in
                 switch result {
                 case .success: sender.reply(toApplicationShouldTerminate: true)
                 case .failure(let error):
                     sender.reply(toApplicationShouldTerminate: false)
-                    showError(error)
+                    self.showError(error)
                 }
             }
             return .terminateLater
+        }
+
+        private func prepareForUpdate(completion: @escaping (Result<Void, Error>) -> Void) {
+            guard stoppingEpoch == nil && !managingBundled && !updateTerminationPending else {
+                completion(
+                    .failure(
+                        NSError(
+                            domain: "SimQueue.Update", code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "Wait for the daemon operation to finish, then retry the update."
+                            ])))
+                return
+            }
+            updateTerminationPending = true
+            statusLine.title = "Waiting for jobs before updating…"
+            let session = QueueSession(socketPath: paths.socketPath)
+            let worker = Task.detached { () -> Result<Void, Error> in
+                var epoch: Int64?
+                do {
+                    let status = try session.status()
+                    guard try BundledDaemon.owns(status) else { throw BundledDaemon.ServiceError.otherDaemon }
+                    guard !status.paused && !status.draining else {
+                        throw NSError(
+                            domain: "SimQueue.Update", code: 4,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "The queue is already paused or draining. Finish that maintenance operation before updating."
+                            ])
+                    }
+                    epoch = status.daemon.epoch
+                    UserDefaults.standard.set(true, forKey: Self.resumeAfterUpdateKey)
+                    let deadline = Date().addingTimeInterval(30 * 60)
+                    try await session.stopForUpdate(
+                        expectedEpoch: status.daemon.epoch, service: LoginDaemon.stopAction
+                    ) {
+                        guard Date() < deadline else {
+                            throw NSError(
+                                domain: "SimQueue.Update", code: 3,
+                                userInfo: [
+                                    NSLocalizedDescriptionKey:
+                                        "Timed out waiting for jobs or cleanup. The queue remains drained; inspect it before retrying."
+                                ])
+                        }
+                        try await Task.sleep(for: .seconds(1))
+                    }
+                    return .success(())
+                } catch {
+                    if error is CancellationError, let epoch {
+                        do {
+                            try session.resumeAfterCanceledUpdate(expectedEpoch: epoch)
+                            UserDefaults.standard.removeObject(forKey: Self.resumeAfterUpdateKey)
+                        } catch { return .failure(error) }
+                    }
+                    return .failure(error)
+                }
+            }
+            updateWorker = worker
+            Task {
+                let result = await worker.value
+                updateWorker = nil
+                updateTerminationPending = false
+                if case .success = result { updateHandoffComplete = true }
+                completion(result)
+            }
         }
 
         private func startBundled(waitForExit: Bool = false) {
@@ -234,7 +296,7 @@
         @objc private func backgroundSettings() { SMAppService.openSystemSettingsLoginItems() }
 
         @objc private func useBundledDaemon() {
-            guard stoppingEpoch == nil && !managingBundled else { return }
+            guard stoppingEpoch == nil && !managingBundled && !updateTerminationPending else { return }
             do { try BundledDaemon.validate(paths: paths) } catch { showError(error); return }
             let alert = NSAlert()
             alert.messageText = "Use the daemon inside SimQueue.app?"
@@ -272,7 +334,7 @@
         }
 
         @objc private func stopQueue() {
-            guard let latest else { return }
+            guard let latest, stoppingEpoch == nil, !managingBundled, !updateTerminationPending else { return }
             let alert = NSAlert()
             alert.messageText = "Stop SimQueue?"
             alert.informativeText =

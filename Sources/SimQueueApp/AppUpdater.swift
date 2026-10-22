@@ -11,6 +11,8 @@
         private(set) var controller: SPUStandardUpdaterController!
         private(set) var installationPending = false
         var mayCheck: () -> Bool = { true }
+        var onAbort: () -> Void = {}
+        var deferInstallation: ((@escaping () -> Void) -> Bool)?
 
         override init() {
             super.init()
@@ -40,9 +42,9 @@
             untilInvokingBlock installHandler: @escaping () -> Void
         ) -> Bool {
             installationPending = true
-            // applicationShouldTerminate returns terminateLater until the daemon
-            // finishes all active jobs and its service has been unregistered.
-            return false
+            // Postpone before the installer requests termination, so a long job
+            // does not put Sparkle into its unresponsive-app/force-quit flow.
+            return deferInstallation?(installHandler) ?? false
         }
 
         func updater(
@@ -55,6 +57,7 @@
 
         func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
             installationPending = false
+            onAbort()
         }
     }
 #endif

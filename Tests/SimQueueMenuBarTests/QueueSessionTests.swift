@@ -95,6 +95,10 @@ final class QueueSessionTests: XCTestCase {
         } catch is CancellationError {}
         XCTAssertFalse(stub.serviceStopped)
         XCTAssertFalse(stub.calls.contains { if case .stop = $0 { true } else { false } })
+        try QueueSession(request: stub.send).resumeAfterCanceledUpdate(expectedEpoch: 7)
+        XCTAssertEqual(stub.calls.last, .resume)
+        XCTAssertThrowsError(try QueueSession(request: stub.send).resumeAfterCanceledUpdate(expectedEpoch: 8))
+        XCTAssertEqual(stub.calls.last, .status)
     }
 
 }

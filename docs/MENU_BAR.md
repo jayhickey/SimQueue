@@ -133,7 +133,9 @@ the public key embedded in the app. System-profile reporting defaults to off.
 When Sparkle asks the app to quit for an installation (including install-on-quit),
 the app drains its own daemon, waits up to 30 minutes for active work and cleanup,
 then unregisters the matching service before allowing replacement. The relaunched
-app registers the new bundled daemon at the same path and reopens admission. A
+app registers the new bundled daemon at the same path and reopens admission. An update canceled while waiting resumes admission before the final stop
+acknowledgement; if the service already stopped, the old app starts it again.
+Existing paused/draining maintenance must finish before starting an update. A
 failed handoff cancels termination and reports an error; a timeout leaves the queue
 drained. Inspect `simq status` before resuming or retrying. Never force-quit the app
 to bypass a waiting update. A CLI-managed daemon is left running when only its
