@@ -27,7 +27,8 @@ public enum JobStorage {
             throw Failure("job output is not a writable directory: \(ancestor)")
         }
         // Rooted cleanup refuses symlinks. Reject them before the executor can write.
-        guard (try? manager.attributesOfItem(atPath: root)[.type] as? FileAttributeType) != .typeSymbolicLink else {
+        // Only the link type is needed; Foundation attributes also read extended metadata.
+        guard !RootedFileSystem.isSymlink(root) else {
             throw Failure("job output root must not pass through symlinks: \(root)")
         }
     }
