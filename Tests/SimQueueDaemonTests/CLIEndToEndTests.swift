@@ -277,7 +277,7 @@ final class CLIEndToEndTests: XCTestCase {
         XCTAssertEqual(try simq(["submit", "--project", "demo", "--priority", "nope"]).code, 64)
         XCTAssertEqual(try simq(["submit", "--project", "demo", "--priority", "101"]).code, 64)
         XCTAssertEqual(try simq(["explain", "J-9999"]).code, 66)
-        XCTAssertEqual(try simq(["submit", "--project", "demo", "--kind", "has space"]).code, 64)
+        XCTAssertEqual(try simq(["submit", "--project", "demo", "--kind", "line\nbreak"]).code, 64)
         XCTAssertEqual(try simq(["submit", "--project", "demo", "--retries", "11"]).code, 64)
         XCTAssertEqual(try simq(["submit", "--project", "demo", "--sims", "2", "--max-sims", "1"]).code, 64)
     }
