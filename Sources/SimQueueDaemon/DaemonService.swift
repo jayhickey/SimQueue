@@ -191,7 +191,12 @@ public final class DaemonService: @unchecked Sendable {
                 }
             }
             if storageChecksEnabled {
-                do { try JobStorage.check(artifacts.root); engine.admissionStorageFailure = nil } catch {
+                do {
+                    let roots = Set(
+                        [artifacts.root] + (try store.queuedJobs()).compactMap { $0.command?.artifactsRoot })
+                    for root in roots { try JobStorage.check(root) }
+                    engine.admissionStorageFailure = nil
+                } catch {
                     engine.admissionStorageFailure = String(describing: error)
                 }
             }
@@ -200,9 +205,12 @@ public final class DaemonService: @unchecked Sendable {
             if !historyRunning, now - lastHistoryAt >= 3600, info.statePath != ":memory:" {
                 historyRunning = true; lastHistoryAt = now
                 let statePath = info.statePath; let artifactRoot = artifacts.legacyRoot ?? artifacts.root
+                let outputRoots = engine.environment.allArtifactsRoots
                 historyQueue.async { [self] in
-                    do { _ = try JobStore.archiveHistory(path: statePath, artifactsRoot: artifactRoot, now: now) } catch
-                    { log("history archival deferred: \(error)") }
+                    do {
+                        for root in outputRoots { try JobStorage.check(root) }
+                        _ = try JobStore.archiveHistory(path: statePath, artifactsRoot: artifactRoot, now: now)
+                    } catch { log("history archival deferred: \(error)") }
                     locked { historyRunning = false }
                 }
             }
@@ -901,12 +909,15 @@ public final class DaemonService: @unchecked Sendable {
             globalWaitReasons: (lastTick?.globalReasons ?? []).map(WaitReasonInfo.init),
             lastTickAt: lastTickAt,
             health: try health(now: engine.environment.clock.now()),
-            templateHint: engine.environment.sims.templateCloneSource.flatMap {
-                $0.cloneTemplate.map {
-                    "host-wide active template: " + $0
-                        + "; warm reuse retains previous job state (use --reset-app or --fresh-sim)"
-                } ?? "no active host template; build one, set simctl.template to its UDID, then restart simqd"
-            },
+            templateHint: !config.hostTemplates.isEmpty
+                ? "named host templates: " + config.hostTemplates.keys.sorted().joined(separator: ", ")
+                    + "; default: " + (config.defaultHostTemplate ?? config.simctl?.template ?? "none")
+                : engine.environment.sims.templateCloneSource.flatMap {
+                    $0.cloneTemplate.map {
+                        "host-wide active template: " + $0
+                            + "; warm reuse retains previous job state (use --reset-app or --fresh-sim)"
+                    } ?? "no active host template; build one, set simctl.template to its UDID, then restart simqd"
+                },
             drainComplete: drainComplete,
             storage: storageDiagnostics()
         )

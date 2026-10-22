@@ -44,6 +44,7 @@ struct Run: ParsableCommand {
     @Option(help: "Project name. Default: the current directory's name.") var project: String?
     @Option(help: "Free-form label for status and logs (no behavior).") var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
+    @Option(help: "Named host template (from host_templates).") var template: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "Simulators to hold (default 1; 0 runs without one).") var sims = 1
     @Flag(help: "Take the exclusive slot: exclusive jobs run one at a time.") var exclusive = false
@@ -112,6 +113,7 @@ struct Run: ParsableCommand {
         let params = SubmitParams(
             project: project ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent,
             kind: kind,
+            template: template,
             priority: numeric,
             priorityName: name,
             submitter: submitter ?? ProcessInfo.processInfo.environment["USER"] ?? "unknown",

@@ -53,7 +53,15 @@ public enum DoctorBuilder {
                         + "probe \(daemon.probe ?? "fake")\(daemon.dryRun == true ? ", dry run (host actions logged, not run)" : "")"
                 ))
             if let live, let source = live.engine.environment.sims.templateCloneSource {
-                if source.cloneTemplate == nil {
+                if !live.engine.hostTemplates.isEmpty {
+                    checks.append(
+                        DoctorCheck(
+                            name: "template", level: .ok,
+                            detail: "named host templates: "
+                                + live.engine.hostTemplates.keys.sorted().map {
+                                    $0 + "=" + live.engine.hostTemplates[$0, default: "?"]
+                                }.joined(separator: ", ")))
+                } else if source.cloneTemplate == nil {
                     checks.append(DoctorCheck(name: "template", level: .warn, detail: noTemplateMessage))
                 } else if let configured = source.configuredTemplate {
                     checks.append(
