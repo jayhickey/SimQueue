@@ -13,12 +13,14 @@ Choose either installation:
 # CLI and daemon only
 brew install jayhickey/tap/simqueue
 
-# Optional app, with the CLI formula installed as a dependency if missing
+# Or the app, which links its own bundled simq (uninstall the formula first)
 brew install --cask jayhickey/tap/simqueue-app
 ```
 
 The formula installs only the command-line tools and documentation. The cask
-installs `SimQueue.app` into `/Applications`; launch it through Spotlight or
+installs `SimQueue.app` into `/Applications` and links `simq` from
+`SimQueue.app/Contents/Helpers/simq`, so Sparkle updates the CLI with the app. The
+two setups conflict over `simq`; launch the app through Spotlight or
 Applications. Launch at Login is opt-in. The app uses your existing daemon;
 installing it does not start or restart services or change host configuration.
 New users still need `simq init` and the setup steps in [INSTALL.md](INSTALL.md).
@@ -143,9 +145,10 @@ companion app updates.
 
 The Homebrew app cask is marked `auto_updates true`, following Xcodes' packaging
 model. Sparkle manages app updates; Homebrew normally skips self-updating casks
-unless explicitly requested with `--greedy`. The CLI formula is still updated with
-Homebrew. A newer bundled daemon and an older CLI may temporarily report a version
-mismatch; keep the CLI current too. CLI-only users do not need Sparkle or the app.
+unless explicitly requested with `--greedy`. The cask's `simq` is the app's own, so
+it updates with the app. A separately installed formula CLI is updated by Homebrew, and
+a newer bundled daemon may report a version mismatch warning against it; keep it
+current too. CLI-only users do not need Sparkle or the app.
 
 The first Sparkle-enabled release must be installed using Homebrew or its direct
 app download. Earlier versions cannot update themselves through Sparkle. Before

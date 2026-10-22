@@ -109,6 +109,11 @@ enum DocumentationLocation {
         let prefix = executable.deletingLastPathComponent().deletingLastPathComponent()
         let installed = prefix.appendingPathComponent("share/doc/simqueue", isDirectory: true)
         if hasGuides(installed) { return Found(root: installed, layout: "homebrew") }
+        // SimQueue.app/Contents/Helpers/simq: a signed bundle keeps data in Contents/Resources.
+        let bundled = prefix.appendingPathComponent("Resources/doc/simqueue", isDirectory: true)
+        if executable.deletingLastPathComponent().lastPathComponent == "Helpers", hasGuides(bundled) {
+            return Found(root: bundled, layout: "app")
+        }
         if hasGuides(prefix), isFile(prefix.appendingPathComponent("LICENSE")),
             isFile(prefix.appendingPathComponent("NOTICE"))
         {

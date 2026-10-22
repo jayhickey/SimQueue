@@ -27,6 +27,23 @@ class HomebrewTests(unittest.TestCase):
         self.assertIn('app "simqueue-#{version}', cask)
         self.assertEqual(update(formula, cask, '0.1.7', 'b' * 64, 'example/SimQueue'), (formula, cask))
 
+    def test_app_cask_links_its_bundled_cli_instead_of_the_formula(self):
+        legacy = (CASK.replace('  app "', '  depends_on arch: :arm64\n  depends_on formula: "jayhickey/tap/simqueue"\n'
+                               '  depends_on macos: :sonoma\n\n  app "')
+                  .replace('end\n', '\n  caveats <<~EOS\n    Removing the cask leaves the CLI, daemon and queue data intact.\n'
+                           '  EOS\nend\n'))
+        formula, cask = update(FORMULA, legacy, '0.1.7', 'b' * 64, 'example/SimQueue')
+        self.assertNotIn('depends_on formula:', cask)
+        self.assertNotIn('conflicts_with formula:', cask)  # Homebrew's cask DSL rejects this key.
+        self.assertIn('  depends_on arch: :arm64\n  depends_on macos: :sonoma\n', cask)
+        self.assertIn('  app "simqueue-#{version}-macos-arm64/SimQueue.app"\n'
+                      '  binary "#{appdir}/SimQueue.app/Contents/Helpers/simq"\n', cask)
+        self.assertIn('brew uninstall simqueue first', cask)
+        self.assertNotIn('leaves the CLI, daemon', cask)
+        self.assertEqual(update(formula, cask, '0.1.7', 'b' * 64, 'example/SimQueue'), (formula, cask))
+        with self.assertRaises(ValueError):
+            update(FORMULA, CASK.replace('  app "', '  pkg "'), '0.1.7', 'b' * 64, 'example/SimQueue')
+
     def test_rejects_invalid_inputs_and_downgrades(self):
         for version in ['0.1.4', '0.1.7-beta', '01.1.7', '0.1.7\nmalicious']:
             with self.assertRaises(ValueError):

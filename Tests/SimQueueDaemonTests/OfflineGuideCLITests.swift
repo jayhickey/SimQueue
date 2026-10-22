@@ -141,6 +141,23 @@ final class OfflineGuideCLITests: XCTestCase {
         XCTAssertEqual(record["layout"] as? String, "archive")
     }
 
+    func testDocsResolveTheAppBundledCLIThroughTheCaskLink() throws {
+        let contents = root.appendingPathComponent("Applications/SimQueue.app/Contents")
+        let executable = contents.appendingPathComponent("Helpers/simq")
+        let documents = contents.appendingPathComponent("Resources/doc/simqueue")
+        try installBinary(at: executable)
+        try putGuides(at: documents)
+        let linked = root.appendingPathComponent("prefix/bin/simq")
+        try FileManager.default.createDirectory(
+            at: linked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: executable)
+        let result = try invoke(["docs", "--json"], executable: linked)
+        XCTAssertEqual(result.code, 0, result.output)
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any])
+        XCTAssertEqual(record["path"] as? String, documents.path)
+        XCTAssertEqual(record["layout"] as? String, "app")
+    }
+
     func testSourceBuildDocsRequireARecognizableCheckoutAncestor() throws {
         let checkout = root.appendingPathComponent("checkout")
         let executable = checkout.appendingPathComponent(".build/arm64-apple-macosx/debug/simq")
