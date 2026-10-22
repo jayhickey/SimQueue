@@ -41,7 +41,7 @@ Boots have an additional one-minute load gate, normally 2 × cores. Memory, pres
 
 ### Ordering and backfill
 
-Jobs are ordered by integer priority (0–100), a configurable capped aging boost and FIFO ties. Aging does not promise eventual service across an arbitrary priority gap. A blocked job reserves the memory/simulator capacity it needs, allowing fitting work to use other capacity. For example, a simulator waiter can permit a simulator-free build, while a memory-constrained large job keeps accumulating headroom instead of losing it to repeated smaller starts. Impossible requests and project-limited jobs do not reserve shared resources.
+Jobs are ordered by integer priority (0–100), a configurable capped aging boost and FIFO ties. Aging does not promise eventual service across an arbitrary priority gap. A blocked job reserves the memory/simulator capacity it needs, allowing fitting work to use other capacity. For example, a simulator waiter can permit a simulator-free build. A memory-constrained large job lets smaller fitting jobs start ahead of it for its first 10 minutes in the queue (`memoryHoldGraceSeconds`, measured from its queue time); after that it keeps accumulating headroom instead of losing it to repeated smaller starts, and it is admitted first once memory returns. Impossible requests and project-limited jobs do not reserve shared resources.
 
 ## Simulator lifecycle and warm reuse
 

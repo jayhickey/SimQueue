@@ -54,6 +54,10 @@ public struct SchedulerConfig: Sendable, Equatable {
     /// For this long after admission, a job's memory is charged against the probe's
     /// available memory again, because the probe lags behind a freshly started job.
     public var admissionSettleSeconds: Double
+    /// A memory-blocked waiter holds headroom only after it has been queued this long.
+    /// Until then, smaller jobs that fit may start ahead of it; afterwards the hold keeps
+    /// them from taking the memory it is waiting for. Default 10 minutes.
+    public var memoryHoldGraceSeconds: Double
 
     public init(
         priority: PriorityPolicy = PriorityPolicy(),
@@ -73,7 +77,8 @@ public struct SchedulerConfig: Sendable, Equatable {
         maxRunningPerProject: Int = 0,
         maxQueuedPerSubmitterPerProject: Int = 128,
         drain: InfraDrainPolicy = InfraDrainPolicy(),
-        admissionSettleSeconds: Double = 60
+        admissionSettleSeconds: Double = 60,
+        memoryHoldGraceSeconds: Double = 600
     ) {
         self.priority = priority
         self.reserveBytes = reserveBytes
@@ -93,6 +98,7 @@ public struct SchedulerConfig: Sendable, Equatable {
         self.maxQueuedPerSubmitterPerProject = maxQueuedPerSubmitterPerProject
         self.drain = drain
         self.admissionSettleSeconds = admissionSettleSeconds
+        self.memoryHoldGraceSeconds = memoryHoldGraceSeconds
     }
 
     /// Load ceiling for starting a boot on this host.

@@ -270,7 +270,12 @@ public struct Scheduler: Sendable {
                             $0.addingReportingOverflow($1).overflow ? .max : $0 + $1
                         }
                     let reachable = free.addingReportingOverflow(releasable)
-                    if reachable.overflow || reachable.partialValue >= memory {
+                    // Smaller jobs may backfill until the waiter has been queued for the
+                    // grace period (3:48 PM: a 6 GiB waiter behind a running 6 GiB job kept
+                    // ~20 0.5 GiB builds queued with 8.5 GiB available). After that the hold
+                    // applies, so the big job still gets its turn.
+                    let held = input.now - job.queueTime >= config.memoryHoldGraceSeconds
+                    if held, reachable.overflow || reachable.partialValue >= memory {
                         state.availableMemory -= min(memory, free)
                     }
                     let reservedIdle = min(state.idleRunning, job.resources.minSims)
