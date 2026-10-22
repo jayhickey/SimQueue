@@ -32,6 +32,21 @@ final class SchedulerTests: XCTestCase {
 
     // MARK: - Memory and reserve
 
+    func testDefaultBootAllowanceIsThreeGiBAndWarmReuseDoesNotPayIt() {
+        var config = testConfig()
+        config.simBootCostBytes = SchedulerConfig().simBootCostBytes
+        XCTAssertEqual(config.simBootCostBytes, 3 * gib)
+        let jobs = [makeJob("probe", seq: 1, resources: sims(1, memory: gib / 2))]
+        let policy = Scheduler(config: config)
+        XCTAssertEqual(
+            policy.plan(input(queued: jobs, host: makeHost(availableGiB: 6))).reasonCodes(for: "probe"),
+            ["insufficient_memory"])
+        XCTAssertEqual(policy.plan(input(queued: jobs, host: makeHost(availableGiB: 7))).admittedIDs, ["probe"])
+        XCTAssertEqual(
+            policy.plan(input(queued: jobs, host: makeHost(availableGiB: 4), pool: PoolSnapshot(idleRunning: 1)))
+                .admittedIDs, ["probe"])
+    }
+
     func testHostBootMemoryOverrideChangesColdAdmission() {
         var config = testConfig()
         let request = input(

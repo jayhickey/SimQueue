@@ -43,8 +43,7 @@ public struct SchedulerConfig: Sendable, Equatable {
     /// Spec `step_down_on` includes `thermal_serious`.
     public var thermalStop: ThermalState
     /// Explicit conservative memory cost of booting one more simulator.
-    /// Default 4.38 GB: the largest stock simulator measured on the Mac mini on
-    /// Oct 19, 2026 (spec section 1). Slimmed sims should lower this.
+    /// Default 3 GiB; host.sim_boot_cost_mib can override this scheduling estimate.
     public var simBootCostBytes: UInt64
     /// Optional project concurrency cap. Zero uses the host-wide policy.
     public var maxRunningPerProject: Int
@@ -69,7 +68,7 @@ public struct SchedulerConfig: Sendable, Equatable {
         pressureStop: MemoryPressure = .warn,
         loadThrottle: LoadThrottlePolicy = LoadThrottlePolicy(),
         thermalStop: ThermalState = .serious,
-        simBootCostBytes: UInt64 = 4_380_000_000,
+        simBootCostBytes: UInt64 = 3 * ByteSize.gibibyte,
         maxRunningPerProject: Int = 0,
         maxQueuedPerSubmitterPerProject: Int = 128,
         drain: InfraDrainPolicy = InfraDrainPolicy(),
