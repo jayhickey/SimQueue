@@ -80,6 +80,22 @@ run("table([{id:'J-new',project:'test',state:'running',priority:50,queue_time:1,
 assert.equal(elements.get('active').firstElementChild.scrollLeft,0,'new table after empty state starts normally');
 console.log('Dashboard refresh scroll preservation checks passed');
 
+// Rows are not rebuilt under an in-progress touch or momentum scroll (iOS drops the gesture).
+const job=id=>JSON.stringify([{id,project:'test',state:'running',priority:50,queue_time:1,started_at:2}]);
+run(`clock=()=>10000; table(${job('J-t1')},'active')`);
+const touchWrap=elements.get('active').firstElementChild, touchTable=touchWrap.firstElementChild;
+touchWrap.listeners.touchstart();
+run(`table(${job('J-t2')},'active')`); assert.equal(touchWrap.firstElementChild,touchTable,'no rebuild under a finger');
+touchWrap.listeners.touchend();
+run(`clock=()=>10500; table(${job('J-t2')},'active')`); assert.equal(touchWrap.firstElementChild,touchTable,'no rebuild during momentum');
+run(`clock=()=>11200; table(${job('J-t2')},'active')`); assert.notEqual(touchWrap.firstElementChild,touchTable,'redraws once settled');
+const settled=touchWrap.firstElementChild; touchWrap.listeners.scroll();
+run(`clock=()=>11300; table(${job('J-t3')},'active')`); assert.equal(touchWrap.firstElementChild,settled,'trackpad/wheel scroll also defers');
+touchWrap.listeners.click();
+run(`table(${job('J-t3')},'active')`); assert.notEqual(touchWrap.firstElementChild,settled,'a tap redraws immediately');
+run('clock=()=>Date.now()');
+console.log('Dashboard gesture-deferred refresh checks passed');
+
 
 assert.equal(run("controls({id:'J-1',state:'queued',priority:100}).children[0].disabled"),true);
 assert.equal(run("controls({id:'J-1',state:'running',priority:50}).children.length"),1);
