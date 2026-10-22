@@ -28,6 +28,44 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(mismatch.detail.contains("simq 1.0.1, simqd 1.0.0"), mismatch.detail)
     }
 
+    /// `app_cli`: the running simq vs SimQueue.app's bundled one, found through an injected lookup.
+    func testAppCLIDoctorCheck() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("simq-appcli-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home").path
+        let app = home + "/Applications/SimQueue.app"
+        let helpers = app + "/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: helpers + "/simq", contents: Data(), attributes: [.posixPermissions: 0o755])
+        let cellar = root.appendingPathComponent("Cellar/simqueue/bin").path
+        try FileManager.default.createDirectory(atPath: cellar, withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: cellar + "/simq", contents: Data(), attributes: [.posixPermissions: 0o755])
+        let link = root.appendingPathComponent("bin-simq").path
+
+        let apps = DoctorCheck.installedApps(home: home, isExecutable: { $0.hasPrefix(home) })
+        XCTAssertEqual(apps, [app])
+
+        // App present, simq is the app's (through a symlink, like the cask's bin link): OK.
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: helpers + "/simq")
+        let same = try XCTUnwrap(DoctorCheck.appCLI(runningSimq: link, apps: apps))
+        XCTAssertEqual(same.name, "app_cli")
+        XCTAssertEqual(same.level, .ok, same.detail)
+
+        // App present, simq is the formula's: WARN with the one-line fix.
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: cellar + "/simq")
+        let other = try XCTUnwrap(DoctorCheck.appCLI(runningSimq: link, apps: apps))
+        XCTAssertEqual(other.level, .warn)
+        XCTAssertTrue(other.detail.contains("brew uninstall simqueue && brew link --cask simqueue-app"), other.detail)
+
+        // No app installed: no check.
+        let none = DoctorCheck.installedApps(home: home, isExecutable: { _ in false })
+        XCTAssertEqual(none, [])
+        XCTAssertNil(DoctorCheck.appCLI(runningSimq: link, apps: none))
+    }
+
     func testFakeBackendIsAlwaysAllowed() throws {
         XCTAssertEqual(try BackendGate.resolve(requested: .fake, simctlAvailable: false), .fake)
         XCTAssertEqual(try BackendGate.resolve(requested: .fake, simctlAvailable: true), .fake)
