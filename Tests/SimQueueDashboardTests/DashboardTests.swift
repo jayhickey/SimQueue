@@ -41,18 +41,20 @@ final class DashboardTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(recent.states).allSatisfy(\.isTerminal))
     }
 
-    func testRoutesRejectOtherWebsitesAndMutationsBeforeObservingDaemon() {
+    func testRoutesRejectMalformedHostsMissingCapabilitiesAndUnsafeMutations() {
         let api = DashboardAPI { _ in
             XCTFail("Unexpected daemon request"); throw DashboardError.unavailable
         }
         for request in [
-            "GET /secret/api/snapshot HTTP/1.1\r\nHost: attacker.example\r\n\r\n",
+            "GET /secret/api/snapshot HTTP/1.1\r\nHost: example.com/path\r\n\r\n",
+            "GET /secret/api/snapshot HTTP/1.1\r\nHost: user@example.com\r\n\r\n",
+            "GET /secret/api/snapshot HTTP/1.1\r\n\r\n",
             "POST /secret/api/snapshot HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n\r\n",
             "GET /wrong/api/snapshot HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n\r\n",
             "GET /secret/api/snapshot HTTP/1.1\r\nHost: 127.0.0.1:9000\r\nHost: attacker.example\r\n\r\n",
         ] {
             XCTAssertEqual(
-                DashboardServer.route(request: request, authority: "127.0.0.1:9000", token: "secret", api: api).status,
+                DashboardServer.route(request: request, token: "secret", api: api).status,
                 "403 Forbidden")
         }
         for path in ["cancel/J-1", "job/../state", "logs/", "job/a?b", "logs/J-1/extra"] {
@@ -60,12 +62,35 @@ final class DashboardTests: XCTestCase {
         }
     }
 
+    func testReverseProxyHostsAndHTTPSControls() {
+        var requests: [RequestParams] = []
+        let api = DashboardAPI { params in
+            requests.append(params)
+            throw ProtocolError(.invalidState, "test response")
+        }
+        for host in ["mini.example.ts.net", "mini.example.ts.net:8765", "127.0.0.1:9000"] {
+            let base = " /secret/ HTTP/1.1\r\nHost: \(host)\r\n"
+            XCTAssertEqual(
+                DashboardServer.route(request: "GET" + base + "\r\n", token: "secret", api: api).status, "200 OK")
+            for scheme in ["http", "https"] {
+                let request =
+                    "POST /secret/api/cancel/J-1 HTTP/1.1\r\nHost: \(host)\r\nOrigin: \(scheme)://\(host)\r\nX-SimQueue-Action: 1\r\n\r\n"
+                XCTAssertEqual(
+                    DashboardServer.route(request: request, token: "secret", api: api).status, "409 Conflict")
+            }
+            let crossOrigin =
+                "POST /secret/api/cancel/J-1 HTTP/1.1\r\nHost: \(host)\r\nOrigin: https://other.example\r\nX-SimQueue-Action: 1\r\n\r\n"
+            XCTAssertEqual(
+                DashboardServer.route(request: crossOrigin, token: "secret", api: api).status, "403 Forbidden")
+        }
+        XCTAssertEqual(requests.count, 6)
+    }
+
     func testAssetsAreSelfContainedAndUnknownRoutesFailClosed() {
         let api = DashboardAPI { _ in throw DashboardError.unavailable }
         func route(_ path: String) -> DashboardServer.Reply {
             DashboardServer.route(
-                request: "GET /secret/\(path) HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n\r\n", authority: "127.0.0.1:9000",
-                token: "secret", api: api)
+                request: "GET /secret/\(path) HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n\r\n", token: "secret", api: api)
         }
         XCTAssertEqual(route("").status, "200 OK")
         XCTAssertEqual(route("app.js").type, "text/javascript; charset=utf-8")
@@ -73,6 +98,50 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(route("../state").status, "404 Not Found")
         XCTAssertEqual(route("api/snapshot").status, "503 Service Unavailable")
         XCTAssertFalse(String(decoding: route("app.js").body, as: UTF8.self).contains("innerHTML"))
+    }
+
+    func testPWAAssetsKeepCapabilityScopeAndServeNativePNGIcons() throws {
+        let api = DashboardAPI { _ in
+            XCTFail("Asset requested the daemon"); throw DashboardError.unavailable
+        }
+        func asset(_ path: String, token: String = "secret") -> DashboardServer.Reply {
+            DashboardServer.route(
+                request: "GET /\(token)/\(path) HTTP/1.1\r\nHost: mini.example.ts.net\r\n\r\n",
+                token: "secret", api: api)
+        }
+        let manifestReply = asset("manifest.webmanifest")
+        XCTAssertEqual(manifestReply.status, "200 OK")
+        XCTAssertTrue(manifestReply.type.hasPrefix("application/manifest+json"))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: manifestReply.body) as? [String: Any])
+        XCTAssertEqual(manifest["start_url"] as? String, "./")
+        XCTAssertEqual(manifest["scope"] as? String, "./")
+        XCTAssertEqual(manifest["id"] as? String, "./")
+        XCTAssertEqual(manifest["display"] as? String, "standalone")
+        let icons = try XCTUnwrap(manifest["icons"] as? [[String: String]])
+        XCTAssertEqual(icons.compactMap { $0["sizes"] }, ["192x192", "512x512"])
+        for size in [180, 192, 512] {
+            let name = "icon-\(size).png"
+            let reply = asset(name)
+            XCTAssertEqual(reply.status, "200 OK")
+            XCTAssertEqual(reply.type, "image/png")
+            XCTAssertEqual(Array(reply.body.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+            func dimension(_ offset: Int) -> Int {
+                reply.body[offset..<(offset + 4)].reduce(0) { ($0 << 8) | Int($1) }
+            }
+            XCTAssertEqual(dimension(16), size)
+            XCTAssertEqual(dimension(20), size)
+            XCTAssertEqual(asset(name, token: "wrong").status, "403 Forbidden")
+        }
+        XCTAssertEqual(asset("manifest.webmanifest", token: "wrong").status, "403 Forbidden")
+        XCTAssertEqual(asset("sw.js", token: "wrong").status, "403 Forbidden")
+        XCTAssertTrue(asset("sw.js").type.hasPrefix("text/javascript"))
+        let html = String(decoding: asset("").body, as: UTF8.self)
+        XCTAssertTrue(html.contains("rel=\"manifest\""))
+        XCTAssertTrue(html.contains("rel=\"apple-touch-icon\""))
+        let wire = String(decoding: DashboardServer.wireResponse(asset("sw.js")), as: UTF8.self)
+        XCTAssertTrue(wire.contains("worker-src 'self'"))
+        XCTAssertTrue(wire.contains("manifest-src 'self'"))
+        XCTAssertFalse(wire.contains("Service-Worker-Allowed"))
     }
 
     func testHTTPFramingPreservesEntireUTF8Body() throws {
@@ -97,7 +166,7 @@ final class DashboardTests: XCTestCase {
         let prefix = "POST /secret/api/priority/J-1/70 HTTP/1.1\r\nHost: 127.0.0.1:9000\r\n"
         let valid = "Origin: http://127.0.0.1:9000\r\nX-SimQueue-Action: 1\r\nContent-Length: 0\r\n\r\n"
         func route(_ headers: String) -> DashboardServer.Reply {
-            DashboardServer.route(request: prefix + headers, authority: "127.0.0.1:9000", token: "secret", api: api)
+            DashboardServer.route(request: prefix + headers, token: "secret", api: api)
         }
         for headers in [
             "\r\n",
@@ -124,7 +193,7 @@ final class DashboardTests: XCTestCase {
         let reply = DashboardServer.route(
             request:
                 "POST /secret/api/priority/J-1/70 HTTP/1.1\r\nHost: 127.0.0.1:9000\r\nOrigin: http://127.0.0.1:9000\r\nX-SimQueue-Action: 1\r\n\r\n",
-            authority: "127.0.0.1:9000", token: "secret", api: api)
+            token: "secret", api: api)
         XCTAssertEqual(reply.status, "409 Conflict")
         XCTAssertEqual(String(decoding: reply.body, as: UTF8.self), "job already started")
     }

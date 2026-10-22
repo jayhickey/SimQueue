@@ -9,8 +9,8 @@ import SimQueueProtocol
     import Darwin
 #endif
 
-/// Foreground, loopback-only server. Ephemeral capability URLs and an exact Host check
-/// prevent other websites (including DNS rebinding) from reading local queue data.
+/// Foreground, loopback-only server. A private capability URL grants access, including
+/// through a reverse proxy. Job controls also require a matching HTTP(S) Origin.
 public final class DashboardServer {
     private let listener: Int32
     private let token = UUID().uuidString
@@ -86,7 +86,7 @@ public final class DashboardServer {
             request.append(contentsOf: bytes.prefix(count))
         }
         let reply = Self.route(
-            request: String(decoding: request, as: UTF8.self), authority: authority, token: token, api: api)
+            request: String(decoding: request, as: UTF8.self), token: token, api: api)
         let data = Self.wireResponse(reply)
         let sendDeadline = ProcessInfo.processInfo.systemUptime + 2
         data.withUnsafeBytes { buffer in
@@ -116,7 +116,7 @@ public final class DashboardServer {
             Referrer-Policy: no-referrer\r
             X-Content-Type-Options: nosniff\r
             X-Frame-Options: DENY\r
-            Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r
+            Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'\r
             \r
             """
         var data = Data((headers + "\n").utf8)
@@ -142,14 +142,26 @@ public final class DashboardServer {
         }
     }
 
-    static func route(request: String, authority: String, token: String, api: DashboardAPI) -> Reply {
+    private static func validAuthority(_ value: String) -> Bool {
+        // Host is one authority, never a URL, userinfo, path or forwarded header.
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]")
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy({ allowed.contains($0) }),
+            let url = URLComponents(string: "http://\(value)"),
+            let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+            url.path.isEmpty, url.query == nil, url.fragment == nil
+        else { return false }
+        return true
+    }
+
+    static func route(request: String, token: String, api: DashboardAPI) -> Reply {
         let lines = request.components(separatedBy: "\r\n")
         let first = (lines.first ?? "").split(separator: " ").map(String.init)
         let hosts = lines.dropFirst().prefix(while: { !$0.isEmpty }).compactMap { line -> String? in
             guard let colon = line.firstIndex(of: ":"), line[..<colon].lowercased() == "host" else { return nil }
             return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        guard first.count == 3, ["GET", "POST"].contains(first[0]), first[2] == "HTTP/1.1", hosts == [authority],
+        guard first.count == 3, ["GET", "POST"].contains(first[0]), first[2] == "HTTP/1.1",
+            hosts.count == 1, let host = hosts.first, Self.validAuthority(host),
             first[1].hasPrefix("/\(token)/")
         else { return Reply("403 Forbidden") }
         let path = String(first[1].dropFirst(token.count + 2))
@@ -160,12 +172,17 @@ public final class DashboardServer {
                     return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
                 }
             }
-            guard header("origin") == ["http://\(authority)"], header("x-simqueue-action") == ["1"],
+            let origins = header("origin")
+            guard origins == ["http://\(host)"] || origins == ["https://\(host)"],
+                header("x-simqueue-action") == ["1"],
                 header("transfer-encoding").isEmpty,
                 header("content-length").isEmpty || header("content-length") == ["0"],
                 request.components(separatedBy: "\r\n\r\n").dropFirst().allSatisfy(\.isEmpty),
                 path.hasPrefix("api/")
             else { return Reply("403 Forbidden") }
+        }
+        if first[0] == "GET", let icon = DashboardIcons.files[path] {
+            return Reply("200 OK", "image/png", icon)
         }
         if first[0] == "GET", let asset = DashboardAssets.files[path] {
             return Reply("200 OK", asset.type + "; charset=utf-8", Data(asset.text.utf8))

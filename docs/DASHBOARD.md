@@ -76,7 +76,7 @@ refreshed job state before retrying. Priority changes require the updated daemon
 upgrade/restart the daemon along with the CLI.
 
 The listener is loopback-only with a random per-session capability in its URL,
-exact Host checking, no CORS, no external assets, and narrow API routes. Mutations require POST, the exact same Origin, and an
+one valid Host header, no CORS, no external assets, and narrow API routes. Mutations require POST, an HTTP(S) Origin matching the request Host, and an
 explicit action header; cross-origin requests have no CORS permission. Keep
 the URL private: it permits controlling jobs and viewing commands and logs, which may contain secrets.
 Other processes/users on the same host are not a security isolation boundary.
@@ -87,3 +87,41 @@ No web dependencies or separate asset installation are required.
 
 The optional [macOS menu bar app](MENU_BAR.md) opens this dashboard on click and
 adds status counts, Launch at Login, and safe daemon stop options.
+
+## Private access through Tailscale Serve
+
+The listener stays on loopback, but accepts reverse-proxied hostnames. To expose it
+only within your tailnet, keep this command running:
+
+```sh
+simq dashboard --port 8765 --no-open
+```
+
+In another terminal, configure Tailscale Serve (not public Funnel):
+
+```sh
+tailscale serve --bg --https=8765 http://127.0.0.1:8765
+```
+
+Use the HTTPS hostname and port printed by Tailscale, followed by the entire private
+path printed by SimQueue. Retain the trailing slash. Both devices must have
+Tailscale connected and the tailnet policy must permit access. Follow Tailscale's
+HTTPS setup prompt if needed. An extra rewriting proxy is not required.
+The Serve configuration persists, but the dashboard process must remain running;
+restarting it generates a new private path. Share the link only with trusted users:
+it grants access to logs and job controls. This does not configure Tailscale or
+change existing Serve routes automatically.
+
+## Install as a web app
+
+Open the complete private dashboard link over Tailscale HTTPS. On iPhone or iPad,
+use Safari’s Share menu → Add to Home Screen (enable Open as Web App if offered).
+On desktop browsers, use Install app or Add to Dock when available. The installed
+web app opens in its own window with the SimQueue icon. It does not change the
+native menu bar app or its Dock visibility.
+
+The installation and service worker are scoped to the private URL path. No queue
+responses, logs, actions or app shell are stored in an offline cache. An offline
+launch shows a connection message; there is no offline job control, background
+sync or push notification support. Tailscale must be connected for remote access.
+Restarting the dashboard changes its private URL, so reinstall from the new link.
