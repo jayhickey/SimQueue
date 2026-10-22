@@ -101,14 +101,17 @@ extension Engine {
 
     /// Date directories left empty by removals go too.
     public func removeEmptyDayDirectories(after removed: [String], now: Double) throws {
-        guard !removed.isEmpty, let root = environment.artifactsRoot else { return }
-        let fileSystem = environment.fileSystem
-        for day in try fileSystem.children(of: root) where Self.dayStart(day.split(separator: "/").last) != nil {
-            guard try fileSystem.children(of: day).isEmpty else { continue }
-            if (try? fileSystem.removeItem(day)) != nil, !fileSystem.fileExists(day) {
-                try store.audit(Self.artifactRemovedAuditType, detail: "removed empty \(day)", now: now)
+        guard !removed.isEmpty else { return }
+        for root in environment.allArtifactsRoots {
+            let fileSystem = environment.fileSystem
+            for day in try fileSystem.children(of: root) where Self.dayStart(day.split(separator: "/").last) != nil {
+                guard try fileSystem.children(of: day).isEmpty else { continue }
+                if (try? fileSystem.removeItem(day)) != nil, !fileSystem.fileExists(day) {
+                    try store.audit(Self.artifactRemovedAuditType, detail: "removed empty \(day)", now: now)
+                }
             }
         }
+
     }
 
     /// Audit type that pins a job's artifacts (`simq submit --keep`).
@@ -131,10 +134,14 @@ extension Engine {
     public func gcPlan(now: Double) throws -> GCPlan {
         let aged = try ageCandidates(now: now)
         let budget = reliability.ageRules.artifactRetention.budgetBytes
-        guard let root = environment.artifactsRoot, budget != nil else {
+        guard !environment.allArtifactsRoots.isEmpty, budget != nil else {
             return GCPlan(aged: aged, entries: [], budget: budget)
         }
-        return GCPlan(aged: aged, entries: try budgetEntries(root: root, already: aged.map(\.path)), budget: budget)
+        return GCPlan(
+            aged: aged,
+            entries: try environment.allArtifactsRoots.flatMap {
+                try budgetEntries(root: $0, already: aged.map(\.path))
+            }, budget: budget)
     }
 
     /// `simq gc`'s disk half (no lock needed): sizes, the budget's picks, and each
@@ -215,15 +222,20 @@ extension Engine {
     /// the size budget. An active job's directory is never a candidate.
     func retentionCandidates(now: Double) throws -> [(path: String, reason: String)] {
         let aged = try ageCandidates(now: now)
-        guard let root = environment.artifactsRoot, let budget = reliability.ageRules.artifactRetention.budgetBytes
+        guard !environment.allArtifactsRoots.isEmpty, let budget = reliability.ageRules.artifactRetention.budgetBytes
         else { return aged }
-        let entries = try budgetEntries(root: root, already: aged.map(\.path))
+        let entries = try environment.allArtifactsRoots.flatMap {
+            try budgetEntries(root: $0, already: aged.map(\.path))
+        }
         return aged + Self.overBudget(entries, budget: budget, size: environment.fileSystem.sizeOfItem)
     }
 
     /// The age rules' candidates: whole directories past retention, then DerivedData.
     func ageCandidates(now: Double) throws -> [(path: String, reason: String)] {
-        guard let root = environment.artifactsRoot else { return [] }
+        try environment.allArtifactsRoots.flatMap { try ageCandidates(root: $0, now: now) }
+    }
+
+    private func ageCandidates(root: String, now: Double) throws -> [(path: String, reason: String)] {
         let expired = try expiredJobDirectories(root: root, now: now)
         var result = expired.map { (path: $0, reason: "past retention") }
         let removed = Set(expired)

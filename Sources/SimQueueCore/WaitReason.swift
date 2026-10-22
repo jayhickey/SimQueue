@@ -5,6 +5,7 @@
 public enum WaitReason: Sendable, Equatable, Codable {
     case admissionPacing(active: Int, limit: Int)
     case cleanupPending(jobID: String)
+    case storageUnavailable(detail: String)
     case paused
     case draining(recentInfraFailures: Int)
     case memoryPressure(level: MemoryPressure, stopAt: MemoryPressure)
@@ -30,6 +31,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         switch self {
         case .admissionPacing: return "admission_pacing"
         case .cleanupPending: return "cleanup_pending"
+        case .storageUnavailable: return "storage_unavailable"
         case .paused: return "paused"
         case .draining: return "draining"
         case .memoryPressure: return "memory_pressure"
@@ -59,6 +61,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .cleanupPending(let jobID):
             return
                 "previous command processes for \(jobID) still hold resources; cleanup must finish before retry (simq doctor)"
+        case .storageUnavailable(let detail): return "job storage unavailable: \(detail)"
         case .paused:
             return "queue is paused (simq resume)"
         case .draining(let count):

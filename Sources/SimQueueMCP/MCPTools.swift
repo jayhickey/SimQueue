@@ -55,6 +55,7 @@ enum MCPTools {
                         "description":
                             "Bundle ids to reset on each leased sim before the command (uninstall, privacy reset, then keychain reset; falls back to an erase if a step fails). Needs min_sims >= 1.",
                     ],
+                    "template": string("Named host template from host_templates; requires min_sims >= 1."),
                     "fresh_sim": boolean("Erase each leased sim before the command. Needs min_sims >= 1."),
                 ],
                 required: ["project"]),

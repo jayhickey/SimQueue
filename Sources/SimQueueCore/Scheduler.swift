@@ -16,6 +16,9 @@ public struct SchedulerInput: Sendable {
     /// False when a separate pool manager owns creation and booting. Counts remain real.
     public var allowNewBoots: Bool
     public var lastAdmissionAt: Double?
+    public var defaultHostTemplate: String?
+    public var readySimsByTemplate: [String: Int]?
+    public var storageFailure: String?
     public var cleanupJobIDs: Set<String>
 
     public init(
@@ -30,7 +33,10 @@ public struct SchedulerInput: Sendable {
         loadThrottledPreviously: Bool = false,
         allowNewBoots: Bool = true,
         lastAdmissionAt: Double? = nil,
-        cleanupJobIDs: Set<String> = []
+        cleanupJobIDs: Set<String> = [],
+        storageFailure: String? = nil,
+        readySimsByTemplate: [String: Int]? = nil,
+        defaultHostTemplate: String? = nil
     ) {
         self.now = now
         self.queued = queued
@@ -44,6 +50,9 @@ public struct SchedulerInput: Sendable {
         self.allowNewBoots = allowNewBoots
         self.lastAdmissionAt = lastAdmissionAt
         self.cleanupJobIDs = cleanupJobIDs
+        self.storageFailure = storageFailure
+        self.readySimsByTemplate = readySimsByTemplate
+        self.defaultHostTemplate = defaultHostTemplate
     }
 }
 
@@ -123,6 +132,7 @@ public struct Scheduler: Sendable {
     /// Host-wide gates that stop all admissions, in a stable order.
     public func globalWaitReasons(_ input: SchedulerInput) -> [WaitReason] {
         var reasons: [WaitReason] = []
+        if let detail = input.storageFailure { reasons.append(.storageUnavailable(detail: detail)) }
         if input.control.paused {
             reasons.append(.paused)
         }
@@ -160,6 +170,7 @@ public struct Scheduler: Sendable {
         let ordered = config.priority.order(input.queued, now: input.now)
         var state = CapacityState(
             input: input, settleSeconds: config.admissionSettleSeconds, minimumMemory: config.minimumJobMemoryBytes)
+        var readyByTemplate = input.readySimsByTemplate
         var admissions: [Admission] = []
         var waiting: [QueueExplanation] = []
         var reservedFor: String?
@@ -211,9 +222,16 @@ public struct Scheduler: Sendable {
                 continue
             }
 
-            switch allocate(job, state: state, cpuCount: input.host.cpuCount, load1: input.host.load1) {
+            var allocationState = state
+            let templateKey = job.command?.template ?? input.defaultHostTemplate ?? ""
+            if let readyByTemplate {
+                allocationState.idleRunning = min(state.idleRunning, readyByTemplate[templateKey, default: 0])
+                allocationState.idleParked = 0
+            }
+            switch allocate(job, state: allocationState, cpuCount: input.host.cpuCount, load1: input.host.load1) {
             case .success(let allocation):
                 state.apply(allocation, job: job)
+                if readyByTemplate != nil { readyByTemplate?[templateKey, default: 0] -= allocation.fromIdle }
                 admissions.append(
                     Admission(
                         jobID: job.id,

@@ -107,6 +107,10 @@ public struct EngineEnvironment: Sendable {
     /// Where job logs and artifacts live (`<root>/<YYYY-MM-DD>/<job-id>/`), for retention.
     /// Nil: nothing is ever removed there.
     public var artifactsRoot: String?
+    public var historicalArtifactsRoots: [String] = []
+    public var allArtifactsRoots: [String] {
+        Array(Set(historicalArtifactsRoots + (artifactsRoot.map { [$0] } ?? []))).sorted()
+    }
 
     public init(
         clock: any Clock,
@@ -162,6 +166,9 @@ public final class Engine {
     public private(set) var lastAdmissionAt: Double?
     /// The sim pool's settings. Nil (the default) keeps the pool off: sim capacity comes
     /// from the backend's own counts and jobs get no pool sims.
+    public var hostTemplates: [String: String] = [:]
+    public var defaultHostTemplate: String?
+    public var admissionStorageFailure: String?
     public var pool: SimPoolConfig?
     /// Planned restart gate. In memory so a fresh daemon resumes the queued work.
     public var maintenanceDraining = false
@@ -483,7 +490,10 @@ public final class Engine {
             loadThrottledPreviously: loadThrottled,
             allowNewBoots: pool == nil,
             lastAdmissionAt: lastAdmissionAt,
-            cleanupJobIDs: cleanupOwners
+            cleanupJobIDs: cleanupOwners,
+            storageFailure: admissionStorageFailure,
+            readySimsByTemplate: try readySimsByTemplate(),
+            defaultHostTemplate: defaultHostTemplate
         )
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {

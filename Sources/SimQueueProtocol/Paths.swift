@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import Foundation
+import SimQueueCore
 
 /// Where SimQueue keeps its state. One directory (owner-only, 0700) holds the database,
 /// the socket, the lock file and the optional config file.
@@ -59,6 +60,7 @@ public struct SimQueuePaths: Sendable, Equatable {
 /// job record). Outside the managed work roots, so job teardown never deletes them.
 public struct JobArtifacts: Sendable, Equatable {
     public var root: String
+    public var legacyRoot: String?
 
     public init(root: String) {
         self.root = root.hasSuffix("/") ? String(root.dropLast()) : root
@@ -67,6 +69,14 @@ public struct JobArtifacts: Sendable, Equatable {
     public func directory(jobID: String, createdAt: Double) -> String {
         "\(root)/\(Timestamp(createdAt).rfc3339.prefix(10))/\(jobID)"
     }
+
+    public func directory(for job: Job) -> String {
+        JobArtifacts(root: job.command?.artifactsRoot ?? legacyRoot ?? root)
+            .directory(jobID: job.id, createdAt: job.createdAt)
+    }
+
+    public func logPath(for job: Job) -> String { directory(for: job) + "/combined.log" }
+    public func summaryPath(for job: Job) -> String { directory(for: job) + "/job.json" }
 
     public func logPath(jobID: String, createdAt: Double) -> String {
         directory(jobID: jobID, createdAt: createdAt) + "/combined.log"

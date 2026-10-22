@@ -99,6 +99,10 @@ public struct JobCommand: Sendable, Codable, Equatable {
     public var resetApps: [String]?
     /// Erase each leased sim before the command runs (`--fresh-sim`). Nil: no.
     public var freshSim: Bool?
+    /// Selected host template label, persisted with the command.
+    public var template: String?
+    /// Daemon-assigned output root; nil on legacy jobs.
+    public var artifactsRoot: String?
 
     /// Whether the job asks for any sim preparation.
     public var wantsSimPrep: Bool { freshSim == true || !(resetApps ?? []).isEmpty }

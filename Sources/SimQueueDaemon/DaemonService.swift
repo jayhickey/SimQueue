@@ -64,6 +64,7 @@ public final class DaemonService: @unchecked Sendable {
     /// Checks a submitted `git_sha` against its worktree (`git rev-parse`, read-only).
     public var gitCheckout = GitCheckout()
     /// `<state dir>/events.jsonl`, appended every tick (nil: off).
+    public var storageChecksEnabled = false
     public var eventLog: EventLog?
 
     public init(
@@ -77,6 +78,8 @@ public final class DaemonService: @unchecked Sendable {
         self.engine = engine
         self.config = config
         engine.pool = config.pool
+        engine.hostTemplates = config.hostTemplates
+        engine.defaultHostTemplate = config.defaultHostTemplate
         if config.pool != nil {
             // A restart may leave pool rows mid-boot or pointing at sims that are gone.
             do {
@@ -187,11 +190,16 @@ public final class DaemonService: @unchecked Sendable {
                     }
                 }
             }
+            if storageChecksEnabled {
+                do { try JobStorage.check(artifacts.root); engine.admissionStorageFailure = nil } catch {
+                    engine.admissionStorageFailure = String(describing: error)
+                }
+            }
             let result = try engine.tick(host: host)
             let now = engine.environment.clock.now()
             if !historyRunning, now - lastHistoryAt >= 3600, info.statePath != ":memory:" {
                 historyRunning = true; lastHistoryAt = now
-                let statePath = info.statePath; let artifactRoot = artifacts.root
+                let statePath = info.statePath; let artifactRoot = artifacts.legacyRoot ?? artifacts.root
                 historyQueue.async { [self] in
                     do { _ = try JobStore.archiveHistory(path: statePath, artifactsRoot: artifactRoot, now: now) } catch
                     { log("history archival deferred: \(error)") }
@@ -307,6 +315,8 @@ public final class DaemonService: @unchecked Sendable {
                     return .status(current)
                 case .resume:
                     guard !shutdownRequested else { throw ProtocolError(.invalidState, "daemon is stopping") }
+                    try JobOutputConfiguration.markDrained(
+                        false, stateDirectory: (info.statePath as NSString).deletingLastPathComponent)
                     engine.maintenanceDraining = false
                     try store.resume(now: engine.environment.clock.now())
                     return .status(try status())
@@ -324,12 +334,13 @@ public final class DaemonService: @unchecked Sendable {
                 case .gc: throw ProtocolError(.internalError, "gc is handled outside the lock")
                 case .doctor:
                     let now = engine.environment.clock.now()
-                    return .doctor(
-                        try DoctorBuilder.build(
-                            store: store, now: now, daemon: info, socketPath: info.socketPath,
-                            live: DoctorBuilder.LiveContext(
-                                engine: engine, watchdog: config.watchdog, health: try health(now: now),
-                                templateVersions: templateVersions)))
+                    var result = try DoctorBuilder.build(
+                        store: store, now: now, daemon: info, socketPath: info.socketPath,
+                        live: DoctorBuilder.LiveContext(
+                            engine: engine, watchdog: config.watchdog, health: try health(now: now),
+                            templateVersions: templateVersions))
+                    result.checks.append(storageCheck())
+                    return .doctor(result)
                 }
             }
         }
@@ -574,7 +585,7 @@ public final class DaemonService: @unchecked Sendable {
             if job.state.isTerminal { info.exitCodeValue = SimQExitCode.infraFailure.rawValue }
         }
         if job.command != nil {
-            info.logPath = artifacts.logPath(jobID: job.id, createdAt: job.createdAt)
+            info.logPath = artifacts.logPath(for: job)
             if job.command?.wantsSimPrep == true {
                 let outcomes = try store.auditEntries(jobID: job.id, type: Engine.simPrepAuditType).compactMap {
                     $0.detail.flatMap { try? JSONDecoder().decode(SimPrepOutcome.self, from: Data($0.utf8)) }
@@ -582,7 +593,7 @@ public final class DaemonService: @unchecked Sendable {
                 info.simPrep = outcomes.isEmpty ? nil : outcomes
             }
             if job.startedAt != nil {
-                let runDir = artifacts.directory(jobID: job.id, createdAt: job.createdAt)
+                let runDir = artifacts.directory(for: job)
                 info.runDir = runDir
                 info.attachRunInfo(try store.jobRunInfo(jobID: id))
             }
@@ -646,6 +657,17 @@ public final class DaemonService: @unchecked Sendable {
         } else if params.environment?.isEmpty == false || params.cwd != nil {
             throw ProtocolError(.invalidArgument, "environment and cwd need a command")
         }
+        if let template = params.template ?? (params.minSims > 0 ? config.defaultHostTemplate : nil) {
+            guard config.hostTemplates[template] != nil else {
+                throw ProtocolError(.invalidArgument, "unknown host template \(template)")
+            }
+            guard params.minSims > 0, engine.pool != nil, command != nil else {
+                throw ProtocolError(
+                    .invalidArgument, "template selection requires a command and simulator pool (min_sims >= 1)")
+            }
+            command?.template = template
+        }
+        command?.artifactsRoot = artifacts.root
         if params.freshSim == true || params.resetApps?.isEmpty == false {
             guard command != nil else {
                 throw ProtocolError(.invalidArgument, "reset_apps and fresh_sim need a command")
@@ -735,7 +757,7 @@ public final class DaemonService: @unchecked Sendable {
             throw ProtocolError(.invalidArgument, "offset must be >= 0")
         }
         let limit = min(max(1, params.maxBytes ?? LogsParams.defaultMaxBytes), LogsParams.maxBytesLimit)
-        let path = artifacts.logPath(jobID: job.id, createdAt: job.createdAt)
+        let path = artifacts.logPath(for: job)
         var bytes = Data()
         var size: Int64 = 0
         if let handle = FileHandle(forReadingAtPath: path) {
@@ -832,6 +854,24 @@ public final class DaemonService: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: healthPath)
     }
 
+    private func storageDiagnostics() -> StorageInfo {
+        let failure: String?
+        do { try JobStorage.check(artifacts.root); failure = nil } catch { failure = String(describing: error) }
+        return StorageInfo(
+            stateDirectory: (info.statePath as NSString).deletingLastPathComponent,
+            jobOutputRoot: artifacts.root, available: failure == nil,
+            freeBytes: failure == nil ? JobStorage.freeBytes(artifacts.root) : nil, failure: failure)
+    }
+
+    private func storageCheck() -> DoctorCheck {
+        let value = storageDiagnostics()
+        return DoctorCheck(
+            name: "job_storage", level: value.available ? .ok : .fail,
+            detail: "state: \(value.stateDirectory); job output: \(value.jobOutputRoot); "
+                + (value.failure ?? "available, writable; free bytes: \(value.freeBytes.map(String.init) ?? "unknown")")
+        )
+    }
+
     private func status() throws -> StatusResult {
         let control = try store.queueControl()
         let active = try store.activeJobs()
@@ -844,6 +884,10 @@ public final class DaemonService: @unchecked Sendable {
             let sims = try store.poolSims()
             let intents = try store.pendingActionIntents()
             drainComplete = groups.isEmpty && intents.isEmpty && !sims.contains { $0.phase == .leased }
+        }
+        if drainComplete, info.statePath != ":memory:" {
+            try JobOutputConfiguration.markDrained(
+                true, stateDirectory: (info.statePath as NSString).deletingLastPathComponent)
         }
         return StatusResult(
             daemon: info,
@@ -863,7 +907,8 @@ public final class DaemonService: @unchecked Sendable {
                         + "; warm reuse retains previous job state (use --reset-app or --fresh-sim)"
                 } ?? "no active host template; build one, set simctl.template to its UDID, then restart simqd"
             },
-            drainComplete: drainComplete
+            drainComplete: drainComplete,
+            storage: storageDiagnostics()
         )
     }
 

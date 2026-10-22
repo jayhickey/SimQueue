@@ -85,6 +85,7 @@ public final class SimctlBackend: SimBackend, @unchecked Sendable {
                 var udid: String
                 var name: String
                 var state: String
+                var deviceTypeIdentifier: String?
             }
             var devices: [String: [Device]]
         }
@@ -93,7 +94,9 @@ public final class SimctlBackend: SimBackend, @unchecked Sendable {
         }
         return listing.devices.keys.sorted().flatMap { runtime in
             listing.devices[runtime, default: []].map {
-                SimDevice(udid: $0.udid, name: $0.name, isBooted: $0.state == "Booted", state: $0.state)
+                SimDevice(
+                    udid: $0.udid, name: $0.name, isBooted: $0.state == "Booted", state: $0.state, runtime: runtime,
+                    deviceType: $0.deviceTypeIdentifier)
             }
         }
     }

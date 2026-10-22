@@ -93,6 +93,18 @@ extension Engine {
     /// Check before any ready clone can be counted or leased, including a control
     /// request racing the first pool worker pass after a template change.
     func requireCompatiblePoolTemplate() throws {
+        if !hostTemplates.isEmpty {
+            let allowed = try configuredClonePlans()
+            let incompatible = try store.poolSims().contains { sim in
+                !allowed.contains { matches(sim, plan: $0) }
+            }
+            guard !incompatible else {
+                throw TemplateError.poolDisabled(
+                    "pool contains a clone outside configured host templates; drain and reset the old pool before changing template sources"
+                )
+            }
+            return
+        }
         if let selected = environment.sims.templateCloneSource?.cloneTemplate {
             let entries = try templates()
             let selectedID =
@@ -163,7 +175,10 @@ extension Engine {
     func leasePoolSims(count: Int, jobID: String, now: Double) throws {
         var leased = 0
         for _ in 0..<count {
-            guard try acquirePoolSim(leaseID: Self.poolLeaseID(jobID: jobID)) != nil else { break }
+            guard
+                try acquirePoolSim(
+                    leaseID: Self.poolLeaseID(jobID: jobID), template: store.job(id: jobID)?.command?.template) != nil
+            else { break }
             leased += 1
         }
         if leased < count {
@@ -283,9 +298,12 @@ extension Engine {
         refreshDefaultTemplate()
         try requireCompatiblePoolTemplate()
         try recoverPressureShutdowns(hostWork: hostWork)
-        let noTemplate = environment.sims.templateCloneSource.map { $0.cloneTemplate == nil } ?? false
-        let unreadyTemplate = try unreadyCloneTemplate()
-        let clonePlan = try selectedClonePlan()
+        let targetTemplate = try nextDemandedTemplate()
+        let clonePlan = try planForTemplate(targetTemplate)
+        let noTemplate = environment.sims.templateCloneSource != nil && clonePlan.source == nil
+        let unreadyTemplate = try templates().first {
+            ($0.record.udid == clonePlan.source || $0.record.name == clonePlan.source) && $0.record.status != "ready"
+        }?.record
         let creationBoots = environment.sims.createBoots || clonePlan.boots
         var host = try host ?? environment.probe.sample(now: now)
         let capacity = max(0, config.maxSims)
@@ -318,7 +336,44 @@ extension Engine {
             createBoots: creationBoots)
         var report = PoolPassReport()
         report.releasedFromJobs = releasedFromJobs
-        report.actions = SimPoolPlanner.plan(input, config: config).filter { action in
+        var planned: [SimPoolAction]
+        if hostTemplates.isEmpty {
+            planned = SimPoolPlanner.plan(input, config: config)
+        } else {
+            let matching = sims.filter { matches($0, plan: clonePlan) }
+            let other = sims.filter { !matches($0, plan: clonePlan) }
+            var selectedConfig = config
+            selectedConfig.maxSims = max(0, config.maxSims - other.count)
+            selectedConfig.maxConcurrentBoots = max(0, config.maxConcurrentBoots - other.filter(\.holdsBootSlot).count)
+            let selectedDemand =
+                try templateDemand(targetTemplate, availableMemoryBytes: host.availableMemoryBytes)
+                + (targetTemplate == defaultHostTemplate ? extraDemand : 0)
+            let selectedInput = SimPoolInput(
+                sims: matching, demand: demand == 0 ? 0 : selectedDemand,
+                signals: allSignals, unleasedUsers: unleasedUsers, now: now, createBoots: creationBoots)
+            planned = SimPoolPlanner.plan(selectedInput, config: selectedConfig)
+            var idleConfig = config; idleConfig.warmMin = 0
+            let idleInput = SimPoolInput(
+                sims: other, demand: 0, signals: allSignals,
+                unleasedUsers: unleasedUsers, now: now, createBoots: creationBoots)
+            planned += SimPoolPlanner.plan(idleInput, config: idleConfig).filter {
+                if case .create = $0 { return false }; if case .boot = $0 { return false }; return true
+            }
+            // Make room when the shared pool is full of another profile's idle clones.
+            // Use the normal bounded recycle path, never replace a leased/in-flight sim.
+            if selectedDemand > matching.filter({ $0.phase != .leased && !$0.tainted }).count,
+                sims.count >= config.maxSims,
+                let victim = other.filter({ $0.leaseID == nil && !$0.holdsBootSlot && !unleasedUsers.contains($0.udid) }
+                )
+                .sorted(by: { $0.lastUsedAt < $1.lastUsedAt }).first,
+                !planned.contains(where: {
+                    if case .recycle(let id, _) = $0 { return id == victim.udid }; return false
+                })
+            {
+                planned.insert(.recycle(udid: victim.udid, reason: "make room for requested host template"), at: 0)
+            }
+        }
+        report.actions = planned.filter { action in
             guard unresolvedClone else { return true }
             switch action {
             case .create, .boot: return false;
@@ -398,6 +453,10 @@ extension Engine {
             do {
                 switch action {
                 case .create:
+                    guard try store.poolSims().count < config.maxSims else { continue }
+                    if creationBoots, try store.poolSims().filter(\.holdsBootSlot).count >= config.maxConcurrentBoots {
+                        continue
+                    }
                     // No template to clone yet: wait (no intent, no failed clone) until one is built.
                     guard !noTemplate else {
                         report.createsDeferredNoTemplate += 1
@@ -440,6 +499,9 @@ extension Engine {
                     }
                     if let sim { byUDID[sim.udid] = sim }
                 case .boot(let udid, let reason):
+                    guard try store.poolSims().filter(\.holdsBootSlot).count < config.maxConcurrentBoots else {
+                        continue
+                    }
                     guard loadOK else {
                         report.bootsDeferredForLoad.append(udid)
                         continue
@@ -677,14 +739,18 @@ extension Engine {
 
     /// Hands out the oldest ready sim to `leaseID`, or nil if none is ready (the caller
     /// waits and runs another pool pass; a settling sim is never handed out).
-    public func acquirePoolSim(leaseID: String, unleasedUsers: Set<String> = []) throws -> PoolSim? {
+    public func acquirePoolSim(leaseID: String, unleasedUsers: Set<String> = [], template: String? = nil) throws
+        -> PoolSim?
+    {
         try requireCompatiblePoolTemplate()
         let now = environment.clock.now()
         let rows = try store.poolSims()
         let unsafe = try unverifiedSlimCloneIDs(rows)
+        let selected = try planForTemplate(template)
         guard
             let candidate = SimPoolPlanner.handoffCandidates(
-                rows.filter { !unsafe.contains($0.udid) }, unleasedUsers: unleasedUsers
+                rows.filter { !unsafe.contains($0.udid) && (hostTemplates.isEmpty || matches($0, plan: selected)) },
+                unleasedUsers: unleasedUsers
             ).first
         else { return nil }
         var sim = try candidate.applying(.leased(leaseID: leaseID), now: now)
@@ -864,8 +930,67 @@ extension Engine {
         poolClonePrefix + String(decoding: try JSONEncoder.sorted.encode(operation), as: UTF8.self)
     }
 
+    func matches(_ sim: PoolSim, plan: SimClonePlan) -> Bool {
+        guard let ref = sim.clonedFrom else { return plan.source == nil }
+        return (ref.udid != nil && ref.udid == plan.sourceRef?.udid)
+            || (plan.source != nil && (ref.udid == plan.source || ref.name == plan.source))
+    }
+
+    func planForTemplate(_ name: String?) throws -> SimClonePlan {
+        if let name = name ?? defaultHostTemplate {
+            guard let source = hostTemplates[name] else {
+                throw TemplateError.poolDisabled("unknown host template \(name)")
+            }
+            return try clonePlan(source: source)
+        }
+        return try selectedClonePlan()
+    }
+
+    func configuredClonePlans() throws -> [SimClonePlan] {
+        var result = try hostTemplates.values.sorted().map { try clonePlan(source: $0) }
+        if let source = environment.sims.cloneSource { result.append(try clonePlan(source: source)) }
+        return result.isEmpty ? [try selectedClonePlan()] : result
+    }
+
+    public func readySimsByTemplate() throws -> [String: Int]? {
+        guard !hostTemplates.isEmpty else { return nil }
+        let rows = try store.poolSims()
+        let unsafe = try unverifiedSlimCloneIDs(rows)
+        let ready = SimPoolPlanner.handoffCandidates(rows.filter { !unsafe.contains($0.udid) }, unleasedUsers: [])
+        var counts: [String: Int] = [:]
+        for name in [""] + hostTemplates.keys.sorted() {
+            let plan = try planForTemplate(name.isEmpty ? nil : name)
+            counts[name] = ready.filter { matches($0, plan: plan) }.count
+        }
+        return counts
+    }
+
+    func nextDemandedTemplate() throws -> String? {
+        guard !hostTemplates.isEmpty else { return nil }
+        let ordered = scheduler.config.priority.order(try store.queuedJobs(), now: environment.clock.now())
+        // Keep the highest-ranked simulator waiter's ready capacity intact until
+        // admission; preparing a later profile must not recycle that waiter's clone.
+        return ordered.first { $0.resources.needsSims }?.command?.template ?? defaultHostTemplate
+    }
+
+    func templateDemand(_ name: String?, availableMemoryBytes: UInt64) throws -> Int {
+        try store.queuedJobs().filter { ($0.command?.template ?? defaultHostTemplate) == name }.reduce(0) {
+            total, job in
+            let cost = job.resources.memoryCost(
+                sims: job.resources.minSims, minimum: scheduler.config.minimumJobMemoryBytes)
+            guard availableMemoryBytes >= scheduler.config.reserveBytes,
+                availableMemoryBytes - scheduler.config.reserveBytes >= cost
+            else { return total }
+            return total + job.resources.minSims
+        }
+    }
+
     func selectedClonePlan() throws -> SimClonePlan {
-        guard let selected = environment.sims.cloneSource else { return SimClonePlan(source: nil) }
+        try clonePlan(source: environment.sims.cloneSource)
+    }
+
+    func clonePlan(source: String?) throws -> SimClonePlan {
+        guard let selected = source else { return SimClonePlan(source: nil) }
         if let entry = try templates().first(where: { $0.record.udid == selected || $0.record.name == selected }) {
             return SimClonePlan(
                 source: entry.record.udid,
@@ -886,8 +1011,11 @@ extension Engine {
     }
 
     func unverifiedSlimCloneIDs(_ sims: [PoolSim]) throws -> Set<String> {
-        guard try selectedClonePlan().boots else { return [] }
-        return Set(sims.filter { $0.cloneMethod != .simslim }.map(\.udid))
+        let plans = try configuredClonePlans()
+        return Set(
+            sims.filter { sim in
+                sim.cloneMethod != .simslim && plans.contains { $0.boots && matches(sim, plan: $0) }
+            }.map(\.udid))
     }
 
     func poolCreatesInFlight(fromTemplate templateName: String, udid templateUDID: String) throws -> [String] {
@@ -1017,6 +1145,10 @@ extension Engine {
                 kind: .sim, externalID: device.udid, owner: .pool, epoch: epoch, now: finishedAt)
             var sim = PoolSim(udid: device.udid, name: device.name, phase: .shutdown, createdAt: finishedAt)
             sim.clonedFrom = plan.sourceRef; sim.cloneMethod = plan.method
+            let template = try templates().first { $0.record.udid == plan.source || $0.record.name == plan.source }?
+                .record
+            sim.runtime = device.runtime ?? template?.runtime
+            sim.deviceType = device.deviceType ?? template?.deviceType
             try store.savePoolSim(sim)
             var confirmed = intent
             confirmed.detail =

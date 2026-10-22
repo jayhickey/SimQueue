@@ -117,7 +117,7 @@ extension JobStore {
                             "job_cursor") ?? 0
                     let candidates = try db.query(
                         """
-                        SELECT j.seq, j.id, j.created_at FROM jobs j JOIN history_snapshot.jobs s ON s.id=j.id
+                        SELECT j.seq, j.id, j.created_at, j.command_json FROM jobs j JOIN history_snapshot.jobs s ON s.id=j.id
                         WHERE j.seq > ? AND j.state NOT IN ('queued','admitted','running') AND s.state NOT IN ('queued','admitted','running')
                         AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.parent_id=j.id)
                         AND NOT EXISTS(SELECT 1 FROM owned_resources r WHERE r.owner_job_id=j.id AND r.state!='released')
@@ -137,8 +137,12 @@ extension JobStore {
                     for row in candidates {
                         guard jobsRemoved < min(1000, max(0, count - Int64(keepJobs))) else { break }
                         guard let id = row.string("id"), let created = row.double("created_at") else { continue }
+                        let command = row.string("command_json").flatMap {
+                            try? JSONDecoder().decode(JobCommand.self, from: Data($0.utf8))
+                        }
                         let artifact =
-                            artifactsRoot + "/" + formatter.string(from: Date(timeIntervalSince1970: created)) + "/"
+                            (command?.artifactsRoot ?? artifactsRoot) + "/"
+                            + formatter.string(from: Date(timeIntervalSince1970: created)) + "/"
                             + id
                         guard !files.fileExists(atPath: artifact),
                             !pendingPaths.contains(where: {

@@ -142,8 +142,10 @@ public final class ProcessExecutor: JobExecutor {
     /// jobs root. Failures are audited, not fatal: retention removes the run dir later.
     private func removeTmpDirectory(jobID: String, store: JobStore, now: Double) throws {
         guard let job = try store.job(id: jobID), !job.state.isActive else { return }
-        let tmp = Self.tmpDirectory(directory: artifacts.directory(jobID: job.id, createdAt: job.createdAt))
-        let fileSystem = RootedFileSystem(roots: [artifacts.root])
+        let tmp = Self.tmpDirectory(directory: artifacts.directory(for: job))
+        let root = job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root
+        guard (try? JobStorage.check(root)) != nil else { return }
+        let fileSystem = RootedFileSystem(roots: [root])
         guard fileSystem.fileExists(tmp) else { return }
         do {
             try fileSystem.removeItem(tmp)
@@ -159,9 +161,10 @@ public final class ProcessExecutor: JobExecutor {
                 now: now)
             return
         }
-        let directory = artifacts.directory(jobID: job.id, createdAt: job.createdAt)
-        let logPath = artifacts.logPath(jobID: job.id, createdAt: job.createdAt)
+        let directory = artifacts.directory(for: job)
+        let logPath = artifacts.logPath(for: job)
         do {
+            try JobStorage.check(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)
             try FileManager.default.createDirectory(
                 atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try FileManager.default.createDirectory(
@@ -226,7 +229,12 @@ public final class ProcessExecutor: JobExecutor {
         // fresh peak: both describe this attempt, not an earlier (retried) one.
         peaks[job.id] = nil
         try? store.beginJobRun(
-            jobID: job.id, sims: poolSims.map { JobSim(udid: $0.udid, name: $0.name, clonedFrom: $0.clonedFrom) })
+            jobID: job.id,
+            sims: poolSims.map {
+                JobSim(
+                    udid: $0.udid, name: $0.name, clonedFrom: $0.clonedFrom, runtime: $0.runtime,
+                    deviceType: $0.deviceType)
+            })
         if !poolUDIDs.isEmpty { environment["SIMQ_SIM_UDIDS"] = poolUDIDs.joined(separator: ",") }
         // The first leased sim, for the common one-sim case (`simq run`).
         if let first = poolUDIDs.first { environment["SIMQ_UDID"] = first }
@@ -347,9 +355,9 @@ public final class ProcessExecutor: JobExecutor {
             leaders[jobID] = nil
             retainedLeaders.insert(leader.pid)
             peaks[jobID] = nil
-            let logPath = artifacts.logPath(jobID: jobID, createdAt: leader.createdAt)
-            try? Self.append("=== simq: command \(exit.description) at \(Timestamp(now).rfc3339)\n", to: logPath)
             guard let job = try store.job(id: jobID) else { continue }
+            let logPath = artifacts.logPath(for: job)
+            try? Self.append("=== simq: command \(exit.description) at \(Timestamp(now).rfc3339)\n", to: logPath)
             // A run timeout already signalled this job (`term_sent_at`): the exit is
             // SimQueue's doing, and the timeout path records `timed_out` once the whole
             // group is gone. Only note the command's status here.
@@ -476,16 +484,18 @@ public final class ProcessExecutor: JobExecutor {
     private func writeSummary(jobID: String, store: JobStore) throws {
         guard let job = try store.job(id: jobID) else { return }
         var info = JobInfo(job: job, explanation: nil)
-        info.logPath = artifacts.logPath(jobID: job.id, createdAt: job.createdAt)
-        info.runDir = artifacts.directory(jobID: job.id, createdAt: job.createdAt)
+        info.logPath = artifacts.logPath(for: job)
+        info.runDir = artifacts.directory(for: job)
         info.attachRunInfo(try store.jobRunInfo(jobID: job.id))
         info = ArtifactListing.attach(to: info)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-        let path = artifacts.summaryPath(jobID: job.id, createdAt: job.createdAt)
+        guard (try? JobStorage.check(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)) != nil
+        else { return }
+        let path = artifacts.summaryPath(for: job)
         try? (try encoder.encode(info) + Data("\n".utf8)).write(to: URL(fileURLWithPath: path), options: .atomic)
         // summary.md and the job's own events.jsonl, best effort like job.json.
-        let directory = artifacts.directory(jobID: job.id, createdAt: job.createdAt)
+        let directory = artifacts.directory(for: job)
         let markdown = JobReport.markdown(info, logTail: info.logPath.flatMap { JobReport.tail(of: $0) })
         try? Data(markdown.utf8).write(
             to: URL(fileURLWithPath: directory + "/" + JobReport.summaryName), options: .atomic)

@@ -318,6 +318,7 @@ public struct SubmitParams: Sendable, Equatable, Codable {
     public var project: String
     /// Free-form label (status, logs, metrics only). Nil or empty: no label.
     public var kind: String?
+    public var template: String?
     /// 0...100; nil means the daemon's default (50).
     public var priority: Int?
     /// A user-defined alias from the daemon's config, used instead of `priority`.
@@ -360,6 +361,7 @@ public struct SubmitParams: Sendable, Equatable, Codable {
     public init(
         project: String,
         kind: String? = nil,
+        template: String? = nil,
         priority: Int? = nil,
         priorityName: String? = nil,
         submitter: String,
@@ -394,6 +396,7 @@ public struct SubmitParams: Sendable, Equatable, Codable {
         self.maxRetries = maxRetries
         self.project = project
         self.kind = kind
+        self.template = template
         self.priority = priority
         self.priorityName = priorityName
         self.queueTimeoutSeconds = queueTimeoutSeconds
@@ -410,7 +413,7 @@ public struct SubmitParams: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case project, kind, submitter, worktree
+        case project, kind, template, submitter, worktree
         case priority, exclusive, retryable
         case command, environment, cwd
         case maxRetries = "max_retries"
@@ -702,6 +705,7 @@ public struct WaitReasonInfo: Sendable, Equatable, Codable {
 
 public struct JobInfo: Sendable, Equatable, Codable {
     public var id: String
+    public var template: String?
     public var project: String
     /// Free-form label; empty when none was given.
     public var kind: String
@@ -784,6 +788,7 @@ public struct JobInfo: Sendable, Equatable, Codable {
         exclusive = job.exclusive
         retryable = job.retryable
         maxRetries = job.maxRetries
+        template = job.command?.template
         submitter = job.submitter
         state = job.state
         resultClass = job.resultClass
@@ -825,7 +830,7 @@ public struct JobInfo: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, project, kind, submitter, state, attempt, message, position
+        case id, project, kind, template, submitter, state, attempt, message, position
         case priority, exclusive, retryable
         case command, cwd
         case cleanupPending = "cleanup_pending"
@@ -968,7 +973,27 @@ public struct DaemonInfo: Sendable, Equatable, Codable {
     }
 }
 
+public struct StorageInfo: Sendable, Equatable, Codable {
+    public var stateDirectory: String
+    public var jobOutputRoot: String
+    public var available: Bool
+    public var freeBytes: UInt64?
+    public var failure: String?
+    public init(stateDirectory: String, jobOutputRoot: String, available: Bool, freeBytes: UInt64?, failure: String?) {
+        self.stateDirectory = stateDirectory; self.jobOutputRoot = jobOutputRoot
+        self.available = available; self.freeBytes = freeBytes; self.failure = failure
+    }
+    enum CodingKeys: String, CodingKey {
+        case stateDirectory = "state_directory"
+        case jobOutputRoot = "job_output_root"
+        case available
+        case freeBytes = "free_bytes"
+        case failure
+    }
+}
+
 public struct StatusResult: Sendable, Equatable, Codable {
+    public var storage: StorageInfo?
     public var daemon: DaemonInfo
     public var queued: Int
     public var admitted: Int
@@ -998,8 +1023,10 @@ public struct StatusResult: Sendable, Equatable, Codable {
         lastTickAt: Double?,
         health: HealthInfo? = nil,
         templateHint: String? = nil,
-        drainComplete: Bool? = nil
+        drainComplete: Bool? = nil,
+        storage: StorageInfo? = nil
     ) {
+        self.storage = storage
         self.templateHint = templateHint
         self.drainComplete = drainComplete
         self.daemon = daemon
@@ -1015,7 +1042,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case daemon, queued, admitted, running, paused, draining, health
+        case daemon, queued, admitted, running, paused, draining, health, storage
         case drainComplete = "drain_complete"
         case loadThrottled = "load_throttled"
         case globalWaitReasons = "global_wait_reasons"
@@ -1028,6 +1055,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        storage = try container.decodeIfPresent(StorageInfo.self, forKey: .storage)
         daemon = try container.decode(DaemonInfo.self, forKey: .daemon)
         queued = try container.decode(Int.self, forKey: .queued)
         admitted = try container.decode(Int.self, forKey: .admitted)
@@ -1046,6 +1074,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(storage, forKey: .storage)
         try container.encode(daemon, forKey: .daemon)
         try container.encode(queued, forKey: .queued)
         try container.encode(admitted, forKey: .admitted)

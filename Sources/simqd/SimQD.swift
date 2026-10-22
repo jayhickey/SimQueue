@@ -166,15 +166,28 @@ struct Run: ParsableCommand {
             path: databasePath, maxInfraRetries: daemonConfig.defaultMaxRetries,
             maxQueuedPerSubmitterPerProject: daemonConfig.maxQueuedPerSubmitterPerProject)
         store.maxQueuedTotal = daemonConfig.maxQueuedTotal
+        let outputRoot = daemonConfig.jobOutputRoot ?? paths.jobsRoot
+        let outputConfiguration = try JobOutputConfiguration.prepare(
+            stateDirectory: paths.stateDir, root: outputRoot, store: store, persist: !dryRun)
         if resolved == .simctl {
             let poolSims = try store.poolSims()
             if !poolSims.isEmpty {
-                guard let selected = daemonConfig.simctl?.template else {
+                guard
+                    let selected = daemonConfig.simctl?.template ?? daemonConfig.defaultHostTemplate.flatMap({
+                        daemonConfig.hostTemplates[$0]
+                    }) ?? daemonConfig.hostTemplates.values.sorted().first
+                else {
                     throw ValidationError(
                         "simctl.template is required for an existing pool. Select its recorded clone source, or drain and reset the pool using the previous version before upgrading."
                     )
                 }
-                guard poolSims.allSatisfy({ $0.clonedFrom?.udid == selected || $0.clonedFrom?.name == selected }) else {
+                guard
+                    poolSims.allSatisfy({ sim in
+                        ([selected] + Array(daemonConfig.hostTemplates.values)).contains {
+                            sim.clonedFrom?.udid == $0 || sim.clonedFrom?.name == $0
+                        }
+                    })
+                else {
                     throw ValidationError(
                         "simctl.template differs from existing pool clones. Finish leases, run simq drain, then simq uninstall --yes to stop the service and remove only owned pool sims (templates and state kept); select the new template and restart. No queue recovery has run."
                     )
@@ -185,7 +198,7 @@ struct Run: ParsableCommand {
         let hostProcesses: any ProcessTable = executor == .process ? SystemProcessTable() : fakeProcesses
         let dryRunLog: @Sendable (String) -> Void = { line in log(line) }
         let processes: any ProcessTable = dryRun ? DryRunProcessTable(hostProcesses, log: dryRunLog) : hostProcesses
-        let environment = EngineEnvironment(
+        var environment = EngineEnvironment(
             clock: SystemClock(),
             probe: host.probe,
             sims: dryRun ? DryRunSimBackend(host.sims, log: dryRunLog) : host.sims,
@@ -193,13 +206,19 @@ struct Run: ParsableCommand {
             // The real disk, limited to SimQueue's own work and jobs directories and never
             // following symlinks; a dry run only reads (every removal is planned, not run).
             fileSystem: dryRun
-                ? DryRunFileSystem(RootedFileSystem(roots: [paths.runsRoot, paths.jobsRoot]), log: dryRunLog)
-                : RootedFileSystem(roots: [paths.runsRoot, paths.jobsRoot]),
+                ? DryRunFileSystem(
+                    StorageFileSystem(
+                        base: RootedFileSystem(roots: [paths.runsRoot] + outputConfiguration.roots),
+                        roots: outputConfiguration.roots), log: dryRunLog)
+                : StorageFileSystem(
+                    base: RootedFileSystem(roots: [paths.runsRoot] + outputConfiguration.roots),
+                    roots: outputConfiguration.roots),
             layout: RunDirectoryLayout(root: paths.runsRoot),
             naming: naming,
             processGraceSeconds: daemonConfig.timeouts.killGraceSeconds,
-            artifactsRoot: paths.jobsRoot
+            artifactsRoot: outputRoot
         )
+        environment.historicalArtifactsRoots = outputConfiguration.roots
         let pid = ProcessInfo.processInfo.processIdentifier
         let (engine, recovery, reconcile) = try Engine.start(
             store: store,
@@ -223,7 +242,8 @@ struct Run: ParsableCommand {
             probe: host.probeKind.rawValue,
             dryRun: dryRun ? true : nil
         )
-        let artifacts = JobArtifacts(root: paths.jobsRoot)
+        var artifacts = JobArtifacts(root: outputRoot)
+        artifacts.legacyRoot = paths.jobsRoot
         let jobExecutor: any JobExecutor
         if dryRun {
             jobExecutor = DryRunExecutor(log: { log($0) })
@@ -243,6 +263,7 @@ struct Run: ParsableCommand {
         #endif
         let service = DaemonService(
             engine: engine, config: daemonConfig, info: info, executor: jobExecutor, artifacts: artifacts)
+        service.storageChecksEnabled = true
         let server: DaemonServer
         do {
             server = try DaemonServer(service: service, socketPath: paths.socketPath)

@@ -76,7 +76,7 @@ struct AgentGuide: ParsableCommand {
         or --retries N permits it within the retry budget. Retries do not undo side effects.
 
         Warm state and maintenance
-        The pool has one explicitly selected host template/runtime. Warm simulators retain
+        The pool uses explicitly configured host templates; --template selects a named template. Warm simulators retain
         state. --reset-app BUNDLE_ID resets an app and keychain before execution, with erase
         fallback on a reset failure; --fresh-sim erases the leased simulator before execution.
         Use reset/fresh deliberately when isolation is required, not for every warm job.

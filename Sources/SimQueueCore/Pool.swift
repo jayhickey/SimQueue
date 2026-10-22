@@ -151,11 +151,18 @@ public struct SimNamingScheme: Sendable, Equatable, Codable {
 public struct SimDevice: Sendable, Equatable, Codable {
     public var udid: String
     public var name: String
+    public var runtime: String?
+    public var deviceType: String?
     public var isBooted: Bool
     /// Exact host state; Booting and ShuttingDown must never be treated as Shutdown.
     public var state: String?
 
-    public init(udid: String, name: String, isBooted: Bool, state: String? = nil) {
+    public init(
+        udid: String, name: String, isBooted: Bool, state: String? = nil, runtime: String? = nil,
+        deviceType: String? = nil
+    ) {
+        self.runtime = runtime
+        self.deviceType = deviceType
         self.udid = udid
         self.name = name
         self.isBooted = isBooted

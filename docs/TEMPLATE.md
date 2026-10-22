@@ -1,6 +1,6 @@
 # Set up the host template
 
-SimQueue clones one selected template into one simulator pool. Each normal job runs its complete workload on one leased simulator. Project labels identify work; they do not select different devices or runtimes.
+SimQueue clones explicitly selected templates into one shared simulator pool. Each normal job runs its complete workload on one leased simulator. Project labels identify work; they do not select different devices or runtimes.
 
 ## Build and select
 
@@ -28,7 +28,41 @@ simq template build host \
 simq template list --json
 ```
 
-Replace the uppercase placeholders with identifiers available in the selected Xcode installation. Inspect Xcode's installed runtimes or its read-only simulator inventory. Callers cannot select a separate runtime per job. `STALE` indicates a toolchain/runtime difference from the recorded build and is a reason to review/rebuild. `--replace` creates a replacement candidate; it does not change selection or reassign existing clones.
+Replace the uppercase placeholders with identifiers available in the selected Xcode installation. Inspect Xcode's installed runtimes or its read-only simulator inventory. Jobs select a configured template label; each template fixes its device type and runtime. `STALE` indicates a toolchain/runtime difference from the recorded build and is a reason to review/rebuild. `--replace` creates a replacement candidate; it does not change selection or reassign existing clones.
+
+## Named host templates
+
+Build ready candidates with the installed iPhone and iPad device types, then map
+labels to their simulator UDIDs in the existing configuration:
+
+```json
+{
+  "host_templates": {
+    "iphone": "READY-IPHONE-TEMPLATE-UDID",
+    "ipad": "READY-IPAD-TEMPLATE-UDID"
+  },
+  "default_host_template": "iphone"
+}
+```
+
+Use `simq run --sims 1 --template ipad -- <complete-command>` (or `submit`).
+The MCP submit tool also accepts `template`. Unknown labels are rejected. Labels
+are generic; projects never select a template implicitly. Omitting the flag uses
+`default_host_template`, or the existing `simctl.template` when no named default
+is configured. The legacy single-template configuration remains supported.
+
+All labels share `pool.max_sims`, boot concurrency, memory, load and admission
+limits. The pool prepares matching clones on demand and retires idle clones when
+another requested template needs room. Each job runs its entire command on its
+leased simulator; this does not shard tests. Results include the selected label,
+simulator identity, clone source, device type and runtime when available. Older
+pool rows can lack device/runtime metadata until those clones are recreated.
+Manual leases use the default template.
+
+Drain/restart after changing template configuration. Existing clones must belong
+to a still-configured source; retire incompatible clones using the procedure below.
+Slim profiles under `template.profiles` remain build-time service settings, separate
+from the host template labels described here.
 
 ## Optional slimming
 

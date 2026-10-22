@@ -28,6 +28,11 @@ import SimQueueStore
 /// ```
 /// For both timeouts, 0 means no limit.
 public struct DaemonConfig: Sendable, Equatable {
+    /// Optional absolute directory containing dated job output directories.
+    public var jobOutputRoot: String?
+    /// Host template labels mapped to existing template simulator identifiers.
+    public var hostTemplates: [String: String] = [:]
+    public var defaultHostTemplate: String?
     public var priorityAliases = PriorityAliases()
     public var scheduler = SchedulerConfig()
     public var reliability = ReliabilityConfig()
@@ -256,6 +261,9 @@ public struct DaemonConfig: Sendable, Equatable {
     public init() {}
 
     struct File: Decodable {
+        var jobOutputRoot: String?
+        var hostTemplates: [String: String]?
+        var defaultHostTemplate: String?
         var priorityAliases: [String: Int]?
         var agingPointsPerMinute: Double?
         var agingMaxBoost: Double?
@@ -426,6 +434,9 @@ public struct DaemonConfig: Sendable, Equatable {
         }
 
         enum CodingKeys: String, CodingKey {
+            case jobOutputRoot = "job_output_root"
+            case hostTemplates = "host_templates"
+            case defaultHostTemplate = "default_host_template"
             case priorityAliases = "priority_aliases"
             case agingPointsPerMinute = "aging_points_per_minute"
             case agingMaxBoost = "aging_max_boost"
@@ -516,6 +527,32 @@ public struct DaemonConfig: Sendable, Equatable {
             )
         }
         var config = DaemonConfig()
+        if let root = file.jobOutputRoot {
+            let normalized = URL(fileURLWithPath: root).standardizedFileURL.path
+            guard root.hasPrefix("/"), normalized != "/", !root.utf8.contains(0),
+                !root.split(separator: "/").contains("..")
+            else {
+                throw LoadError.invalid(
+                    "job_output_root must be an absolute dedicated directory, not / or a path containing ..")
+            }
+            config.jobOutputRoot = normalized
+        }
+        config.hostTemplates = file.hostTemplates ?? [:]
+        for (name, source) in config.hostTemplates {
+            guard ProjectSettings.isValidName(name), !source.isEmpty, !source.utf8.contains(0) else {
+                throw LoadError.invalid("host_templates requires valid labels and nonempty simulator identifiers")
+            }
+        }
+        guard Set(config.hostTemplates.values).count == config.hostTemplates.count else {
+            throw LoadError.invalid("host_templates entries must select distinct simulator identifiers")
+        }
+        if let name = file.defaultHostTemplate {
+            guard config.hostTemplates[name] != nil else {
+                throw LoadError.invalid("default_host_template must name a host_templates entry")
+            }
+            config.defaultHostTemplate = name
+        }
+
         if let aliases = file.priorityAliases {
             for (name, value) in aliases where !Priority.isValid(value) || Int(name) != nil || name.isEmpty {
                 throw LoadError.invalid("priority alias \"\(name)\" = \(value) (needs a non-numeric name and 0...100)")

@@ -72,6 +72,8 @@ public struct PoolSim: Sendable, Equatable, Codable {
     /// The template this sim was cloned from (nil for sims created before this was
     /// recorded, or when the backend clones nothing).
     public var clonedFrom: TemplateRef?
+    public var runtime: String?
+    public var deviceType: String?
     public var cloneMethod: SimCloneMethod?
 
     public init(
@@ -101,6 +103,8 @@ public struct PoolSim: Sendable, Equatable, Codable {
         case heartbeatAt = "heartbeat_at"
         case staleReportedAt = "stale_reported_at"
         case clonedFrom = "cloned_from"
+        case runtime
+        case deviceType = "device_type"
         case cloneMethod = "clone_method"
     }
 }
@@ -120,18 +124,23 @@ public struct TemplateRef: Sendable, Equatable, Codable {
 
 /// A pool sim a job held while it ran, as recorded at its start (`sims` in job results).
 public struct JobSim: Sendable, Equatable, Codable {
+    public var runtime: String?
+    public var deviceType: String?
     public var udid: String
     public var name: String
     public var clonedFrom: TemplateRef?
 
-    public init(udid: String, name: String, clonedFrom: TemplateRef?) {
+    public init(udid: String, name: String, clonedFrom: TemplateRef?, runtime: String? = nil, deviceType: String? = nil)
+    {
+        self.runtime = runtime; self.deviceType = deviceType
         self.udid = udid
         self.name = name
         self.clonedFrom = clonedFrom
     }
 
     enum CodingKeys: String, CodingKey {
-        case udid, name
+        case udid, name, runtime
+        case deviceType = "device_type"
         case clonedFrom = "cloned_from"
     }
 }

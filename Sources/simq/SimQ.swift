@@ -296,6 +296,7 @@ struct Submit: ParsableCommand {
     @Option(help: "Project name. Default: the current directory's name.") var project: String?
     @Option(help: "Free-form label for status and logs (no behavior), e.g. build or lint.") var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
+    @Option(help: "Named host template (from host_templates).") var template: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "While a job with this key is queued or running, return it instead of queuing another.")
     var dedupeKey: String?
@@ -383,6 +384,7 @@ struct Submit: ParsableCommand {
         let params = SubmitParams(
             project: project ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent,
             kind: kind,
+            template: template,
             priority: numeric,
             priorityName: name,
             submitter: submitter ?? ProcessInfo.processInfo.environment["USER"] ?? "unknown",
@@ -483,6 +485,11 @@ struct Status: ParsableCommand {
         let client = SimQueueVersion.current
         print("simq \(client)\(client == status.daemon.version ? "" : " (differs from simqd; restart simqd)")")
         print("queued \(status.queued)  admitted \(status.admitted)  running \(status.running)")
+        if let storage = status.storage {
+            print("state: \(storage.stateDirectory)")
+            print("job output: \(storage.jobOutputRoot) (\(storage.failure ?? "available, writable"))")
+            if let free = storage.freeBytes { print("job output free bytes: \(free)") }
+        }
         if let hint = status.templateHint { print("template: \(hint)") }
         var flags: [String] = []
         if status.paused { flags.append("paused") }
