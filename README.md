@@ -132,7 +132,8 @@ Licensed under the [MIT License](LICENSE); see [NOTICE](NOTICE).
 
 Run `simq dashboard` for a live local browser view of the queue, recent
 results, timings, waiting reasons, commands and bounded logs. Cancel jobs and
-adjust queued-job priorities directly in the dashboard. See the
+adjust queued-job priorities directly in the dashboard. Open a job for live log
+tailing, with pause/resume and auto-follow controls. See the
 [dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.
 
 ### macOS menu bar app

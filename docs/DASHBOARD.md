@@ -16,7 +16,7 @@ The dashboard shows:
   for the latest 20 started jobs in the filtered window.
 - Job details from `explain`: exact command argv, directory, commit, submitter,
   attempts, deadlines, simulators, peak process-group memory and artifact paths.
-- The first 32 KiB of output, refreshed with the selected job. Use `simq logs JOB`
+- A live tail of the latest 32 KiB of output for the selected job. Use `simq logs JOB`
   for the full output. Artifact paths are displayed, not served as files.
 
 Labels combine the caller's project with its kind, falling back to the command
@@ -32,6 +32,29 @@ from status and can exceed the displayed list.
 Polling happens every three seconds after the previous request completes, while
 the tab is visible. On failure, the last snapshot stays visible with a stale-data
 warning. Timing values stop at that snapshot rather than suggesting fresh data.
+
+## Live run output
+
+Open a job to see its live output. The viewer starts at the newest output and
+refreshes a bounded 32 KiB window once per second, after each request completes.
+It follows the bottom automatically. **Pause live output** freezes the view;
+scrolling up pauses it too. **Resume live output** or **Jump to latest** resumes
+following the newest output. Output emitted while paused may fall outside the
+window; use `simq logs JOB` for the complete retained log.
+
+The viewer stops polling when the daemon confirms both job completion and the
+end of output, including executor cleanup. Empty output is shown explicitly.
+A disconnect preserves the displayed text with a stale-output warning and retries.
+Closing or switching job details discards late responses. Hidden tabs do not fetch
+logs. Refreshing job metadata preserves the output panel and its paused state.
+The bounded tail also handles a log file being shortened or replaced.
+
+Live tailing requires an updated daemon that supports `tail_bytes`; older daemons
+show an upgrade message instead of labeling the start of a log as its tail.
+Follow the planned upgrade procedure before restarting a shared daemon.
+
+Recent activity names wrap instead of truncating. Hovering also shows the full
+name, and clicking opens the same job details and output.
 
 ## Job controls
 
