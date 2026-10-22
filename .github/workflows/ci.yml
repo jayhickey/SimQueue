@@ -86,6 +86,8 @@ jobs:
           python3 Tests/Release/release_plan_test.py
           python3 Tests/Release/homebrew_test.py
           python3 Tests/Release/appcast_test.py
+      - name: Sparkle archive signature verification (ephemeral key)
+        run: /usr/bin/swift -j 2 Tests/Release/update_signature_test.swift scripts/verify-sparkle-update.swift
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail
