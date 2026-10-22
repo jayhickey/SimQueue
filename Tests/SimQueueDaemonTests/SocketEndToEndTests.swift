@@ -349,7 +349,7 @@ final class SocketEndToEndTests: XCTestCase {
             [
                 "daemon", "backend", "socket", "database", "orphaned_resources", "overdue_jobs", "anomalies",
                 "registry_vs_reality", "foreign_resources", "disk", "memory_swap", "xcode_pin", "simslim_verify",
-                "breaker", "watchdog",
+                "breaker", "watchdog", "job_storage",
             ])
         let foreign = try XCTUnwrap(online.checks.first { $0.name == "foreign_resources" })
         XCTAssertTrue(foreign.detail.contains("OTHER-1"), foreign.detail)
