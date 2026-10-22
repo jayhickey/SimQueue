@@ -18,9 +18,12 @@ brew install --cask jayhickey/tap/simqueue-app
 ```
 
 The formula installs only the command-line tools and documentation. The cask
-installs `SimQueue.app` into `/Applications` and links `simq` from
-`SimQueue.app/Contents/Helpers/simq`, so Sparkle updates the CLI with the app. The
-two setups conflict over `simq`; launch the app through Spotlight or
+installs `SimQueue.app` into `/Applications` (or the folder given by `--appdir`, for
+example `--appdir=~/Applications`; keep the same one for every reinstall and upgrade)
+and links `simq` from `SimQueue.app/Contents/Helpers/simq`, so Sparkle updates the
+CLI with the app. The two setups conflict over `simq`; see
+[switching](INSTALL.md#switching-between-the-formula-and-the-cask) if both ended up
+installed. Launch the app through Spotlight or
 Applications. Launch at Login is opt-in. The app uses your existing daemon;
 installing it does not start or restart services or change host configuration.
 New users still need `simq init` and the setup steps in [INSTALL.md](INSTALL.md).
@@ -34,10 +37,12 @@ which require daemon v0.1.4 or later. Quit the app before upgrading it:
 brew upgrade --cask simqueue-app
 ```
 
-Upgrade the CLI separately with `brew upgrade simqueue` using the planned daemon
-upgrade procedure. `brew uninstall --cask simqueue-app` removes the app but leaves
-the CLI, daemon, simulator pool and queue data intact. The cask has no shared-data
-cleanup hooks. Disable Launch at Login in the app before uninstalling it.
+The cask's `simq` is inside the app, so it upgrades with the app; there is no
+separate CLI package to upgrade. `brew uninstall --cask simqueue-app` removes the
+app and its `simq` link, leaving no `simq` on `PATH`; the simulator pool and queue
+data stay intact. The cask has no shared-data cleanup hooks. Disable Launch at Login
+and stop the bundled daemon (see [switching back](#updates-and-switching-back))
+before uninstalling it.
 
 If you previously copied a development app into `/Applications` or
 `~/Applications`, quit it and move it aside before installing the cask. Homebrew
@@ -79,7 +84,8 @@ continuity; permission persistence across macOS versions and future updates stil
 needs live verification. A first external-drive permission request may still occur.
 Full Disk Access is not required for this installation.
 
-Install the app in `/Applications` or `~/Applications` before enabling the service.
+Install the app in `/Applications` or `~/Applications` before enabling the service,
+and keep it in that folder for reinstalls and upgrades.
 Right-click the menu bar icon and choose **Use Bundled Daemon…**. If macOS asks for
 approval, enable it under **System Settings → General → Login Items & Extensions**;
 the app's **Background Service Settings…** command opens that page. The service
@@ -88,8 +94,9 @@ at login. Launch at Login controls only the menu bar app.
 
 ### Migrate from Homebrew's daemon service
 
-Keep the CLI formula installed: it connects to the same socket and queue. Only
-one manager should run the daemon. The app refuses to take over a responding
+The app's own `simq` connects to the same socket and queue. Coming from the
+formula, keep it installed until its service is stopped (step 4), then switch to the
+cask (step 5). Only one manager should run the daemon. The app refuses to take over a responding
 foreign daemon, a held daemon lock, or an installed legacy LaunchAgent.
 
 1. Run `simq drain --timeout 30m` and wait for **Drained; safe to restart simqd.**
@@ -98,10 +105,13 @@ foreign daemon, a held daemon lock, or an installed legacy LaunchAgent.
 4. Run `brew services stop jayhickey/tap/simqueue`. For `simq init --launchd`, unload
    its `dev.simqueue.simqd` agent and move that plist aside. For an on-demand daemon,
    stop the exact drained PID. Check that the old daemon has exited before continuing.
-5. If an old SimQueue LaunchAgent plist remains in `~/Library/LaunchAgents`, move it
+5. Run `brew uninstall simqueue`, then `brew install --cask jayhickey/tap/simqueue-app`.
+   If the cask was already installed, restore its `simq` link as described in
+   [switching](INSTALL.md#switching-between-the-formula-and-the-cask).
+6. If an old SimQueue LaunchAgent plist remains in `~/Library/LaunchAgents`, move it
    into your backup rather than leaving it to restart at next login. The app checks
    `sh.brew.simqueue`, `homebrew.mxcl.simqueue`, and `dev.simqueue.simqd`.
-6. Choose **Use Bundled Daemon…**, approve background activity if required, and
+7. Choose **Use Bundled Daemon…**, approve background activity if required, and
    verify `simq status` and `simq doctor`. The new daemon reopens queue admission.
 
 For scripted registration after those same migration checks, run the installed
@@ -117,11 +127,12 @@ Quit the menu bar app before `brew upgrade --cask jayhickey/tap/simqueue-app`, t
 relaunch it and choose **Use Bundled Daemon…** again. This drains the app-managed
 queue, waits for running work and owned cleanup, and restarts the service using
 the updated bundled daemon. It never cancels active jobs for an update. Keep the
-app at its original path. Upgrading or restarting a service does not prove that
+app at its original path: use the same `--appdir` for every upgrade. Upgrading or restarting a service does not prove that
 macOS retained external-drive permission; verify access after each update.
 
-Upgrade the CLI separately with `brew upgrade jayhickey/tap/simqueue`. Do not run
-`brew services start/restart simqueue` while the bundled agent is enabled.
+The app's `simq` upgrades with the app. Don't install the formula alongside the
+cask: it takes over the `simq` link. Do not run `brew services start/restart
+simqueue` while the bundled agent is enabled.
 
 ### Sparkle updates
 
@@ -146,9 +157,8 @@ companion app updates.
 The Homebrew app cask is marked `auto_updates true`, following Xcodes' packaging
 model. Sparkle manages app updates; Homebrew normally skips self-updating casks
 unless explicitly requested with `--greedy`. The cask's `simq` is the app's own, so
-it updates with the app. A separately installed formula CLI is updated by Homebrew, and
-a newer bundled daemon may report a version mismatch warning against it; keep it
-current too. CLI-only users do not need Sparkle or the app.
+it updates with the app. Don't keep the formula installed as well: its `simq` takes
+over the link and can lag the app's daemon. CLI-only users do not need Sparkle or the app.
 
 The first Sparkle-enabled release must be installed using Homebrew or its direct
 app download. Earlier versions cannot update themselves through Sparkle. Before
@@ -156,8 +166,9 @@ that release is published, the production appcast URL may return 404. A local or
 fake signing test does not establish that a public two-version update has run.
 
 Before uninstalling the cask or switching back, use **Stop SimQueue… → Finish Jobs
-and Quit**. That unregisters the app-owned agent after drain completion. Then
-start your chosen CLI daemon manager. App uninstall still preserves queue data;
+and Quit**. That unregisters the app-owned agent after drain completion. To go
+back to the CLI-only setup, run `brew uninstall --cask simqueue-app`, then
+`brew install jayhickey/tap/simqueue`, then start your chosen CLI daemon manager. App uninstall still preserves queue data;
 uninstalling a registered app without stopping its service first is unsupported.
 
 ## Quit and stop
