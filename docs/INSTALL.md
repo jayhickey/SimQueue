@@ -194,4 +194,8 @@ The optional `host.sim_boot_cost_mib` config key overrides the memory allowance 
 
 Omitting the key preserves the default 3 GiB (3,221,225,472 bytes). Valid values are integers from 0 to 16,777,216 MiB; zero disables this allowance. Slimmed templates do not automatically change the estimate. Measure your template before reducing it. This estimate is added to job memory accounting alongside the host reserve, is not a memory limit, and does not apply to already-running idle simulators.
 
+### Free-disk floor
+
+New admissions and pool boots hold (`disk_low`) while free space on the state directory's volume is below `host.min_free_disk_gib`, default 20 GiB. For example, `"host": {"min_free_disk_gib": 30}`. Values are GiB from 0 up to (not including) 1,000,000; negative values are rejected, and 0 turns the disk gate off. This is the only disk floor: job output volumes are reported but not gated. `simq doctor` warns below the floor and fails below half of it. Merge the key into your existing config; drain and restart the daemon to apply it.
+
 The default host memory reserve is 10% of total RAM with a 1 GiB minimum. For example, a 16 GiB Mac keeps about 1.6 GiB of reserve. `host.min_reserve_mib` overrides the minimum; `host.reserve_mib` sets a fixed reserve instead of the percentage. Existing explicit settings are preserved.

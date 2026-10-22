@@ -23,7 +23,8 @@ import SimQueueStore
 ///                  "foreign_booted_sim_report_seconds": 86400,
 ///                  "artifact_retention_days": { "succeeded": 7, "other": 14, "unknown": 30,
 ///                                               "derived_data": 1, "kept": 90 },
-///                  "artifact_budget_gib": 50 }
+///                  "artifact_budget_gib": 50 },
+///   "host": { "min_free_disk_gib": 20 }
 /// }
 /// ```
 /// For both timeouts, 0 means no limit.
@@ -346,6 +347,7 @@ public struct DaemonConfig: Sendable, Equatable {
             var ramPerRunningSimMiB: UInt64?
             var maxRunningSims: Int?
             var ramPerPoolSimMiB: UInt64?
+            var minFreeDiskGiB: Double?
 
             enum CodingKeys: String, CodingKey {
                 case throttleLoad5PerCore = "throttle_load5_per_core"
@@ -361,6 +363,7 @@ public struct DaemonConfig: Sendable, Equatable {
                 case ramPerRunningSimMiB = "ram_per_running_sim_mib"
                 case maxRunningSims = "max_running_sims"
                 case ramPerPoolSimMiB = "ram_per_pool_sim_mib"
+                case minFreeDiskGiB = "min_free_disk_gib"
             }
         }
 
@@ -637,7 +640,16 @@ public struct DaemonConfig: Sendable, Equatable {
             }
             config.scheduler.loadThrottle.resumeBelowLoad5 = resume
         }
-        if let host = file.host { config.host = try hostSizing(host) }
+        if let host = file.host {
+            config.host = try hostSizing(host)
+            if let gib = host.minFreeDiskGiB {
+                // One floor, measured on the state-directory volume. 0 turns the disk gate off.
+                guard gib >= 0, gib.isFinite, gib < 1_000_000 else {
+                    throw LoadError.invalid("host.min_free_disk_gib must be 0...999999 (0 turns the disk gate off)")
+                }
+                config.scheduler.minFreeDiskBytes = UInt64(gib * 1_073_741_824)
+            }
+        }
         if let autostart = file.autostart {
             var settings = AutostartSettings()
             settings.enabled = autostart.enabled
