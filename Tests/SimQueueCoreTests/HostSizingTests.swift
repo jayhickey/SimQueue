@@ -43,7 +43,14 @@ final class HostSizingTests: XCTestCase {
         let (scheduler, pool) = applied(cores: 4, gib: 8)
         XCTAssertEqual(scheduler.maxRunningSims, 1)
         XCTAssertEqual(pool?.maxSims, 1)
-        XCTAssertEqual(scheduler.reserveBytes, 2 * ByteSize.gibibyte, "10% is under the 2 GiB floor")
+        XCTAssertEqual(scheduler.reserveBytes, ByteSize.gibibyte, "10% is under the 1 GiB floor")
+    }
+
+    func testSixteenGiBHostStillUsesTenPercentReserve() {
+        let (scheduler, _) = applied(cores: 10, gib: 16)
+        XCTAssertEqual(scheduler.reserveBytes, UInt64(Double(16 * ByteSize.gibibyte) * 0.1))
+        let (explicit, _) = applied(HostSizing(minReserveBytes: 2 * ByteSize.gibibyte), cores: 4, gib: 8)
+        XCTAssertEqual(explicit.reserveBytes, 2 * ByteSize.gibibyte)
     }
 
     func testAutomaticPoolDoesNotExceedAnExplicitRunningLimit() throws {

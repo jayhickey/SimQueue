@@ -50,7 +50,7 @@ public struct HostSizing: Sendable, Equatable {
         throttleLoad5PerCore: Double = 3.0, throttleLoad1PerCore: Double = 3.0,
         throttleLoad5WithLoad1PerCore: Double = 1.5, throttleClearLoad5PerCore: Double = 2.0,
         bootLoadPerCore: Double = 2.0, settleLoad5PerCore: Double = 2.0,
-        reservePercent: Double = 10, minReserveBytes: UInt64 = 2 * ByteSize.gibibyte,
+        reservePercent: Double = 10, minReserveBytes: UInt64 = ByteSize.gibibyte,
         reserveBytes: UInt64? = nil, simBootCostBytes: UInt64? = nil,
         ramPerRunningSimBytes: UInt64 = 8 * ByteSize.gibibyte, maxRunningSims: Int? = nil,
         ramPerPoolSimBytes: UInt64 = 8 * ByteSize.gibibyte

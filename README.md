@@ -149,3 +149,5 @@ for installation, local builds and service behavior.
 
 Job output can use a dedicated [storage root](docs/JOB_STORAGE.md), and jobs can
 select [named host templates](docs/TEMPLATE.md#named-host-templates) from one shared pool.
+
+The default host memory reserve is 10% of total RAM with a 1 GiB minimum. For example, a 16 GiB Mac keeps about 1.6 GiB of reserve. `host.min_reserve_mib` overrides the minimum; `host.reserve_mib` sets a fixed reserve instead of the percentage. Existing explicit settings are preserved.
