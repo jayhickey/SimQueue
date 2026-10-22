@@ -620,7 +620,7 @@ enum DashboardIcons {
                 yromDn3wY3ZZL6efV0vPb83NLrT1pucrzvPAkD4W+L30PQ98zwP/Sj3QjSb/SrV+5ynb7Ycc6b7zDP2eRVf2gM9YVyb5HvZ7Hvie
                 B/518wAj9O5R+l+3NlyNvd/1bfxuG6G/6zvsaqL2L6Cpg/e70lfftoeT/gKnfg/9/48HviuDeOjK78QGlk1cmFV5aPPucl3AXYm2
                 aIoX2iFsL97CXwm3n7yCD/OSU3KHuGG56IDtpi1cwas+5H+25ZJ1tXyl89nyXa38b4nu/wM0xZ0cdrJ8FQAAAABJRU5ErkJggg==
-                """, options: .ignoreUnknownCharacters)!,
+                """, options: .ignoreUnknownCharacters) ?? Data(),
         "icon-192.png": Data(
             base64Encoded: """
                 iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAA
@@ -1313,7 +1313,7 @@ enum DashboardIcons {
                 POQAPOV6I4NLHS7YWLEIWAR6joDKIj27UVx7Ki6W8YqHuT5haqPrq2pDgY6N3fxt7ImpODEC+gCcuGz1pW7l95WdpW852fuIbfU7
                 +IAA+k2KnNjRtosaT0usWAQYgeUB4Phl65Yd1tqQiXR/bUOYsbawxJEHeD22Zk9Map5zmhPt5TjnWZNrCwc8sWin8JjX4xoPm9yi
                 OfdwcN1/7fZwF8X8ADpB5D47Xv+5AAAAAElFTkSuQmCC
-                """, options: .ignoreUnknownCharacters)!,
+                """, options: .ignoreUnknownCharacters) ?? Data(),
         "icon-512.png": Data(
             base64Encoded: """
                 iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAA
@@ -5451,6 +5451,6 @@ enum DashboardIcons {
                 LjMCp938L9OHprtFoHvvtoWiRWBTIrBo8W1XWZvS+6vTzkXjsLxr47Ei0fJLjcCyQXiphpvypRFY1i/zi8My7FIjp2DO2yqRy7J5
                 kr2yWzn2wVZe9Pn8Ivw8yaez6j5Jz7zPVZ/Xf1b50nOafN4WMpdlb5GtRT6e1f683mXy89hF9k9Dw8ZF6TqNvSFmWfuGuMsqn9Tu
                 r9qvy2rvldT7f+dMEWGZwMVJAAAAAElFTkSuQmCC
-                """, options: .ignoreUnknownCharacters)!,
+                """, options: .ignoreUnknownCharacters) ?? Data(),
     ]
 }
