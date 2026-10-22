@@ -94,6 +94,11 @@ struct Run: ParsableCommand {
     }
 
     func run() throws {
+        // A job's command must not queue another job: it would wait behind its own parent.
+        if let parent = ProcessInfo.processInfo.environment["SIMQ_JOB_ID"], !parent.isEmpty {
+            printError("nested simq run inside job \(parent) is not supported")
+            throw failure(.nestedRun)
+        }
         let clientWait = try waitTimeout.map { text -> Double in
             guard let seconds = DurationParser.seconds(text), seconds > 0 else {
                 throw ValidationError("--wait-timeout takes a duration like 10m")
