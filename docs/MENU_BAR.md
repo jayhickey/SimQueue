@@ -116,8 +116,36 @@ app at its original path. Upgrading or restarting a service does not prove that
 macOS retained external-drive permission; verify access after each update.
 
 Upgrade the CLI separately with `brew upgrade jayhickey/tap/simqueue`. Do not run
-`brew services start/restart simqueue` while the bundled agent is enabled. Sparkle
-updates are not implemented by this change.
+`brew services start/restart simqueue` while the bundled agent is enabled.
+
+### Sparkle updates
+
+The menu has **Check for Updates…** and **Automatically Check for Updates**.
+Automatic checks default to on; installations require the user's confirmation.
+The app uses Sparkle 2.10.0 to download and verify updates from the stable GitHub
+release feed. Every update ZIP contains only the signed, notarized app with its
+matching bundled daemon. Archives use a separate Ed25519 signature checked against
+the public key embedded in the app. System-profile reporting defaults to off.
+
+When Sparkle asks the app to quit for an installation (including install-on-quit),
+the app drains its own daemon, waits up to 30 minutes for active work and cleanup,
+then unregisters the matching service before allowing replacement. The relaunched
+app registers the new bundled daemon at the same path and reopens admission. A
+failed handoff cancels termination and reports an error; a timeout leaves the queue
+drained. Inspect `simq status` before resuming or retrying. Never force-quit the app
+to bypass a waiting update. A CLI-managed daemon is left running when only its
+companion app updates.
+
+The Homebrew app cask is marked `auto_updates true`, following Xcodes' packaging
+model. Sparkle manages app updates; Homebrew normally skips self-updating casks
+unless explicitly requested with `--greedy`. The CLI formula is still updated with
+Homebrew. A newer bundled daemon and an older CLI may temporarily report a version
+mismatch; keep the CLI current too. CLI-only users do not need Sparkle or the app.
+
+The first Sparkle-enabled release must be installed using Homebrew or its direct
+app download. Earlier versions cannot update themselves through Sparkle. Before
+that release is published, the production appcast URL may return 404. A local or
+fake signing test does not establish that a public two-version update has run.
 
 Before uninstalling the cask or switching back, use **Stop SimQueue… → Finish Jobs
 and Quit**. That unregisters the app-owned agent after drain completion. Then

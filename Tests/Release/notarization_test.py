@@ -40,6 +40,11 @@ class NotarizationTests(unittest.TestCase):
         helper = helper_dir / "simqd"
         helper.write_text("#!/bin/sh\necho 1.2.3\n")
         helper.chmod(0o700)
+        framework = release / "SimQueue.app/Contents/Frameworks/Sparkle.framework/Versions/B"
+        (framework / "XPCServices/Installer.xpc").mkdir(parents=True)
+        (framework / "XPCServices/Downloader.xpc").mkdir()
+        (framework / "Updater.app").mkdir()
+        (framework / "Autoupdate").touch()
         for name in ("simq", "simqd"):
             executable = release / "bin" / name
             executable.write_text("#!/bin/sh\necho 1.2.3\n")
@@ -69,7 +74,7 @@ class NotarizationTests(unittest.TestCase):
         result, calls, out = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
         signs = [call for call in calls if call[0] == "codesign" and "--sign" in call]
-        self.assertEqual(len(signs), 4)
+        self.assertEqual(len(signs), 9)
         self.assertTrue(signs[0][-1].endswith("SimQueue.app/Contents/Helpers/simqd"))
         self.assertIn("dev.simqueue.app-daemon", signs[0])
         self.assertTrue(signs[-1][-1].endswith("SimQueue.app"))

@@ -63,7 +63,8 @@ brew install --cask jayhickey/tap/simqueue-app
 
 The optional app can also run its own signed daemon from a stable path inside
 `SimQueue.app`. See [bundled daemon setup and safe migration](docs/MENU_BAR.md#use-the-daemon-bundled-with-the-app).
-CLI-only Homebrew installs remain supported.
+The app includes Sparkle update checks and waits for jobs before updating its
+bundled daemon. CLI-only Homebrew installs remain supported.
 
 ## Use with coding agents
 

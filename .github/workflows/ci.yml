@@ -85,11 +85,13 @@ jobs:
           python3 Tests/Release/notarization_test.py
           python3 Tests/Release/release_plan_test.py
           python3 Tests/Release/homebrew_test.py
+          python3 Tests/Release/appcast_test.py
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
-          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh
+          /usr/bin/swift format lint --strict scripts/verify-sparkle-update.swift
+          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh scripts/fetch-sparkle-tools.sh scripts/package-sparkle-update.sh
       - name: Preserve test log
         if: always()
         uses: actions/upload-artifact@v4

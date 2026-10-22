@@ -63,4 +63,38 @@ final class QueueSessionTests: XCTestCase {
                 }))
         XCTAssertTrue(stub.serviceStopped)
     }
+    func testUpdateWaitsForActiveWorkAndCleanupWithoutCanceling() async throws {
+        let stub = Stub()
+        let session = QueueSession(request: stub.send)
+        try await session.stopForUpdate(
+            expectedEpoch: 7,
+            service: { _ in
+                return { stub.serviceStopped = true }
+            },
+            poll: {
+                XCTAssertFalse(stub.serviceStopped)
+                XCTAssertFalse(stub.calls.contains { if case .stop = $0 { true } else { false } })
+                stub.complete = true
+            })
+        XCTAssertTrue(stub.serviceStopped)
+        XCTAssertEqual(stub.calls.first, .status)
+        XCTAssertTrue(stub.calls.contains(.drain))
+        XCTAssertFalse(stub.calls.contains { if case .cancel = $0 { true } else { false } })
+        XCTAssertEqual(stub.calls.last, .stop(StopParams(epoch: 7, exitDaemon: false)))
+    }
+
+    func testCanceledUpdateWaitDoesNotStopTheService() async throws {
+        let stub = Stub()
+        do {
+            try await QueueSession(request: stub.send).stopForUpdate(
+                expectedEpoch: 7,
+                service: { _ in
+                    return { stub.serviceStopped = true }
+                }, poll: { throw CancellationError() })
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {}
+        XCTAssertFalse(stub.serviceStopped)
+        XCTAssertFalse(stub.calls.contains { if case .stop = $0 { true } else { false } })
+    }
+
 }

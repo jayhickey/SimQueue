@@ -140,6 +140,7 @@ jobs:
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           SIMQ_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           NOTARY_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           SIMQ_NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           SIMQ_NOTARY_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
         run: |
@@ -178,6 +179,12 @@ jobs:
           tar -xzf "$NAME.tar.gz"
           "$GITHUB_WORKSPACE/scripts/notarize-release.sh" "$VERSION" \
             "$RUNNER_TEMP/unsigned/$NAME" "$RUNNER_TEMP/notarized"
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            : "${SPARKLE_PRIVATE_KEY:?Missing Sparkle Ed25519 signing key}"
+            "$GITHUB_WORKSPACE/scripts/fetch-sparkle-tools.sh" "$RUNNER_TEMP/sparkle-sdk"
+            "$GITHUB_WORKSPACE/scripts/package-sparkle-update.sh" "$VERSION" \
+              "$RUNNER_TEMP/unsigned/$NAME" "$RUNNER_TEMP/notarized" "$RUNNER_TEMP/sparkle-sdk"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: simqueue-${{ needs.build.outputs.version }}-macos-arm64
@@ -220,7 +227,13 @@ jobs:
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
               -f "ref=refs/tags/$TAG" -f "sha=$SOURCE_SHA" >/dev/null
           fi
-          gh release create "$TAG" "$NAME" "$NAME.sha256" \
+          ASSETS=("$NAME" "$NAME.sha256")
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            shasum -a 256 -c "SimQueue-$VERSION.zip.sha256"
+            test -s appcast.xml
+            ASSETS+=("SimQueue-$VERSION.zip" "SimQueue-$VERSION.zip.sha256" appcast.xml)
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "SimQueue $VERSION" \
             --generate-notes "${FLAGS[@]}"
 

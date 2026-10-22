@@ -35,6 +35,8 @@ def update_files(formula, cask, version, checksum, source):
     formula = re.sub(r'^  revision \d+\n', '', formula, flags=re.MULTILINE)
     cask = replace(r'^  version "[^"]+"$', f'  version "{version}"', cask)
     cask = replace(r'^  sha256 "[0-9a-f]{64}"$', f'  sha256 "{checksum}"', cask)
+    if not re.search(r"^  auto_updates true$", cask, re.MULTILINE):
+        cask = replace(r'^  sha256 "[0-9a-f]{64}"$', f'  sha256 "{checksum}"\n\n  auto_updates true', cask)
     cask = cask.replace(
         '    This app is ad-hoc signed and is not notarized. macOS may require explicit\n'
         '    approval under its normal security policy. Do not disable Gatekeeper.',

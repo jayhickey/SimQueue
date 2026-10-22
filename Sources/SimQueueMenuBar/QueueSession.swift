@@ -53,6 +53,19 @@ public struct QueueSession: Sendable {
         return draining
     }
 
+    /// Updates never cancel work. A caller controls polling/deadline/cancellation;
+    /// installation can proceed only after the epoch-checked service stop succeeds.
+    public func stopForUpdate(
+        expectedEpoch: Int64,
+        service: @Sendable (StatusResult) throws -> (@Sendable () throws -> Void)?,
+        poll: @Sendable () async throws -> Void
+    ) async throws {
+        _ = try beginStop(cancelActive: false, expectedEpoch: expectedEpoch)
+        while try !finishStop(expectedEpoch: expectedEpoch, service: service) {
+            try await poll()
+        }
+    }
+
     /// The daemon rechecks drain completion under its service lock before acknowledging stop.
     public func finishStop(
         expectedEpoch: Int64,

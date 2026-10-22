@@ -31,7 +31,7 @@ if [ -n "${SIMQ_SIGNING_KEYCHAIN:-}" ]; then signing+=(--keychain "$SIMQ_SIGNING
 umask 077
 mkdir -p "$out"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'result=$?; rm -rf "$work"; exit "$result"' EXIT
 name="simqueue-$version-macos-arm64"
 # Avoid replacing an existing archive, including on failed/retried notarization.
 [ ! -e "$out/$name.tar.gz" ] || { echo 'Output archive already exists' >&2; exit 1; }
@@ -43,8 +43,17 @@ helper="$release/SimQueue.app/Contents/Helpers/simqd"
 codesign "${signing[@]}" --identifier dev.simqueue.app-daemon "$helper"
 codesign --verify --strict "$helper"
 
-for executable in "$release/bin/simq" "$release/bin/simqd" "$release/SimQueue.app"; do
-  codesign "${signing[@]}" "$executable"
+framework="$release/SimQueue.app/Contents/Frameworks/Sparkle.framework"
+[ -d "$framework/Versions/B/XPCServices/Installer.xpc" ] || { echo 'Missing Sparkle framework' >&2; exit 1; }
+for executable in "$release/bin/simq" "$release/bin/simqd" \
+  "$framework/Versions/B/XPCServices/Installer.xpc" \
+  "$framework/Versions/B/XPCServices/Downloader.xpc" \
+  "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app" \
+  "$framework" "$release/SimQueue.app"; do
+  case "$executable" in
+    */Downloader.xpc) codesign "${signing[@]}" --preserve-metadata=entitlements "$executable" ;;
+    *) codesign "${signing[@]}" "$executable" ;;
+  esac
   codesign --verify --strict "$executable"
   codesign --display --verbose=4 "$executable" 2>"$work/signature.txt"
   grep -q '^Authority=Developer ID Application:' "$work/signature.txt" || {
