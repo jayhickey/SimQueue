@@ -95,6 +95,15 @@ Waiting clients reconnect after a short service interruption. An abruptly interr
 | Understand scheduling, storage, and ownership | [Architecture](docs/ARCHITECTURE.md) |
 | Build and publish a release | [Release process](docs/RELEASING.md) |
 
+## Automated releases
+
+Successful CI on `main` starts the release workflow for that exact commit. It
+selects the next patch version, builds the ARM64 distribution, signs with
+Developer ID, notarizes and staples the app, then creates the version tag and
+GitHub Release. Credentials and all verification checks must succeed before
+publication. See the [release guide](docs/RELEASING.md) for setup, retries and
+nonpublishing validation runs.
+
 ## Contributing
 
 Development requires Swift 6, SQLite headers, and the Xcode toolchain on macOS.

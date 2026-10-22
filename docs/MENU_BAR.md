@@ -43,9 +43,10 @@ will not overwrite an existing unmanaged app automatically. Avoid keeping two
 copies of the companion app installed.
 
 Starting with v0.1.4, the release archive also contains `SimQueue.app` alongside
-the CLI tools for manual installation. The app is ad-hoc signed, not notarized;
-follow macOS security policy rather than disabling Gatekeeper or removing
-quarantine attributes.
+the CLI tools for manual installation. Local builds and older release archives use ad-hoc signing. The release pipeline
+now requires Developer ID signing, Apple notarization, and a stapled app ticket
+for new tagged builds. Check the release notes for the actual validation of a
+particular download; do not disable Gatekeeper or remove quarantine attributes.
 
 ## Build and install
 
