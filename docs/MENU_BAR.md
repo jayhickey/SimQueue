@@ -62,10 +62,100 @@ The packaging script creates an ad-hoc signed app, suitable for local developmen
 Copy it to `/Applications` before enabling **Launch at Login**.
 Public archives and the optional cask include the same app bundle.
 Install/configure SimQueue first (see [INSTALL.md](INSTALL.md)).
-The app connects to the default state directory, or `SIMQ_STATE_DIR` when launched
-with that environment. It does not replace the daemon, reconfigure its service,
-or launch a second daemon. Start the installed daemon using `simq status` or your
-existing login service before opening the dashboard.
+The dashboard connects to the default state directory, or `SIMQ_STATE_DIR` when
+launched with that environment. The optional bundled background service uses only
+the default state directory. A custom-state app can still monitor an externally
+managed daemon, but cannot register the bundled service.
+
+## Use the daemon bundled with the app
+
+The app contains `Contents/Helpers/simqd` and a per-user background agent managed
+by macOS Service Management (`dev.simqueue.app-daemon`). The executable keeps the
+same location across updates when the app stays in the same Applications folder.
+The helper has its own stable code-signing identifier. This improves identity
+continuity; permission persistence across macOS versions and future updates still
+needs live verification. A first external-drive permission request may still occur.
+Full Disk Access is not required for this installation.
+
+Install the app in `/Applications` or `~/Applications` before enabling the service.
+Right-click the menu bar icon and choose **Use Bundled Daemon…**. If macOS asks for
+approval, enable it under **System Settings → General → Login Items & Extensions**;
+the app's **Background Service Settings…** command opens that page. The service
+continues running after **Quit Menu Bar App**, including without the menu bar app
+at login. Launch at Login controls only the menu bar app.
+
+### Migrate from Homebrew's daemon service
+
+Keep the CLI formula installed: it connects to the same socket and queue. Only
+one manager should run the daemon. The app refuses to take over a responding
+foreign daemon, a held daemon lock, or an installed legacy LaunchAgent.
+
+1. Run `simq drain --timeout 30m` and wait for **Drained; safe to restart simqd.**
+2. Take a consistent backup following [planned upgrades](INSTALL.md#planned-upgrade).
+3. Keep `"autostart": false` in the existing config. Do not replace other settings.
+4. Run `brew services stop jayhickey/tap/simqueue`. For `simq init --launchd`, unload
+   its `dev.simqueue.simqd` agent and move that plist aside. For an on-demand daemon,
+   stop the exact drained PID. Check that the old daemon has exited before continuing.
+5. If an old SimQueue LaunchAgent plist remains in `~/Library/LaunchAgents`, move it
+   into your backup rather than leaving it to restart at next login. The app checks
+   `sh.brew.simqueue`, `homebrew.mxcl.simqueue`, and `dev.simqueue.simqd`.
+6. Choose **Use Bundled Daemon…**, approve background activity if required, and
+   verify `simq status` and `simq doctor`. The new daemon reopens queue admission.
+
+For scripted registration after those same migration checks, run the installed
+app executable with `--register-daemon`; it performs the same configuration,
+location, manager and lock checks. This command does not grant macOS permissions. For scripted app upgrades,
+`--stop-bundled-daemon` performs the same epoch/PID-checked finish-and-unregister
+handoff, waiting up to 30 minutes without canceling jobs. It refuses foreign
+daemons. After installing the new app at the same path, register it again.
+
+### Updates and switching back
+
+Quit the menu bar app before `brew upgrade --cask jayhickey/tap/simqueue-app`, then
+relaunch it and choose **Use Bundled Daemon…** again. This drains the app-managed
+queue, waits for running work and owned cleanup, and restarts the service using
+the updated bundled daemon. It never cancels active jobs for an update. Keep the
+app at its original path. Upgrading or restarting a service does not prove that
+macOS retained external-drive permission; verify access after each update.
+
+Upgrade the CLI separately with `brew upgrade jayhickey/tap/simqueue`. Do not run
+`brew services start/restart simqueue` while the bundled agent is enabled.
+
+### Sparkle updates
+
+The menu has **Check for Updates…** and **Automatically Check for Updates**.
+Automatic checks default to on; installations require the user's confirmation.
+The app uses Sparkle 2.10.0 to download and verify updates from the stable GitHub
+release feed. Every update ZIP contains only the signed, notarized app with its
+matching bundled daemon. Archives use a separate Ed25519 signature checked against
+the public key embedded in the app. System-profile reporting defaults to off.
+
+When Sparkle asks the app to quit for an installation (including install-on-quit),
+the app drains its own daemon, waits up to 30 minutes for active work and cleanup,
+then unregisters the matching service before allowing replacement. The relaunched
+app registers the new bundled daemon at the same path and reopens admission. An update canceled while waiting resumes admission before the final stop
+acknowledgement; if the service already stopped, the old app starts it again.
+Existing paused/draining maintenance must finish before starting an update. A
+failed handoff cancels termination and reports an error; a timeout leaves the queue
+drained. Inspect `simq status` before resuming or retrying. Never force-quit the app
+to bypass a waiting update. A CLI-managed daemon is left running when only its
+companion app updates.
+
+The Homebrew app cask is marked `auto_updates true`, following Xcodes' packaging
+model. Sparkle manages app updates; Homebrew normally skips self-updating casks
+unless explicitly requested with `--greedy`. The CLI formula is still updated with
+Homebrew. A newer bundled daemon and an older CLI may temporarily report a version
+mismatch; keep the CLI current too. CLI-only users do not need Sparkle or the app.
+
+The first Sparkle-enabled release must be installed using Homebrew or its direct
+app download. Earlier versions cannot update themselves through Sparkle. Before
+that release is published, the production appcast URL may return 404. A local or
+fake signing test does not establish that a public two-version update has run.
+
+Before uninstalling the cask or switching back, use **Stop SimQueue… → Finish Jobs
+and Quit**. That unregisters the app-owned agent after drain completion. Then
+start your chosen CLI daemon manager. App uninstall still preserves queue data;
+uninstalling a registered app without stopping its service first is unsupported.
 
 ## Quit and stop
 
@@ -86,7 +176,9 @@ and use `simq resume` to reopen admission when appropriate. After a final stop
 acknowledgement, admissions are sealed: if service unloading failed, restart the
 daemon through its service manager rather than resuming it.
 
-For the standard Homebrew or `simq init --launchd` user service, the app matches
+For the bundled app agent, the app matches its service PID, seals admission, and
+unregisters it through Service Management. For the standard Homebrew or
+`simq init --launchd` user service, the app matches
 the service's PID against the connected daemon, seals its admission gate, then
 unloads that exact service with `launchctl bootout`. This prevents KeepAlive from
 restarting it immediately. Other service managers are not supported: stop those

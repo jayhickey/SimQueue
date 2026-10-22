@@ -21,3 +21,7 @@ their original copyright notices will be listed here.
   Ideas: separate running/parked/boot capacity caps, load-based boot gate,
   SIGSTOP warm-pool parking, footprint watchdog, waiter expiry,
   quarantine and reset-before-grant, mock backend, simslim capability probe.
+
+The macOS menu bar app includes Sparkle 2.10.0 (MIT license),
+https://sparkle-project.org. See docs/licenses/Sparkle.txt and the license
+inside SimQueue.app/Contents/Resources.

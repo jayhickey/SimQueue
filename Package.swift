@@ -17,7 +17,8 @@ let package = Package(
         .executable(name: "SimQueueApp", targets: ["SimQueueApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0")
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
         // System SQLite: the macOS SDK on Darwin, libsqlite3-dev on Linux.
@@ -69,7 +70,11 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "SimQueueApp", dependencies: ["SimQueueMenuBar", "SimQueueDashboard", "SimQueueProtocol"]),
+            name: "SimQueueApp",
+            dependencies: [
+                "SimQueueMenuBar", "SimQueueDashboard", "SimQueueProtocol",
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
+            ]),
         .target(name: "SimQueueMenuBar", dependencies: ["SimQueueCore", "SimQueueProtocol", "SimQueueIPC"]),
         .testTarget(name: "SimQueueMenuBarTests", dependencies: ["SimQueueMenuBar", "SimQueueProtocol"]),
         .testTarget(

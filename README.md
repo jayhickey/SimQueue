@@ -55,6 +55,17 @@ simq run --project app --sims 0 --timeout 20m -- \
 
 Submit independent jobs from separate terminals or CI jobs to share the queue. Keep concurrent builds in separate checkouts and use bounded tool parallelism; SimQueue decides when a command starts, while the command controls its own workers.
 
+To add the optional menu bar app:
+
+```sh
+brew install --cask jayhickey/tap/simqueue-app
+```
+
+The optional app can also run its own signed daemon from a stable path inside
+`SimQueue.app`. See [bundled daemon setup and safe migration](docs/MENU_BAR.md#use-the-daemon-bundled-with-the-app).
+The app includes Sparkle update checks and waits for jobs before updating its
+bundled daemon. CLI-only Homebrew installs remain supported.
+
 ## Use with coding agents
 
 Run `simq agent-guide` for the installed version's concise operational instructions.

@@ -3,12 +3,32 @@
 #if os(macOS)
     import Foundation
     import SimQueueProtocol
+    import SimQueueMenuBar
+    import ServiceManagement
 
     enum LoginDaemon {
+        static let legacyLabels = ["sh.brew.simqueue", "homebrew.mxcl.simqueue", "dev.simqueue.simqd"]
+
+        static func matches(label: String, pid: Int32) throws -> Bool {
+            let result = try launchctl(["print", "gui/\(getuid())/\(label)"])
+            return result.0 == 0
+                && result.1.split(separator: "\n").contains {
+                    $0.trimmingCharacters(in: .whitespaces) == "pid = \(pid)"
+                }
+        }
+
         /// Match the reported PID, not merely a familiar service name. Seal the daemon's
         /// admission gate before bootout so KeepAlive cannot restart it between requests.
         static func stopAction(_ status: StatusResult) throws -> (@Sendable () throws -> Void)? {
-            for label in ["homebrew.mxcl.simqueue", "dev.simqueue.simqd"] {
+            if try matches(label: AppDaemonSettings.label, pid: status.daemon.pid) {
+                return {
+                    guard try matches(label: AppDaemonSettings.label, pid: status.daemon.pid) else {
+                        throw QueueStopError.serviceChanged
+                    }
+                    try BundledDaemon.service.unregister()
+                }
+            }
+            for label in legacyLabels {
                 let target = "gui/\(getuid())/\(label)"
                 let result = try launchctl(["print", target])
                 guard result.0 == 0 else { continue }

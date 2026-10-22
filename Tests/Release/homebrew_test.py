@@ -19,6 +19,7 @@ class HomebrewTests(unittest.TestCase):
         formula, cask = update(FORMULA, CASK, '0.1.7', 'b' * 64, 'example/SimQueue')
         self.assertIn('/v0.1.7/simqueue-0.1.7-macos-arm64.tar.gz', formula)
         self.assertIn('  version "0.1.7"', cask)
+        self.assertEqual(cask.count('  auto_updates true'), 1)
         self.assertIn('b' * 64, formula)
         self.assertIn('b' * 64, cask)
         self.assertNotIn('revision', formula)

@@ -53,6 +53,31 @@ public struct QueueSession: Sendable {
         return draining
     }
 
+    /// Updates never cancel work. A caller controls polling/deadline/cancellation;
+    /// installation can proceed only after the epoch-checked service stop succeeds.
+    public func stopForUpdate(
+        expectedEpoch: Int64,
+        service: @Sendable (StatusResult) throws -> (@Sendable () throws -> Void)?,
+        poll: @Sendable () async throws -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        _ = try beginStop(cancelActive: false, expectedEpoch: expectedEpoch)
+        while true {
+            try Task.checkCancellation()
+            if try finishStop(expectedEpoch: expectedEpoch, service: service) { return }
+            try await poll()
+        }
+    }
+
+    /// Used only when an update wait is canceled before the final stop request.
+    /// The daemon also rejects resume after its final stop acknowledgement.
+    public func resumeAfterCanceledUpdate(expectedEpoch: Int64) throws {
+        guard try status().daemon.epoch == expectedEpoch else { throw SessionError.daemonChanged }
+        guard case .status(let resumed) = try request(.resume), resumed.daemon.epoch == expectedEpoch else {
+            throw SessionError.daemonChanged
+        }
+    }
+
     /// The daemon rechecks drain completion under its service lock before acknowledging stop.
     public func finishStop(
         expectedEpoch: Int64,

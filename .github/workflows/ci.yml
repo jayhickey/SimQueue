@@ -50,6 +50,36 @@ jobs:
           /usr/sbin/taskpolicy -b /usr/bin/swift build --build-tests --arch arm64 -j 2 \
             --scratch-path "$SIMQ_CI_ROOT/build" --cache-path "$SIMQ_CI_ROOT/cache" \
             --config-path "$SIMQ_CI_ROOT/config" --security-path "$SIMQ_CI_ROOT/security"
+      - name: Menu bar app packaging
+        run: |
+          set -euo pipefail
+          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
+          scripts/package-app.sh "$BIN" "$RUNNER_TEMP/app"
+          plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist"
+          codesign --verify --deep --strict "$RUNNER_TEMP/app/SimQueue.app"
+          test "$("$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" --version)" = "$("$BIN/simqd" --version)"
+          plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Library/LaunchAgents/dev.simqueue.app-daemon.plist"
+          "$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" run --foreground --backend fake --probe fake \
+            --log-to-state --exit-after-startup --state-dir "$SIMQ_CI_ROOT/bundled-smoke"
+          test -s "$SIMQ_CI_ROOT/bundled-smoke/simqd.log"
+      - name: Build and test the read-only Sparkle feed probe
+        run: |
+          set -euo pipefail
+          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
+          mkdir -p "$RUNNER_TEMP/feed-probe" "$RUNNER_TEMP/feed-fixture"
+          /usr/bin/swiftc -j 2 -target arm64-apple-macos14.0 -parse-as-library -F "$BIN" -framework Sparkle \
+            -Xlinker -rpath -Xlinker @executable_path Tests/Release/feed_probe.swift \
+            -o "$RUNNER_TEMP/feed-probe/feed-probe"
+          ditto "$BIN/Sparkle.framework" "$RUNNER_TEMP/feed-probe/Sparkle.framework"
+          python3 Tests/Release/feed_probe_test.py "$RUNNER_TEMP/feed-probe/feed-probe" "$RUNNER_TEMP/app/SimQueue.app"
+          # Preserve framework symlinks and executable permissions across download.
+          tar -czf "$RUNNER_TEMP/feed-probe-macos-arm64.tar.gz" -C "$RUNNER_TEMP" feed-probe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sparkle-feed-probe-macos-arm64
+          path: ${{ runner.temp }}/feed-probe-macos-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
       - name: Full tests without simulator access
         timeout-minutes: 15
         run: |
@@ -66,13 +96,6 @@ jobs:
           "$BIN/simq" --help >/dev/null
           "$BIN/simqd" run --foreground --backend fake --probe fake \
             --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
-      - name: Menu bar app packaging
-        run: |
-          set -euo pipefail
-          BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
-          scripts/package-app.sh "$BIN" "$RUNNER_TEMP/app"
-          plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Info.plist"
-          codesign --verify --strict "$RUNNER_TEMP/app/SimQueue.app"
       - name: Dashboard JavaScript checks
         run: node Tests/Dashboard/dashboard.test.cjs
       - name: Notarization release control flow (fake tools)
@@ -80,11 +103,15 @@ jobs:
           python3 Tests/Release/notarization_test.py
           python3 Tests/Release/release_plan_test.py
           python3 Tests/Release/homebrew_test.py
+          python3 Tests/Release/appcast_test.py
+      - name: Sparkle archive signature verification (ephemeral key)
+        run: /usr/bin/swift -j 2 Tests/Release/update_signature_test.swift scripts/verify-sparkle-update.swift
       - name: Swift and shell formatting checks
         run: |
           set -euo pipefail
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
-          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh
+          /usr/bin/swift format lint --strict scripts/verify-sparkle-update.swift
+          bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh scripts/fetch-sparkle-tools.sh scripts/package-sparkle-update.sh
       - name: Preserve test log
         if: always()
         uses: actions/upload-artifact@v4
