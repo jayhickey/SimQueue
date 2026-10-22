@@ -204,3 +204,20 @@ starts it again when autostart is enabled. Queued work can then resume.
 The additive `stop` protocol requires a matching daemon epoch and a completed
 drain, including all leases, process groups and pending cleanup. Older daemons
 reject it without being signaled; upgrade the CLI/daemon before using app shutdown.
+
+## Dashboard listen settings
+
+Right-click the menu bar icon and choose **Dashboard Settings…**. Set a numeric
+IPv4 listen address and a port (0 chooses an available port). Values persist in
+the app’s preferences across launches and app updates. Defaults are `127.0.0.1`
+and port `0`. Saved non-default settings start the listener when the app launches,
+without opening a browser. Use this Mac’s Tailscale or LAN IP for a proxy on another machine;
+`0.0.0.0` listens on all IPv4 interfaces. Share the private URL only with trusted
+users and restrict who can reach a network listener.
+
+Applying opens the dashboard with a new private URL and restarts only its HTTP
+listener; the daemon and jobs continue. A failed bind leaves preferences unchanged
+and attempts to restore the previous listener. Reopen the dashboard after a failed
+change because its private path may have changed. These preferences apply to the
+menu bar app’s own dashboard; separately launched `simq dashboard` processes and
+launch agents continue to use their command-line flags.

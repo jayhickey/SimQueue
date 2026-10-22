@@ -10,7 +10,10 @@
     /// A single worker owns run(); the immutable server is only read to open its URL.
     private final class DashboardHost: @unchecked Sendable {
         let server: DashboardServer
-        init(socketPath: String) throws { server = try DashboardServer(socketPath: socketPath) }
+        init(socketPath: String, settings: DashboardSettings) throws {
+            server = try DashboardServer(port: settings.port, bindAddress: settings.bindAddress, socketPath: socketPath)
+        }
+        func stop() { server.stop() }
         func start() { Thread.detachNewThread { [self] in try? server.run() } }
     }
 
@@ -19,6 +22,7 @@
         private var item: NSStatusItem!
         private var timer: Timer?
         private var dashboard: DashboardHost?
+        private var configuringDashboard = false
         private let paths = SimQueuePaths.resolve()
         private var latest: StatusResult?
         private var stoppingEpoch: Int64?
@@ -75,6 +79,14 @@
                 Task { @MainActor in self?.refresh() }
             }
             refresh()
+            let dashboardSettings = DashboardSettings.load()
+            if dashboardSettings != DashboardSettings() {
+                do {
+                    let host = try DashboardHost(socketPath: paths.socketPath, settings: dashboardSettings)
+                    host.start()
+                    dashboard = host
+                } catch { showError(error) }
+            }
         }
 
         @objc private func clicked() {
@@ -91,6 +103,9 @@
             menu.addItem(statusLine)
             menu.addItem(.separator())
             add("Open Dashboard", #selector(openDashboard), to: menu)
+            menu.items.last?.isEnabled = !configuringDashboard
+            add("Dashboard Settings…", #selector(dashboardSettings), to: menu)
+            menu.items.last?.isEnabled = !configuringDashboard && !updateTerminationPending
             add("Check for Updates…", #selector(checkForUpdates), to: menu)
             menu.items.last?.isEnabled =
                 updater.controller.updater.canCheckForUpdates && stoppingEpoch == nil && !managingBundled
@@ -122,14 +137,69 @@
         }
 
         @objc private func openDashboard() {
+            guard !configuringDashboard else { return }
             do {
                 if dashboard == nil {
-                    let host = try DashboardHost(socketPath: paths.socketPath)
+                    let host = try DashboardHost(socketPath: paths.socketPath, settings: .load())
                     host.start()
                     dashboard = host
                 }
                 if let text = dashboard?.server.url, let url = URL(string: text) {
                     NSWorkspace.shared.open(url)
+                }
+            } catch { showError(error) }
+        }
+
+        @objc private func dashboardSettings() {
+            guard !configuringDashboard else { return }
+            let saved = DashboardSettings.load()
+            let alert = NSAlert()
+            alert.messageText = "Dashboard Settings"
+            alert.informativeText =
+                "Choose a listen address and port. Use 127.0.0.1 for this Mac only, or this Mac’s LAN/Tailscale IPv4 address for another machine’s proxy. Port 0 chooses an available port. Applying restarts only the dashboard and changes its private link."
+            alert.addButton(withTitle: "Apply")
+            alert.addButton(withTitle: "Cancel")
+            let form = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 120))
+            let address = NSTextField(string: saved.bindAddress)
+            let port = NSTextField(string: String(saved.port))
+            for (title, field, y) in [("Listen address", address, 72.0), ("Port", port, 12.0)] {
+                let label = NSTextField(labelWithString: title)
+                label.frame = NSRect(x: 0, y: y + 28, width: 360, height: 18)
+                field.frame = NSRect(x: 0, y: y, width: 360, height: 24)
+                field.setAccessibilityLabel(title)
+                form.addSubview(label)
+                form.addSubview(field)
+            }
+            alert.accessoryView = form
+            alert.window.initialFirstResponder = address
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do {
+                let settings = try DashboardSettings(address: address.stringValue, portText: port.stringValue)
+                let old = dashboard
+                dashboard = nil
+                configuringDashboard = true
+                let socketPath = paths.socketPath
+                Task {
+                    let result = await Task.detached { () -> Result<DashboardHost, Error> in
+                        old?.stop()
+                        return Result { try DashboardHost(socketPath: socketPath, settings: settings) }
+                    }.value
+                    configuringDashboard = false
+                    switch result {
+                    case .success(let host):
+                        settings.save()
+                        host.start()
+                        dashboard = host
+                        openDashboard()
+                    case .failure(let error):
+                        // Restore the previous configuration if the new address/port cannot bind.
+                        if old != nil, let restored = try? DashboardHost(socketPath: socketPath, settings: saved) {
+                            restored.start()
+                            dashboard = restored
+                        }
+                        showError(error)
+                    }
                 }
             } catch { showError(error) }
         }
