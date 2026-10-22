@@ -638,7 +638,8 @@ final class SchedulerTests: XCTestCase {
             [makeJob("J-0915", seq: 1, priority: 70, project: "quotify", resources: sims(0, memory: 6 * gib))]
             + (2...5).map { makeJob("J-\($0)", seq: Int64($0), project: "quotify", resources: sims(0)) }
         let plan = Scheduler(config: config).plan(
-            input(queued: queued, active: [settledActive("J-0906", memory: gib / 2)], host: host,
+            input(
+                queued: queued, active: [settledActive("J-0906", memory: gib / 2)], host: host,
                 pool: PoolSnapshot(idleRunning: 4)))
         XCTAssertEqual(plan.reasonCodes(for: "J-0915"), ["insufficient_memory"])
         XCTAssertEqual(plan.admittedIDs, ["J-2", "J-3", "J-4", "J-5"])
