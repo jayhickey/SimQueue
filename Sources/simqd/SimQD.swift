@@ -235,6 +235,7 @@ struct Run: ParsableCommand {
             reliability: daemonConfig.reliability,
             timeouts: daemonConfig.timeouts,
             watchdog: daemonConfig.watchdog,
+            includeArtifactRetention: false,
             ownerID: "simqd-\(pid)",
             pid: pid
         )

@@ -27,6 +27,7 @@ public final class DaemonService: @unchecked Sendable {
     private var historyRunning = false
     private let artifactQueue = DispatchQueue(label: "simqd.artifact-retention")
     private var artifactCleanupRunning = false
+    private var artifactCleanupDue = true
     private let artifactRequests = DispatchGroup()
     private var lastHistoryAt: Double = -.infinity
     private var shutdownRequested = false
@@ -239,25 +240,27 @@ public final class DaemonService: @unchecked Sendable {
                 case .light: lastLightPassAt = now
                 case .full:
                     lastFullPassAt = now
-                    if !artifactCleanupRunning {
-                        artifactCleanupRunning = true
-                        artifactQueue.async { [self] in
-                            defer { locked { artifactCleanupRunning = false } }
-                            do {
-                                let outcome = try collectArtifacts(apply: true, automatic: true)
-                                if !outcome.candidates.isEmpty {
-                                    log(
-                                        "artifact retention: \(outcome.removed.count) removed, \(outcome.failures.count) failed; "
-                                            + "simq gc lists remaining candidates (including report-only/breaker holds)"
-                                    )
-                                }
-                            } catch {
-                                log("artifact retention deferred: \(error)")
-                            }
-                        }
-                    }
+                    artifactCleanupDue = true
                 }
                 try? writeHealth(now: now)
+            }
+            if artifactCleanupDue && !artifactCleanupRunning && !engine.maintenanceDraining && !shutdownRequested {
+                artifactCleanupDue = false
+                artifactCleanupRunning = true
+                artifactQueue.async { [self] in
+                    defer { locked { artifactCleanupRunning = false } }
+                    do {
+                        let outcome = try collectArtifacts(apply: true, automatic: true)
+                        if !outcome.candidates.isEmpty {
+                            log(
+                                "artifact retention: \(outcome.removed.count) removed, \(outcome.failures.count) failed; "
+                                    + "simq gc lists remaining candidates (including report-only/breaker holds)"
+                            )
+                        }
+                    } catch {
+                        log("artifact retention deferred: \(error)")
+                    }
+                }
             }
             return result
         }
@@ -453,20 +456,31 @@ public final class DaemonService: @unchecked Sendable {
                 "cleanup_mode is \(config.reliability.cleanupMode.rawValue): nothing removed (run without --apply to list)"
             )
         }
-        let plan = try locked { try engine.gcPlan(now: engine.environment.clock.now()) }
-        let candidates = engine.gcCandidates(plan)
+        let disk = locked { () -> (roots: [String], fileSystem: any FileSystem)? in
+            guard !automatic || (!engine.maintenanceDraining && !shutdownRequested) else { return nil }
+            return (engine.environment.allArtifactsRoots, engine.environment.fileSystem)
+        }
+        guard let disk else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
+        let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: disk.fileSystem)
+        let plan = try locked { () -> Engine.GCPlan? in
+            guard !automatic || (!engine.maintenanceDraining && !shutdownRequested) else { return nil }
+            return try engine.gcPlan(now: engine.environment.clock.now(), inventory: inventory)
+        }
+        guard let plan else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
+        let candidates = Engine.gcCandidates(plan, fileSystem: disk.fileSystem)
         var result = GCResult(
             applied: apply, candidates: candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) },
             budgetBytes: plan.budget)
         guard apply else { return result }
         let limit =
             automatic ? min(20, max(0, config.reliability.ageRules.artifactRetention.maxRemovalsPerPass)) : Int.max
-        let fileSystem = engine.environment.fileSystem
+        let fileSystem = disk.fileSystem
         var attempted = 0
         for candidate in candidates.prefix(limit) {
             let path = candidate.path
             let intent: ActionIntent? = try locked {
                 if automatic {
+                    guard !engine.maintenanceDraining && !shutdownRequested else { return nil }
                     let phase = try store.watchdogState().breaker.phase
                     guard config.reliability.cleanupMode == .enforce, phase != .open,
                         phase != .halfOpen || attempted == 0
@@ -487,8 +501,16 @@ public final class DaemonService: @unchecked Sendable {
             }
             if let failure { result.failures.append("\(path): \(failure)") } else { result.removed.append(path) }
         }
-        try locked {
-            try engine.removeEmptyDayDirectories(after: result.removed, now: engine.environment.clock.now())
+        let finishDays = locked { !automatic || (!engine.maintenanceDraining && !shutdownRequested) }
+        if !result.removed.isEmpty && finishDays {
+            let days = try Engine.removeEmptyArtifactDays(roots: disk.roots, fileSystem: fileSystem)
+            try locked {
+                for day in days {
+                    try store.audit(
+                        Engine.artifactRemovedAuditType, detail: "removed empty \(day)",
+                        now: engine.environment.clock.now())
+                }
+            }
         }
         return result
     }

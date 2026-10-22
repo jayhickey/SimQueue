@@ -10,12 +10,15 @@ public protocol FileSystem: Sendable {
     func children(of path: String) throws -> [String]
     func createDirectory(_ path: String) throws
     func removeItem(_ path: String) throws
+    /// Atomically remove an empty directory only. Unsupported implementations keep it.
+    func removeEmptyDirectory(_ path: String) throws -> Bool
     /// Total bytes under `path` (a file or a directory tree); nil if unknown.
     func sizeOfItem(_ path: String) -> UInt64?
 }
 
 extension FileSystem {
     public func sizeOfItem(_ path: String) -> UInt64? { nil }
+    public func removeEmptyDirectory(_ path: String) throws -> Bool { false }
 }
 
 public struct LocalFileSystem: FileSystem {
@@ -112,6 +115,19 @@ public final class FakeFileSystem: FileSystem, @unchecked Sendable {
             return
         }
         directories = directories.filter { $0 != path && !$0.hasPrefix(path + "/") }
+    }
+
+    public func removeEmptyDirectory(_ path: String) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard directories.contains(path), !directories.contains(where: { $0.hasPrefix(path + "/") }) else {
+            return false
+        }
+        if removeFails.contains(path) { throw FakeFault.injected("rmdir \(path)") }
+        if removeHasNoEffect.contains(path) { return false }
+        directories.remove(path)
+        removed.append(path)
+        return true
     }
 
     public func sizeOfItem(_ path: String) -> UInt64? {
