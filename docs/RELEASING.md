@@ -152,7 +152,8 @@ is not a substitute for verifying its public URL.
 ## Update the public Homebrew tap
 
 Maintain both `Formula/simqueue.rb` (CLI/daemon only) and
-`Casks/simqueue-app.rb` (optional app, depending on the formula). Use the same
+`Casks/simqueue-app.rb` (the app, linking its bundled `Contents/Helpers/simq` and
+replacing the formula; the updater migrates older casks). Use the same
 release version and verified checksum in both. Verify the cask app path against
 the staged archive, keep installation free of service changes, and preserve all
 shared state on app uninstall. Do not add daemon stop or shared-data zap hooks.

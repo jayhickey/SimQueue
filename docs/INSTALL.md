@@ -23,21 +23,26 @@ simq init
 
 ### Optional menu bar app
 
-CLI-only users can keep using the formula above. To add `SimQueue.app` in
-`/Applications`, install the optional cask:
+CLI-only users can keep using the formula above. To use `SimQueue.app` in
+`/Applications` instead, uninstall the formula and install the cask:
 
 ```sh
+brew uninstall simqueue   # only if the CLI-only formula is installed
 brew install --cask jayhickey/tap/simqueue-app
 ```
 
-The cask also installs the CLI formula if it is missing. Launch the app through
+The two setups conflict because both provide `simq`. The cask links
+`$(brew --prefix)/bin/simq` to `SimQueue.app/Contents/Helpers/simq`, next to the app's
+`simqd`, so Sparkle updates the CLI and daemon together. If the formula is still linked,
+Homebrew warns and skips the cask's link. `simq docs` finds the bundled documentation in
+`SimQueue.app/Contents/Resources/doc/simqueue`. Launch the app through
 Spotlight or Applications; Launch at Login is opt-in. Installation does not start
 or restart the daemon. The app can optionally manage its bundled daemon after an
 explicit [safe migration](MENU_BAR.md#use-the-daemon-bundled-with-the-app). Configure it with `simq init` and the steps below first.
 App shutdown controls require daemon v0.1.4 or later; existing installations should
 follow the planned upgrade procedure. App installation, upgrades, uninstall and
 migration from a manually copied app are covered in the [menu bar guide](MENU_BAR.md).
-Uninstalling only the cask leaves the CLI, daemon and queue data intact.
+Uninstalling the cask removes the app and its `simq` link but leaves queue data intact.
 
 The public formula downloads the tagged release archive without GitHub authentication. Homebrew is the supported installation path; changing Gatekeeper/quarantine settings is not part of installation.
 

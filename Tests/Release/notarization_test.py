@@ -40,6 +40,9 @@ class NotarizationTests(unittest.TestCase):
         helper = helper_dir / "simqd"
         helper.write_text("#!/bin/sh\necho 1.2.3\n")
         helper.chmod(0o700)
+        cli = helper_dir / "simq"
+        cli.write_text("#!/bin/sh\necho 1.2.3\n")
+        cli.chmod(0o700)
         framework = release / "SimQueue.app/Contents/Frameworks/Sparkle.framework/Versions/B"
         (framework / "XPCServices/Installer.xpc").mkdir(parents=True)
         (framework / "XPCServices/Downloader.xpc").mkdir()
@@ -65,6 +68,10 @@ class NotarizationTests(unittest.TestCase):
             helper.write_text("#!/bin/sh\necho " + env["FAKE_HELPER_VERSION"] + "\n")
         if env.get("FAKE_MISSING_HELPER"):
             helper.unlink()
+        if env.get("FAKE_BUNDLED_CLI_VERSION"):
+            cli.write_text("#!/bin/sh\necho " + env["FAKE_BUNDLED_CLI_VERSION"] + "\n")
+        if env.get("FAKE_MISSING_BUNDLED_CLI"):
+            cli.unlink()
         result = subprocess.run(["bash", str(ROOT / "scripts/notarize-release.sh"), "1.2.3", str(release), str(out)],
                                 env=env, capture_output=True, text=True)
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -74,9 +81,13 @@ class NotarizationTests(unittest.TestCase):
         result, calls, out = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
         signs = [call for call in calls if call[0] == "codesign" and "--sign" in call]
-        self.assertEqual(len(signs), 9)
+        self.assertEqual(len(signs), 10)
         self.assertTrue(signs[0][-1].endswith("SimQueue.app/Contents/Helpers/simqd"))
         self.assertIn("dev.simqueue.app-daemon", signs[0])
+        self.assertTrue(signs[1][-1].endswith("SimQueue.app/Contents/Helpers/simq"))
+        self.assertEqual(signs[1][signs[1].index("--identifier") + 1], "dev.simqueue.cli")
+        displays = [c[-1] for c in calls if c[0] == "codesign" and "--display" in c]
+        self.assertTrue(displays[0].endswith("SimQueue.app/Contents/Helpers/simq"))
         self.assertTrue(signs[-1][-1].endswith("SimQueue.app"))
         for call in signs:
             self.assertIn("--timestamp", call)
@@ -105,7 +116,8 @@ class NotarizationTests(unittest.TestCase):
         self.assertFalse(any(c[:2] == ["xcrun", "notarytool"] for c in calls))
 
     def test_missing_or_mismatched_helper_never_signs_or_publishes(self):
-        for overrides in ({"FAKE_MISSING_HELPER": "1"}, {"FAKE_HELPER_VERSION": "0.0.0"}):
+        for overrides in ({"FAKE_MISSING_HELPER": "1"}, {"FAKE_HELPER_VERSION": "0.0.0"},
+                          {"FAKE_MISSING_BUNDLED_CLI": "1"}, {"FAKE_BUNDLED_CLI_VERSION": "0.0.0"}):
             with self.subTest(overrides=overrides):
                 result, calls, out = self.run_release(**overrides)
                 self.assertNotEqual(result.returncode, 0)

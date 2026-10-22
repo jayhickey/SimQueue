@@ -39,19 +39,23 @@ name="simqueue-$version-macos-arm64"
 helper="$release/SimQueue.app/Contents/Helpers/simqd"
 [ -x "$helper" ] || { echo 'Missing bundled simqd' >&2; exit 1; }
 [ "$("$helper" --version)" = "$version" ] || { echo 'Bundled daemon version mismatch' >&2; exit 1; }
+cli="$release/SimQueue.app/Contents/Helpers/simq"
+[ -x "$cli" ] || { echo 'Missing bundled simq' >&2; exit 1; }
+[ "$("$cli" --version)" = "$version" ] || { echo 'Bundled CLI version mismatch' >&2; exit 1; }
 # Sign nested code first with a stable identity, then seal the enclosing app.
 codesign "${signing[@]}" --identifier dev.simqueue.app-daemon "$helper"
 codesign --verify --strict "$helper"
 
 framework="$release/SimQueue.app/Contents/Frameworks/Sparkle.framework"
 [ -d "$framework/Versions/B/XPCServices/Installer.xpc" ] || { echo 'Missing Sparkle framework' >&2; exit 1; }
-for executable in "$release/bin/simq" "$release/bin/simqd" \
+for executable in "$cli" "$release/bin/simq" "$release/bin/simqd" \
   "$framework/Versions/B/XPCServices/Installer.xpc" \
   "$framework/Versions/B/XPCServices/Downloader.xpc" \
   "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app" \
   "$framework" "$release/SimQueue.app"; do
   case "$executable" in
     */Downloader.xpc) codesign "${signing[@]}" --preserve-metadata=entitlements "$executable" ;;
+    "$cli") codesign "${signing[@]}" --identifier dev.simqueue.cli "$executable" ;;
     *) codesign "${signing[@]}" "$executable" ;;
   esac
   codesign --verify --strict "$executable"

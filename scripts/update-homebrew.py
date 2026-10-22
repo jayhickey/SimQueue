@@ -37,11 +37,37 @@ def update_files(formula, cask, version, checksum, source):
     cask = replace(r'^  sha256 "[0-9a-f]{64}"$', f'  sha256 "{checksum}"', cask)
     if not re.search(r"^  auto_updates true$", cask, re.MULTILINE):
         cask = replace(r'^  sha256 "[0-9a-f]{64}"$', f'  sha256 "{checksum}"\n\n  auto_updates true', cask)
+    cask = link_bundled_cli(cask)
     cask = cask.replace(
         '    This app is ad-hoc signed and is not notarized. macOS may require explicit\n'
         '    approval under its normal security policy. Do not disable Gatekeeper.',
         '    This app is Developer ID signed and notarized by Apple.')
     return formula, cask
+
+
+APP_LINE = '  app "simqueue-#{version}-macos-arm64/SimQueue.app"\n'
+BINARY_LINE = '  binary "#{appdir}/SimQueue.app/Contents/Helpers/simq"\n'
+FORMULA_DEPENDENCY = '  depends_on formula: "jayhickey/tap/simqueue"\n'
+CLI_CAVEAT = (
+    '    Removing the cask leaves the CLI, daemon and queue data intact.\n',
+    '    This cask links simq from the app, so Sparkle updates simq and simqd together.\n'
+    '    It replaces the simqueue formula: brew uninstall simqueue first.\n'
+    '    Removing the cask removes the app and its simq link; queue data stays intact.\n')
+
+
+def link_bundled_cli(cask):
+    """Setup B: the app cask links the simq bundled in the app instead of needing the formula.
+
+    Homebrew rejects `conflicts_with formula:` (only `cask:` is a valid key), which would make
+    the cask unloadable. The two setups share bin/simq instead: while the formula is linked,
+    Homebrew warns and skips the cask's link, and the caveat says to uninstall the formula.
+    """
+    if APP_LINE not in cask:
+        raise ValueError("Missing cask app stanza")
+    cask = cask.replace(FORMULA_DEPENDENCY, '')
+    if BINARY_LINE not in cask:
+        cask = cask.replace(APP_LINE, APP_LINE + BINARY_LINE, 1)
+    return cask.replace(*CLI_CAVEAT)
 
 
 def api(path, payload=None):

@@ -62,6 +62,17 @@ jobs:
           iconutil -c iconset "$RUNNER_TEMP/app/SimQueue.app/Contents/Resources/SimQueue.icns" -o "$RUNNER_TEMP/verified.iconset"
           codesign --verify --deep --strict "$RUNNER_TEMP/app/SimQueue.app"
           test "$("$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" --version)" = "$("$BIN/simqd" --version)"
+          # Setup B: the cask links the app's own simq; it must run, match and find its docs.
+          APP_CLI="$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simq"
+          test -x "$APP_CLI"
+          codesign --verify --strict "$APP_CLI"
+          codesign --display --verbose=2 "$APP_CLI" 2>&1 | grep -q '^Identifier=dev.simqueue.cli$'
+          test "$("$APP_CLI" --version)" = "$("$BIN/simq" --version)"
+          mkdir -p "$RUNNER_TEMP/cask-bin"
+          ln -s "$APP_CLI" "$RUNNER_TEMP/cask-bin/simq"
+          test "$("$RUNNER_TEMP/cask-bin/simq" docs)" -ef "$RUNNER_TEMP/app/SimQueue.app/Contents/Resources/doc/simqueue"
+          test -s "$RUNNER_TEMP/app/SimQueue.app/Contents/Resources/doc/simqueue/skills/simqueue/SKILL.md"
+          "$RUNNER_TEMP/cask-bin/simq" agent-guide | grep -q "agent guide"
           plutil -lint "$RUNNER_TEMP/app/SimQueue.app/Contents/Library/LaunchAgents/dev.simqueue.app-daemon.plist"
           "$RUNNER_TEMP/app/SimQueue.app/Contents/Helpers/simqd" run --foreground --backend fake --probe fake \
             --log-to-state --exit-after-startup --state-dir "$SIMQ_CI_ROOT/bundled-smoke"

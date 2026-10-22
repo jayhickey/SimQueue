@@ -14,10 +14,16 @@ app="$out/SimQueue.app"
 [ ! -e "$app" ] || { echo "Already exists: $app" >&2; exit 1; }
 [ -x "$bin/SimQueueApp" ] || { echo 'Build SimQueueApp first' >&2; exit 1; }
 [ -x "$bin/simqd" ] || { echo 'Build simqd first' >&2; exit 1; }
+[ -x "$bin/simq" ] || { echo 'Build simq first' >&2; exit 1; }
+root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Library/LaunchAgents"
 cp "$bin/simqd" "$app/Contents/Helpers/simqd"
 cp "$(dirname "$0")/../deploy/launchd/dev.simqueue.app-daemon.plist" "$app/Contents/Library/LaunchAgents/"
 /usr/bin/codesign --force --sign - --identifier dev.simqueue.app-daemon "$app/Contents/Helpers/simqd"
+# The app's own CLI, next to its daemon. The Homebrew cask links it onto PATH, so
+# simq and simqd always come from the same app version and Sparkle updates both.
+cp "$bin/simq" "$app/Contents/Helpers/simq"
+/usr/bin/codesign --force --sign - --identifier dev.simqueue.cli "$app/Contents/Helpers/simq"
 cp "$bin/SimQueueApp" "$app/Contents/MacOS/SimQueueApp"
 [ -d "$bin/Sparkle.framework" ] || { echo 'Build the Sparkle dependency first' >&2; exit 1; }
 mkdir -p "$app/Contents/Frameworks" "$app/Contents/Resources"
@@ -32,6 +38,13 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/SimQueue.icns"
 rm -r "$iconset"
 cp "$(dirname "$0")/../docs/licenses/Sparkle.txt" "$app/Contents/Resources/Sparkle-LICENSE.txt"
+# Offline docs for the bundled simq (simq docs). Data belongs in Contents/Resources
+# of a signed bundle, not a Unix-style Contents/share. Export committed files only,
+# as package-release.sh does, so local notes never ship.
+docs="$app/Contents/Resources/doc/simqueue"
+mkdir -p "$docs"
+cp "$root/LICENSE" "$root/NOTICE" "$root/README.md" "$root/AGENTS.md" "$docs/"
+git -C "$root" archive HEAD -- docs skills | tar -x -C "$docs"
 ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 # SwiftPM executables normally resolve frameworks beside the executable. A
 # distributed app resolves them from its signed Contents/Frameworks directory.
