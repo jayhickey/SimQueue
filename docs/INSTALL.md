@@ -169,7 +169,7 @@ simqueue_backup="$HOME/SimQueue-backup-$(date +%Y%m%d-%H%M%S)"
 ditto "$simqueue_state" "$simqueue_backup"
 ```
 
-Protect the backup like the original state. Waiting clients recover unanswered observations or reconnect to the same job for up to 30 seconds after a transport interruption. A longer backup/download can exhaust that client budget while the job remains queued; inspect `simq jobs` and reattach with `simq wait JOB_ID` instead of submitting a duplicate. Prepare large backups/downloads before the short handoff when possible. Reconnect cannot preserve arbitrary running commands across an abrupt restart.
+Protect the backup like the original state. Waiting clients recover unanswered observations or reconnect to the same job for up to 10 minutes (`SIMQ_RECONNECT_SECONDS`) while the daemon is away. A longer backup/download can exhaust that client budget while the job remains queued; inspect `simq jobs` and reattach with `simq wait JOB_ID` instead of submitting a duplicate. Prepare large backups/downloads before the short handoff when possible. Reconnect cannot preserve arbitrary running commands across an abrupt restart.
 
 Before upgrading an older installation to v1:
 

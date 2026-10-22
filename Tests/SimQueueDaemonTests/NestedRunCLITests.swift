@@ -25,6 +25,7 @@ final class NestedRunCLITests: XCTestCase {
         process.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         environment["SIMQ_NO_AUTOSTART"] = "1"
+        environment["SIMQ_RECONNECT_SECONDS"] = "0"
         environment["SIMQ_STATE_DIR"] = testScratchRoot() + "/sqnr-" + UUID().uuidString.prefix(8)
         environment["SIMQ_JOB_ID"] = jobID
         process.environment = environment

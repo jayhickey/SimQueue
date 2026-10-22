@@ -71,7 +71,8 @@ struct AgentGuide: ParsableCommand {
         simq cancel JOB_ID requests cancellation. Keep a waiting run client in the foreground;
         signals cancel its job and wait for cleanup. Unknown ownership keeps capacity held;
         inspect doctor/cleanup diagnostics instead of discarding the ledger or killing broadly.
-        Waiting clients retry unanswered observations or reconnect briefly to the same job; they do not
+        Waiting and submitting clients reconnect across a daemon restart (up to 10 minutes,
+        SIMQ_RECONNECT_SECONDS) and keep waiting on the same job; they do not
         preserve arbitrary running commands. Started work is not replayed unless --retryable
         or --retries N permits it within the retry budget. Retries do not undo side effects.
 

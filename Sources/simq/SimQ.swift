@@ -69,17 +69,14 @@ let requestTimeoutSeconds: Double = {
     return value
 }()
 
-/// Production observation recovery is bounded to 30 seconds. Debug tests can shorten
-/// that window without making persistent transport failures slow to exercise.
-let observationRecoverySeconds: Double = {
-    #if DEBUG
-        if let text = ProcessInfo.processInfo.environment["SIMQ_TEST_OBSERVATION_RECOVERY_SECONDS"],
-            let value = Double(text), value.isFinite
-        {
-            return min(30, max(0.05, value))
-        }
-    #endif
-    return 30
+/// How long a client keeps reconnecting to a daemon that went away (a planned drain and
+/// restart, a crash): 10 minutes, or `$SIMQ_RECONNECT_SECONDS` (0 turns reconnecting off).
+/// The window restarts each time the daemon answers again.
+let daemonReconnectSeconds: Double = {
+    guard let text = ProcessInfo.processInfo.environment["SIMQ_RECONNECT_SECONDS"],
+        let value = Double(text), value.isFinite, value >= 0
+    else { return 600 }
+    return value
 }()
 
 func printError(_ message: String) {
@@ -109,14 +106,24 @@ func parseTimeout(_ text: String?, flag: String) throws -> Double? {
 /// Sends one request; maps transport failures and error responses to exit codes.
 /// With `retryTimeoutsUntil`, a request that times out (a daemon busy for a moment) is sent
 /// again until that time instead of failing; only for requests that are safe to repeat.
+///
+/// With `reconnect`, a daemon that goes away (drain and restart, crash) is retried with
+/// backoff for `daemonReconnectSeconds`. Any request retries a failed connect, since nothing
+/// was sent. Only observations of an existing job (`wait`, `logs`, `explain`) also retry
+/// after an ambiguous disconnect or an unanswered request. A `wait` first re-reads the job
+/// (a short `explain`) to prove the new daemon answers and still has it, then waits again
+/// with no recovery deadline: a requeued job can wait in the queue as long as it needs.
+/// `stopRetrying` ends the retries early (a signal).
 func call(
     _ connection: Connection, _ params: RequestParams, timeout: Double = requestTimeoutSeconds,
-    deadline: Double? = nil, retryTimeoutsUntil: Date? = nil, reconnectFor: Double = 0,
-    onEvent: (JobInfo) -> Bool = { _ in true }
+    deadline: Double? = nil, retryTimeoutsUntil: Date? = nil, reconnect: Bool = false,
+    onEvent: (JobInfo) -> Bool = { _ in true }, stopRetrying: () -> Bool = { false }
 ) throws -> ResultPayload {
     var response: Response?
     var notedBusy = false
     var reconnectUntil: Date?
+    var backoff = 0.2
+    var triedAutoStart = false
     let observingJob: Bool
     switch params {
     case .wait, .logs, .explain: observingJob = true
@@ -125,19 +132,28 @@ func call(
     while true {
         let now = Date()
         if let deadline, now.timeIntervalSince1970 >= deadline { throw failure(.waitTimeout) }
-        if let reconnectUntil, now >= reconnectUntil {
-            printError("daemon unavailable at \(connection.paths.socketPath): observation recovery timed out")
-            throw failure(.daemonUnavailable)
-        }
-        // Once recovery starts, even an otherwise unbounded wait must fit the same
-        // recovery window. The caller's absolute wait deadline always takes precedence.
+        // While reconnecting, every attempt fits the reconnect window. The caller's absolute
+        // wait deadline always takes precedence.
         let attemptDeadline = [deadline, reconnectUntil?.timeIntervalSince1970].compactMap { $0 }.min()
         do {
+            if reconnectUntil != nil, case .wait(let wait) = params {
+                let probe = try connection.client(timeout: requestTimeoutSeconds).send(
+                    Request(params: .explain(JobRef(jobID: wait.jobID))), deadline: attemptDeadline)
+                if let probe, case .error = probe.body {
+                    response = probe
+                    break
+                }
+                if !connection.json { printError("reconnected; still waiting on \(wait.jobID)") }
+                reconnectUntil = nil
+                backoff = 0.2
+                continue
+            }
             do {
                 response = try connection.client(timeout: timeout).send(
                     Request(params: params), deadline: attemptDeadline, onEvent: onEvent)
-            } catch let error as SocketError where AutoStart.isNoDaemon(error) {
+            } catch let error as SocketError where AutoStart.isNoDaemon(error) && !triedAutoStart {
                 // Nothing was sent (the connect failed), so one retry after a start is safe.
+                triedAutoStart = true
                 switch AutoStart.ensureDaemon(paths: connection.paths) {
                 case .disabled: throw error
                 case .failed(let why):
@@ -159,19 +175,30 @@ func call(
             }
             notedBusy = true
         } catch let error as SocketError {
-            // Only callers observing an already-submitted job opt in. Never replay a
-            // submit or another mutation after an ambiguous disconnect.
-            if observingJob, reconnectFor > 0, isObservationInterruption(error) {
+            // Never replay a submit or another mutation after an ambiguous disconnect: only a
+            // failed connect (nothing sent) or an observation of an existing job is retried.
+            if reconnect, daemonReconnectSeconds > 0, !stopRetrying(),
+                AutoStart.isNoDaemon(error) || (observingJob && isObservationInterruption(error))
+            {
                 let now = Date()
                 if reconnectUntil == nil {
-                    reconnectUntil = now.addingTimeInterval(min(reconnectFor, observationRecoverySeconds))
-                    if !connection.json { printError("daemon busy or disconnected; reconnecting to the existing job") }
+                    reconnectUntil = now.addingTimeInterval(daemonReconnectSeconds)
+                    if !connection.json {
+                        printError(
+                            "daemon busy or disconnected (\(error)); reconnecting for up to \(Int(daemonReconnectSeconds)) s"
+                        )
+                    }
                 }
                 if let deadline, now.timeIntervalSince1970 >= deadline { throw failure(.waitTimeout) }
                 if let reconnectUntil, now < reconnectUntil {
-                    Thread.sleep(forTimeInterval: min(0.2, reconnectUntil.timeIntervalSince(now)))
+                    Thread.sleep(forTimeInterval: min(backoff, reconnectUntil.timeIntervalSince(now)))
+                    backoff = min(backoff * 2, 5)
                     continue
                 }
+                printError(
+                    "daemon unavailable at \(connection.paths.socketPath): no answer for \(Int(daemonReconnectSeconds)) s (\(error))"
+                )
+                throw failure(.daemonUnavailable)
             }
             printError("daemon unavailable at \(connection.paths.socketPath): \(error)")
             throw failure(.daemonUnavailable)
@@ -250,7 +277,7 @@ func waitFor(
     let deadline = waitTimeout.map { Date().timeIntervalSince1970 + $0 }
     let payload = try call(
         connection, .wait(WaitParams(jobID: jobID, stream: stream, untilAdmitted: untilAdmitted)), timeout: 0,
-        deadline: deadline, reconnectFor: 30
+        deadline: deadline, reconnect: true
     ) { event in
         if connection.json {
             try? printJSON(["event": event])
@@ -415,7 +442,9 @@ struct Submit: ParsableCommand {
             freshSim: freshSim ? true : nil,
             keep: keep ? true : nil
         )
-        guard case .submit(let response) = try call(connection, .submit(params)) else { throw failure(.protocolError) }
+        guard case .submit(let response) = try call(connection, .submit(params), reconnect: true) else {
+            throw failure(.protocolError)
+        }
         guard wait else {
             if connection.json {
                 try printJSON(response)

@@ -2,7 +2,7 @@
 
 Use SimQueue on a self-hosted Mac runner to coordinate independent builds and test jobs sharing that Mac. Each job submits its complete command to the local daemon. The runner must use the daemon's user account and have access to its Unix socket.
 
-Complete [installation and template selection](INSTALL.md) first. Start the chosen service before accepting workflows. The example sets `SIMQ_NO_AUTOSTART=1` so a missing service produces a useful failure instead of starting a daemon with an unexpected CI environment. Only trusted workflows should use this runner: their commands execute as its user. Keep untrusted public pull requests on disposable GitHub-hosted runners. The SimQueue public repository itself does not accept jobs on personal self-hosted Macs.
+Complete [installation and template selection](INSTALL.md) first. Start the chosen service before accepting workflows. The example sets `SIMQ_NO_AUTOSTART=1` so a missing service produces a useful failure instead of starting a daemon with an unexpected CI environment. Clients retry a missing daemon for up to 10 minutes to ride out a restart; set `SIMQ_RECONNECT_SECONDS` to fail sooner. Only trusted workflows should use this runner: their commands execute as its user. Keep untrusted public pull requests on disposable GitHub-hosted runners. The SimQueue public repository itself does not accept jobs on personal self-hosted Macs.
 
 ## Run a test suite
 

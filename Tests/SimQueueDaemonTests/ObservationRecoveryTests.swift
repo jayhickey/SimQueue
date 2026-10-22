@@ -16,7 +16,14 @@ import XCTest
 /// or advance its log offset before a complete response was received.
 final class ObservationRecoveryTests: XCTestCase {
     private final class Server: @unchecked Sendable {
-        enum Answer { case result(ResultPayload), unanswered, disconnect, trickle }
+        enum Answer {
+            case result(ResultPayload), unanswered, disconnect, trickle
+            /// Answers after a pause with nothing sent (a wait on a job still in the queue).
+            case later(Double, ResultPayload)
+            /// The daemon goes away: stops listening (removing the socket), then drops this
+            /// connection mid-request, like a drained simqd exiting for a restart.
+            case exit
+        }
         let listener: UnixListener
         let done = DispatchGroup()
         private let lock = NSLock()
@@ -44,6 +51,12 @@ final class ObservationRecoveryTests: XCTestCase {
                         // The client closes this connection when its receive times out.
                         _ = try? connection.readLine(maxBytes: 1 << 20)
                     case .disconnect: break
+                    case .later(let seconds, let payload):
+                        Thread.sleep(forTimeInterval: seconds)
+                        try? connection.write(LineCodec.encode(Response(id: request.id, body: .result(payload))))
+                    case .exit:
+                        listener.close()
+                        return
                     case .trickle:
                         for _ in 0..<50 {
                             do { try connection.write(Data(" ".utf8)) } catch { break }
@@ -58,6 +71,13 @@ final class ObservationRecoveryTests: XCTestCase {
             listener.close()
             XCTAssertEqual(done.wait(timeout: .now() + 5), .success, "stand-in socket worker must stop")
         }
+    }
+
+    /// What a test's background thread hands back: the restarted stand-in daemon.
+    private final class Restart: @unchecked Sendable {
+        let lock = NSLock()
+        var server: Server?
+        var logsServed = false
     }
 
     private func directory() throws -> String {
@@ -88,7 +108,7 @@ final class ObservationRecoveryTests: XCTestCase {
         var env = ProcessInfo.processInfo.environment
         env["SIMQ_NO_AUTOSTART"] = "1"
         env["SIMQ_REQUEST_TIMEOUT_SECONDS"] = "0.1"
-        env["SIMQ_TEST_OBSERVATION_RECOVERY_SECONDS"] = String(recovery)
+        env["SIMQ_RECONNECT_SECONDS"] = String(recovery)
         process.environment = env
         let output = URL(fileURLWithPath: state).appendingPathComponent(UUID().uuidString + ".client.log")
         FileManager.default.createFile(atPath: output.path, contents: nil)
@@ -173,6 +193,83 @@ final class ObservationRecoveryTests: XCTestCase {
             XCTAssertGreaterThan(server.requests.count, waiting ? 1 : 3)
             server.stop()
         }
+    }
+
+    /// The Quotify #147 failure: a drain and restart while `simq run` waits for its job to
+    /// start. The new daemon (new socket, new process) is back quickly, but the requeued job
+    /// stays queued for longer than the reconnect window. The client must reattach to the
+    /// same job and keep waiting with no recovery deadline, not exit 69.
+    func testRunWaitsOnTheSameJobAcrossADaemonRestartLongerThanTheReconnectWindow() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let socket = path + "/simq.sock"
+        let old = try Server(path: socket) { request, _ in
+            switch request.params {
+            case .submit: return .result(.submit(SubmitResponse(job: Self.job(.queued), deduplicated: false)))
+            default: return .exit
+            }
+        }
+        let restart = Restart()
+        DispatchQueue.global().async {
+            // Down for longer than the first backoff step, then a fresh daemon.
+            _ = old.done.wait(timeout: .now() + 5)
+            Thread.sleep(forTimeInterval: 0.3)
+            let server = try? Server(path: socket) { request, _ in
+                switch request.params {
+                case .explain:
+                    let done = restart.lock.withLock { restart.logsServed }
+                    return .result(.job(Self.job(done ? .succeeded : .queued)))
+                // Silent for twice the reconnect window while the job waits in the queue.
+                case .wait: return .later(2, .job(Self.job(.running)))
+                case .logs(let params):
+                    restart.lock.withLock { restart.logsServed = true }
+                    return .result(
+                        .logs(
+                            LogsResult(
+                                jobID: params.jobID, path: "unused", offset: params.offset,
+                                nextOffset: params.offset + 5, data: "done\n", jobFinished: true, atEnd: true)))
+                default: return .disconnect
+                }
+            }
+            restart.lock.withLock { restart.server = server }
+        }
+        let (code, text, _) = try run(["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 1)
+        let server = try XCTUnwrap(restart.lock.withLock { restart.server }, text)
+        defer { server.stop() }
+        XCTAssertEqual(code, 0, text)
+        XCTAssertTrue(text.contains("reconnected; still waiting on J-0001"), text)
+        XCTAssertEqual(text.components(separatedBy: "done\n").count - 1, 1, text)
+        XCTAssertEqual(old.requests.map { $0.method }, [.submit, .wait], "one submit, before the restart")
+        XCTAssertEqual(server.requests.map { $0.method }, [.explain, .wait, .logs, .explain], text)
+        for params in server.requests {
+            switch params {
+            case .explain(let ref): XCTAssertEqual(ref.jobID, "J-0001")
+            case .wait(let wait): XCTAssertEqual(wait.jobID, "J-0001")
+            case .logs(let logs): XCTAssertEqual(logs.jobID, "J-0001")
+            default: XCTFail("unexpected \(params)")
+            }
+        }
+    }
+
+    /// A submit while the daemon is away (autostart off) waits for it to come back instead of
+    /// exiting 69. Nothing was sent while the connect failed, so the one submit is safe.
+    func testSubmitWaitsForARestartingDaemon() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let restart = Restart()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+            let started = try? Server(path: path + "/simq.sock") { _, _ in
+                .result(.submit(SubmitResponse(job: Self.job(.queued), deduplicated: false)))
+            }
+            restart.lock.withLock { restart.server = started }
+        }
+        let (code, text, elapsed) = try run(["submit", "--", "/usr/bin/true"], state: path, recovery: 5)
+        let started = try XCTUnwrap(restart.lock.withLock { restart.server }, text)
+        defer { started.stop() }
+        XCTAssertEqual(code, 0, text)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.7)
+        XCTAssertTrue(text.contains("queued J-0001"), text)
+        XCTAssertEqual(started.requests.map { $0.method }, [.submit])
     }
 
     func testTimedOutMutationsAreNeverReplayed() throws {
