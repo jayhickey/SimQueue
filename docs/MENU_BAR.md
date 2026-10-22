@@ -104,7 +104,10 @@ foreign daemon, a held daemon lock, or an installed legacy LaunchAgent.
 
 For scripted registration after those same migration checks, run the installed
 app executable with `--register-daemon`; it performs the same configuration,
-location, manager and lock checks. This command does not grant macOS permissions.
+location, manager and lock checks. This command does not grant macOS permissions. For scripted app upgrades,
+`--stop-bundled-daemon` performs the same epoch/PID-checked finish-and-unregister
+handoff, waiting up to 30 minutes without canceling jobs. It refuses foreign
+daemons. After installing the new app at the same path, register it again.
 
 ### Updates and switching back
 

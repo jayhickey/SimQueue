@@ -54,14 +54,31 @@
             return true
         }
 
+        /// Scriptable equivalent of Finish Jobs and Quit for app upgrades.
+        /// Always match the daemon epoch and manager before changing admission.
+        static func stop(paths: SimQueuePaths) throws {
+            try validate(paths: paths)
+            let session = QueueSession(socketPath: paths.socketPath)
+            let status = try session.status()
+            guard try owns(status) else { throw ServiceError.otherDaemon }
+            _ = try session.beginStop(cancelActive: false, expectedEpoch: status.daemon.epoch)
+            let deadline = Date().addingTimeInterval(30 * 60)
+            while try !session.finishStop(expectedEpoch: status.daemon.epoch, service: LoginDaemon.stopAction) {
+                guard Date() < deadline else { throw ServiceError.drainTimeout }
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+
         static func owns(_ status: StatusResult) throws -> Bool {
             try LoginDaemon.matches(label: AppDaemonSettings.label, pid: status.daemon.pid)
         }
 
         enum ServiceError: Error, LocalizedError {
-            case legacyManager, otherDaemon, installApp
+            case legacyManager, otherDaemon, installApp, drainTimeout
             var errorDescription: String? {
                 switch self {
+                case .drainTimeout:
+                    "Timed out waiting for jobs or cleanup. The queue remains drained; inspect status before retrying or resuming."
                 case .installApp:
                     "Install SimQueue.app in /Applications or ~/Applications before enabling its background service."
                 case .legacyManager:

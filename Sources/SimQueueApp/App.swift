@@ -329,6 +329,11 @@
     @main
     enum MenuBarApp {
         static func main() throws {
+            if CommandLine.arguments.contains("--stop-bundled-daemon") {
+                try BundledDaemon.stop(paths: .resolve())
+                print("Bundled daemon drained and unregistered")
+                return
+            }
             if CommandLine.arguments.contains("--register-daemon") {
                 try BundledDaemon.register(paths: .resolve())
                 print("Bundled daemon service: \(BundledDaemon.service.status)")
