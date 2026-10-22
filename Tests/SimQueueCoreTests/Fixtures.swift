@@ -66,7 +66,8 @@ func testConfig(
     maxConcurrentExclusive: Int = 1,
     maxRunningPerProject: Int = 3,
     drain: InfraDrainPolicy = InfraDrainPolicy(),
-    admissionSettleSeconds: Double = 60
+    admissionSettleSeconds: Double = 60,
+    memoryHoldGraceSeconds: Double = 0
 ) -> SchedulerConfig {
     var config = SchedulerConfig(
         reserveBytes: 3 * gib,
@@ -77,7 +78,8 @@ func testConfig(
         simBootCostBytes: 2 * gib,
         maxRunningPerProject: maxRunningPerProject,
         drain: drain,
-        admissionSettleSeconds: admissionSettleSeconds
+        admissionSettleSeconds: admissionSettleSeconds,
+        memoryHoldGraceSeconds: memoryHoldGraceSeconds
     )
     config.maxAdmissionsPerPass = Int.max
     config.minAdmissionIntervalSeconds = 0

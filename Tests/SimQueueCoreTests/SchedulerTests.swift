@@ -599,6 +599,55 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.plan(input(queued: [job], active: [active], host: host)).admittedIDs, ["J-1"])
     }
 
+    // MARK: - Memory hold grace (3:48 PM Mac mini)
+
+    /// 2026-10-22 3:48 PM: J-1014 (6 GiB) waited behind a running 6 GiB job and held the
+    /// headroom while ~20 0.5 GiB builds sat queued with 8.5 GiB available.
+    private func headOfLineQueue() -> [Job] {
+        [makeJob("J-1014", seq: 1, priority: 70, project: "quotify", resources: sims(0, memory: 6 * gib))]
+            + (2...5).map {
+                makeJob(
+                    "J-\($0)", seq: Int64($0), project: "quotify", queueTime: 60, resources: sims(0, memory: gib / 2))
+            }
+    }
+
+    private let graceScheduler = Scheduler(
+        config: testConfig(maxRunningPerProject: 0, memoryHoldGraceSeconds: 600))
+
+    func testMemoryHoldGraceDefaultsToTenMinutes() {
+        XCTAssertEqual(SchedulerConfig().memoryHoldGraceSeconds, 600)
+    }
+
+    func testSmallJobsBackfillBehindABigWaiterDuringTheGracePeriod() {
+        // 8 GiB available - 3 reserve = 5 GiB free: J-1014's 6 GiB doesn't fit yet.
+        let plan = graceScheduler.plan(
+            input(
+                queued: headOfLineQueue(), active: [settledActive("J-1013", memory: 6 * gib)],
+                host: makeHost(availableGiB: 8), now: 599))
+        XCTAssertEqual(plan.reasonCodes(for: "J-1014"), ["insufficient_memory"])
+        XCTAssertEqual(plan.reservedFor, "J-1014")
+        XCTAssertEqual(plan.admittedIDs, ["J-2", "J-3", "J-4", "J-5"])
+    }
+
+    func testBigWaiterHoldsMemoryOnceTheGracePeriodPasses() {
+        let plan = graceScheduler.plan(
+            input(
+                queued: headOfLineQueue(), active: [settledActive("J-1013", memory: 6 * gib)],
+                host: makeHost(availableGiB: 8), now: 600))
+        XCTAssertEqual(plan.reservedFor, "J-1014")
+        XCTAssertTrue(plan.admittedIDs.isEmpty)
+        XCTAssertEqual(plan.reasonCodes(for: "J-2"), ["insufficient_memory"])
+    }
+
+    func testBigWaiterGetsFirstClaimWhenMemoryReturnsAfterItsHold() {
+        // J-1013 finished: 9.5 GiB - 3 reserve = 6.5 GiB. J-1014 takes 6, one small job fits after it.
+        var host = makeHost()
+        host.availableMemoryBytes = 9 * gib + gib / 2
+        let plan = graceScheduler.plan(input(queued: headOfLineQueue(), host: host, now: 900))
+        XCTAssertEqual(plan.admittedIDs, ["J-1014", "J-2"])
+        XCTAssertEqual(plan.reasonCodes(for: "J-3"), ["insufficient_memory"])
+    }
+
     // MARK: - 2:20 PM Mac mini regression
 
     private func settledActive(_ id: String = "A-1", memory: UInt64) -> Job {
