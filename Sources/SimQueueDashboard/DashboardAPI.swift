@@ -102,7 +102,16 @@ public struct DashboardAPI {
     }
 }
 
-public enum DashboardError: Error {
+public enum DashboardError: Error, LocalizedError {
     case unavailable
     case notFound
+    case invalidBindAddress
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidBindAddress: "Dashboard bind address must be a numeric IPv4 address."
+        case .unavailable: "Dashboard unavailable."
+        case .notFound: "Dashboard resource not found."
+        }
+    }
 }
