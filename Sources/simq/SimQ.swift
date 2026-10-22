@@ -208,10 +208,16 @@ func isObservationInterruption(_ error: SocketError) -> Bool {
     }
 }
 
-func describe(_ job: JobInfo) -> String {
+/// One job: a summary line, then indented details. `times` adds when it was queued and
+/// when it started (local time, `-` before the start), for `simq jobs` and `simq explain`.
+func describe(_ job: JobInfo, times: Bool = false) -> String {
     var parts = [
         "\(job.id)", job.state.rawValue, "p\(job.priority)", job.kind.isEmpty ? "-" : job.kind, "\(job.project)",
     ]
+    if times {
+        parts.append("queued at \(Timestamp.shortLocalOrDash(job.queueTime))")
+        parts.append("started at \(Timestamp.shortLocalOrDash(job.startedAt))")
+    }
     if job.exclusive { parts.append("exclusive") }
     if job.retryable { parts.append("retryable") }
     if let position = job.position { parts.append("#\(position)") }
@@ -294,7 +300,8 @@ struct Submit: ParsableCommand {
 
     @OptionGroup var connection: Connection
     @Option(help: "Project name. Default: the current directory's name.") var project: String?
-    @Option(help: "Free-form label for status and logs (no behavior), e.g. build or lint.") var kind: String?
+    @Option(help: "Free-form label for status and logs (no behavior), e.g. lint or \"Quotify PR #134 · Unit tests\".")
+    var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
     @Option(help: "Named host template (from host_templates).") var template: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
@@ -512,7 +519,7 @@ struct Jobs: ParsableCommand {
         guard case .jobs(let jobs) = try call(connection, .jobs(params)) else { throw failure(.protocolError) }
         if connection.json { return try printJSON(jobs) }
         if jobs.isEmpty { print("no jobs") }
-        for job in jobs { print(describe(job)) }
+        for job in jobs { print(describe(job, times: true)) }
     }
 }
 
@@ -526,7 +533,7 @@ struct Explain: ParsableCommand {
             throw failure(.protocolError)
         }
         if connection.json { return try printJSON(job) }
-        print(describe(job))
+        print(describe(job, times: true))
         if let score = job.effectiveScore { print(String(format: "    effective score %.2f", score)) }
         if let deadline = job.queueDeadlineAt {
             print("    expires unstarted at \(deadline.rfc3339)")

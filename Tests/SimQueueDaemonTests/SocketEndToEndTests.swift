@@ -101,7 +101,7 @@ final class SocketEndToEndTests: XCTestCase {
     }
 
     func testInvalidKindAndRetryCountAreUsageErrors() throws {
-        for bad in [params(kind: "has space"), params(maxRetries: 11), params(maxRetries: -1)] {
+        for bad in [params(kind: "tab\tlabel"), params(maxRetries: 11), params(maxRetries: -1)] {
             let error = try daemon.protocolError(.submit(bad))
             XCTAssertEqual(error.code, .invalidArgument)
             XCTAssertEqual(error.code.exitCode, .usage)

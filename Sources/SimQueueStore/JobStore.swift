@@ -35,7 +35,7 @@ public enum JobStoreError: Error, Equatable, CustomStringConvertible {
         case .invalidTimeout(let value):
             return "timeout \(value) must be a positive number of seconds"
         case .invalidKind(let value):
-            return "kind \"\(value)\" must be at most \(JobKindLabel.maxLength) characters of letters, digits and ._:/-"
+            return "kind \"\(value)\" must be \(JobKindLabel.rule)"
         case .invalidRetries(let value):
             return "max retries \(value) is outside 0...\(JobStore.maxRetriesLimit)"
         case .invalidCommand(let reason): return "invalid command: \(reason)"

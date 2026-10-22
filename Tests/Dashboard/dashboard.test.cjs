@@ -35,6 +35,27 @@ elements.get('search').value='TESTER';
 assert.equal(run("matches({id:'J-1', project:'generic', submitter:'tester', command:['echo','hi']})"),true);
 elements.get('project').value='other';
 assert.equal(run("matches({id:'J-1', project:'generic', submitter:'tester'})"),false);
+// Start and queue times: "Oct 22, 12:43 PM" in the given zone, a dash when missing.
+assert.equal(run("stamp('2026-10-22T19:43:00Z','America/Los_Angeles')"),'Oct 22, 12:43 PM');
+assert.equal(run("stamp('2026-10-22T19:43:00Z','Asia/Tokyo')"),'Oct 23, 4:43 AM');
+assert.equal(run("stamp(1767600330,'America/Los_Angeles')"),'Jan 5, 12:05 AM');
+assert.equal(run("stamp(null)"),'—');
+// Readable names with spaces and punctuation are shown as-is, searchable, and get their own Queued and Started cells.
+const names=['Quotify PR #134 · Unit tests','Quotify main · Unit + UI tests (full)'];
+for (const name of names) assert.equal(run(`label(${JSON.stringify({project:'quotify',kind:name})})`),`quotify · ${name}`);
+elements.get('project').value='';
+elements.get('search').value='unit + ui tests (FULL)';
+assert.equal(run(`matches(${JSON.stringify({id:'J-2',project:'quotify',kind:names[1],submitter:'ci'})})`),true);
+run(`table(${JSON.stringify([{id:'J-1',project:'quotify',kind:names[0],state:'queued',priority:50,queue_time:'2026-10-22T19:43:00Z',granted_sims:0}])},'recent')`);
+const rendered=elements.get('recent').children[0].children[0];
+const header=rendered.children[0].children[0].children.map(th=>th.textContent);
+assert.deepEqual(header.slice(0,5),['Job / command','State','Priority','Queued','Started']);
+const cells=rendered.children[1].children[0].children;
+assert.equal(cells[0].children[0].textContent,`quotify · ${names[0]}`);
+assert.match(cells[3].textContent,/^Oct 2[23], \d{1,2}:43 [AP]M$/);
+assert.equal(cells[3].title,'2026-10-22T19:43:00Z');
+assert.equal(cells[4].textContent,'—','not started yet');
+elements.get('search').value='';
 console.log('Dashboard JavaScript timing, filtering and safe-text checks passed');
 
 assert.equal(run("controls({id:'J-1',state:'queued',priority:100}).children[0].disabled"),true);

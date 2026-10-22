@@ -7,15 +7,33 @@ import Foundation
 /// logs and metrics. SimQueue gives no label special meaning: behavior comes from the
 /// job's own flags (`exclusive`, `retryable`, sims), never from its kind.
 public enum JobKindLabel {
-    public static let maxLength = 64
+    /// Longest label, in characters (what a reader counts, not bytes).
+    public static let maxLength = 100
 
-    /// Empty, or up to 64 characters of letters, digits and `._:/-`.
+    /// What a valid label may contain, for error messages.
+    public static let rule =
+        "at most \(maxLength) characters, with no control characters or line breaks and not only spaces"
+
+    /// The label as stored: surrounding spaces trimmed. Nil when it can't be a label (see
+    /// `isValid`). Empty stays empty (no label).
+    public static func normalized(_ label: String) -> String? {
+        let trimmed = label.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return label.isEmpty ? "" : nil }
+        return isValid(trimmed) ? trimmed : nil
+    }
+
+    /// Empty, or up to 100 characters of printable text, e.g. `Quotify PR #134 · Unit tests`.
+    /// No control characters (tabs, newlines, escapes), line or paragraph separators, or
+    /// bidirectional overrides that could disguise how it reads; no surrounding whitespace.
+    /// The label is only ever shown (status, logs, dashboard, `SIMQ_KIND`), never used in a
+    /// path, so anything readable is fine.
     public static func isValid(_ label: String) -> Bool {
-        guard label.utf8.count <= maxLength else { return false }
+        if label.isEmpty { return true }
+        guard label.count <= maxLength, label.trimmingCharacters(in: .whitespaces) == label else { return false }
         return label.unicodeScalars.allSatisfy { scalar in
-            switch scalar {
-            case "a"..."z", "A"..."Z", "0"..."9", ".", "_", ":", "/", "-": return true
-            default: return false
+            switch scalar.properties.generalCategory {
+            case .control, .lineSeparator, .paragraphSeparator, .surrogate, .unassigned: return false
+            default: return !(0x202A...0x202E).contains(scalar.value) && !(0x2066...0x2069).contains(scalar.value)
             }
         }
     }

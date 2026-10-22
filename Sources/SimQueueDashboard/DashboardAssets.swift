@@ -39,6 +39,8 @@ enum DashboardAssets {
             const epoch = value => value == null ? null : (typeof value === 'number' ? value * 1000 : Date.parse(value));
             const duration = ms => { if (ms == null || !Number.isFinite(ms)) return '—'; const s = Math.max(0, Math.floor(ms/1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`; };
             const now = () => epoch(snapshot?.generatedAt) || Date.now();
+            // "Oct 22, 12:43 PM" in the viewer's time zone (or the one given); a dash when unset.
+            const stamp = (value, timeZone) => { const ms=epoch(value); if (ms == null || !Number.isFinite(ms)) return '—'; const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZone}).formatToParts(new Date(ms)).map(x=>[x.type,x.value])); return `${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.dayPeriod}`; };
             const label = j => j.kind ? `${j.project} · ${j.kind}` : `${j.project} · ${j.command?.[0]?.split('/').pop() || j.id.slice(0,8)}`;
             function timings(j) {
               const q=epoch(j.queue_time), a=epoch(j.admitted_at), s=epoch(j.started_at), f=epoch(j.finished_at), end=f ?? now();
@@ -108,13 +110,14 @@ enum DashboardAssets {
               const root=$(target); root.replaceChildren();
               if (!jobs.length) { root.append(el('div', 'No jobs in this view.', 'empty')); return; }
               const wrap=el('div',null,'table-wrap'), t=el('table'), head=el('tr');
-              for (const name of ['Job / command','State','Priority','Wait','Prep','Run','Sims','Outcome / hold','Actions']) head.append(el('th',name));
+              for (const name of ['Job / command','State','Priority','Queued','Started','Wait','Prep','Run','Sims','Outcome / hold','Actions']) head.append(el('th',name));
               const thead=el('thead'); thead.append(head); t.append(thead); const body=el('tbody');
               for (const j of jobs) {
                 const row=el('tr'), name=el('td'), button=el('button',label(j),'job-button');
                 button.addEventListener('click',()=>openDetail(j.id)); const summary=el('small',`${j.id} · ${(j.command || []).join(' ')}`); summary.title=(j.command || []).join(' '); name.append(button,summary); row.append(name);
                 const state=el('td'); state.append(el('span',j.state.replaceAll('_',' '),'pill '+j.state)); row.append(state);
                 row.append(el('td',`P${j.priority}${j.position ? ' · #'+j.position : ''}`));
+                for (const at of [j.queue_time,j.started_at]) { const cell=el('td',stamp(at)); if (at) cell.title=String(at); row.append(cell); }
                 for (const time of timings(j)) row.append(el('td',time));
                 row.append(el('td',j.granted_sims),el('td',j.wait_reasons?.map(r=>r.summary).join('; ') || j.result_class || j.message || '—'),controls(j)); body.append(row);
               }
