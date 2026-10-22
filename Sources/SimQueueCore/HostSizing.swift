@@ -32,6 +32,8 @@ public struct HostSizing: Sendable, Equatable {
     public var minReserveBytes: UInt64
     /// `reserve_mib`: an absolute reserve instead of the percent (0: no reserve at all).
     public var reserveBytes: UInt64?
+    /// Optional memory allowance per cold simulator boot (`sim_boot_cost_mib`).
+    public var simBootCostBytes: UInt64?
     /// One running sim per this much RAM (`ram_per_running_sim_mib`) ...
     public var ramPerRunningSimBytes: UInt64
     /// ... unless `max_running_sims` sets the number.
@@ -49,7 +51,7 @@ public struct HostSizing: Sendable, Equatable {
         throttleLoad5WithLoad1PerCore: Double = 1.5, throttleClearLoad5PerCore: Double = 2.0,
         bootLoadPerCore: Double = 2.0, settleLoad5PerCore: Double = 2.0,
         reservePercent: Double = 10, minReserveBytes: UInt64 = 2 * ByteSize.gibibyte,
-        reserveBytes: UInt64? = nil,
+        reserveBytes: UInt64? = nil, simBootCostBytes: UInt64? = nil,
         ramPerRunningSimBytes: UInt64 = 8 * ByteSize.gibibyte, maxRunningSims: Int? = nil,
         ramPerPoolSimBytes: UInt64 = 8 * ByteSize.gibibyte
     ) {
@@ -62,6 +64,7 @@ public struct HostSizing: Sendable, Equatable {
         self.reservePercent = reservePercent
         self.minReserveBytes = minReserveBytes
         self.reserveBytes = reserveBytes
+        self.simBootCostBytes = simBootCostBytes
         self.ramPerRunningSimBytes = ramPerRunningSimBytes
         self.maxRunningSims = maxRunningSims
         self.ramPerPoolSimBytes = ramPerPoolSimBytes
@@ -93,6 +96,7 @@ public struct HostSizing: Sendable, Equatable {
     ) {
         let cores = Double(max(1, cpuCount))
         scheduler.reserveBytes = reserve(totalMemoryBytes: totalMemoryBytes)
+        if let simBootCostBytes { scheduler.simBootCostBytes = simBootCostBytes }
         scheduler.maxRunningSims = runningSims(totalMemoryBytes: totalMemoryBytes)
         scheduler.bootLoadFactor = bootLoadPerCore
         scheduler.loadThrottle.load5Above = throttleLoad5PerCore * cores

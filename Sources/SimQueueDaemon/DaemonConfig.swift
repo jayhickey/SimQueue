@@ -342,6 +342,7 @@ public struct DaemonConfig: Sendable, Equatable {
             var reservePercent: Double?
             var minReserveMiB: UInt64?
             var reserveMiB: UInt64?
+            var simBootCostMiB: UInt64?
             var ramPerRunningSimMiB: UInt64?
             var maxRunningSims: Int?
             var ramPerPoolSimMiB: UInt64?
@@ -356,6 +357,7 @@ public struct DaemonConfig: Sendable, Equatable {
                 case reservePercent = "reserve_percent"
                 case minReserveMiB = "min_reserve_mib"
                 case reserveMiB = "reserve_mib"
+                case simBootCostMiB = "sim_boot_cost_mib"
                 case ramPerRunningSimMiB = "ram_per_running_sim_mib"
                 case maxRunningSims = "max_running_sims"
                 case ramPerPoolSimMiB = "ram_per_pool_sim_mib"
@@ -832,6 +834,12 @@ public struct DaemonConfig: Sendable, Equatable {
             // available memory). Omit the key for the derived reserve.
             guard mib <= maxReserveMiB else { throw LoadError.invalid("host.reserve_mib must be <= \(maxReserveMiB)") }
             sizing.reserveBytes = mib * ByteSize.mebibyte
+        }
+        if let mib = file.simBootCostMiB {
+            guard mib <= maxReserveMiB else {
+                throw LoadError.invalid("host.sim_boot_cost_mib must be <= \(maxReserveMiB)")
+            }
+            sizing.simBootCostBytes = mib * ByteSize.mebibyte
         }
         if let mib = file.ramPerRunningSimMiB {
             guard mib >= 1, mib <= maxReserveMiB else {

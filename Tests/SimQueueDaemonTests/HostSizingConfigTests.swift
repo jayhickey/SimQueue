@@ -64,6 +64,23 @@ final class HostSizingConfigTests: XCTestCase {
         }
     }
 
+    func testSimulatorBootMemoryOverrideAndDefault() throws {
+        for (host, expected) in [
+            ("{}", UInt64(4_380_000_000)),
+            (#"{"sim_boot_cost_mib": 1024}"#, ByteSize.gibibyte),
+            (#"{"sim_boot_cost_mib": 0}"#, UInt64(0)),
+            (#"{"sim_boot_cost_mib": 16777216}"#, UInt64(16777216) * ByteSize.mebibyte),
+        ] {
+            var config = try DaemonConfig.parse(Data("{\"host\": \(host), \"pool\": {}}".utf8))
+            config.applyHostSizing(cpuCount: 10, totalMemoryBytes: 32 * ByteSize.gibibyte)
+            XCTAssertEqual(config.scheduler.simBootCostBytes, expected, host)
+        }
+        for value in ["-1", "1.5", "16777217", "18446744073709551615", "\"1024\""] {
+            XCTAssertThrowsError(
+                try DaemonConfig.parse(Data("{\"host\": {\"sim_boot_cost_mib\": \(value)}}".utf8)))
+        }
+    }
+
     func testNoHostSectionMeansTheDefaults() throws {
         XCTAssertEqual(try DaemonConfig.parse(Data("{}".utf8)).host, HostSizing())
     }
