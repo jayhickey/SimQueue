@@ -109,3 +109,17 @@ The Serve configuration persists, but the dashboard process must remain running;
 restarting it generates a new private path. Share the link only with trusted users:
 it grants access to logs and job controls. This does not configure Tailscale or
 change existing Serve routes automatically.
+
+## Install as a web app
+
+Open the complete private dashboard link over Tailscale HTTPS. On iPhone or iPad,
+use Safari’s Share menu → Add to Home Screen (enable Open as Web App if offered).
+On desktop browsers, use Install app or Add to Dock when available. The installed
+web app opens in its own window with the SimQueue icon. It does not change the
+native menu bar app or its Dock visibility.
+
+The installation and service worker are scoped to the private URL path. No queue
+responses, logs, actions or app shell are stored in an offline cache. An offline
+launch shows a connection message; there is no offline job control, background
+sync or push notification support. Tailscale must be connected for remote access.
+Restarting the dashboard changes its private URL, so reinstall from the new link.

@@ -8,9 +8,9 @@ enum DashboardAssets {
             #"""
             <!doctype html>
             <html lang="en">
-            <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SimQueue · Queue dashboard</title><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head>
+            <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101516"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="SimQueue"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-180.png"><title>SimQueue · Queue dashboard</title><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head>
             <body>
-            <header><div class="brand">SQ <span>SimQueue</span></div><span class="badge">LOCAL</span></header>
+            <header><div class="brand">SQ <span>SimQueue</span></div><span class="badge">QUEUE</span></header>
             <main><div class="heading"><div><h1>Queue status</h1></div><p id="connection" role="status">Connecting…</p></div>
             <section id="overview" class="overview" aria-label="Host overview"></section>
             <p id="health" class="notice"></p>
@@ -30,6 +30,9 @@ enum DashboardAssets {
             "text/javascript",
             #"""
             'use strict';
+            if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && globalThis.isSecureContext) {
+              navigator.serviceWorker.register('sw.js', {scope:'./', updateViaCache:'none'}).catch(() => {});
+            }
             const $ = id => document.getElementById(id);
             const el = (tag, text, className) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (className) n.className = className; return n; };
             let snapshot, selected = null, detailGeneration = 0, logView = null;
@@ -226,6 +229,28 @@ enum DashboardAssets {
               setTimeout(refresh,3000);
             }
             refresh();
+            """#
+        ),
+        "manifest.webmanifest": (
+            "application/manifest+json",
+            #"""
+            {"id":"./","name":"SimQueue","short_name":"SimQueue","description":"Queue status, job controls and live logs","start_url":"./","scope":"./","display":"standalone","theme_color":"#101516","background_color":"#101516","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}
+            """#
+        ),
+        "sw.js": (
+            "text/javascript",
+            #"""
+            'use strict';
+            // Network only: never cache queue data, logs, capabilities or actions.
+            self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+            self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+            self.addEventListener('fetch', event => {
+              if (event.request.mode !== 'navigate' || event.request.method !== 'GET') return;
+              event.respondWith(fetch(event.request, {cache:'no-store'}).catch(() => new Response(
+                '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SimQueue · Offline</title><h1>SimQueue is offline</h1><p>Connect to Tailscale and check that the dashboard is running, then reload.</p><p>Reload this page to retry.</p></html>',
+                {status:503, headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer'}}
+              )));
+            });
             """#
         ),
         "style.css": (

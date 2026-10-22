@@ -115,3 +115,32 @@ assert.equal(run("controls({id:'J-1',state:'succeeded'}).children.length"),0);
   console.log('Dashboard live-tail polling, pause, completion, stale-response and error checks passed');
   console.log('Dashboard job control checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+// The installed app must never replay actions or serve old job data offline.
+const worker = source.match(/"sw\.js":\s*\(\s*"text\/javascript",\s*#"""\n([\s\S]*?)"""#/)[1];
+const workerEvents = {};
+let workerFetches = 0;
+let workerOnline = true;
+const workerContext = vm.createContext({
+  self: {addEventListener:(name, fn)=>workerEvents[name]=fn, skipWaiting:async()=>{}, clients:{claim:async()=>{}}},
+  fetch:async(_request, options)=>{workerFetches++; assert.equal(options.cache,'no-store'); if (!workerOnline) throw new Error('offline'); return new Response('online');},
+  Response,
+});
+vm.runInContext(worker, workerContext);
+(async()=>{
+  for (const request of [{method:'POST',mode:'cors'}, {method:'GET',mode:'cors'}]) {
+    workerEvents.fetch({request, respondWith:()=>assert.fail('API/actions must bypass the worker')});
+  }
+  assert.equal(workerFetches,0);
+  let response;
+  const navigate=async()=>{workerEvents.fetch({request:{method:'GET',mode:'navigate'},respondWith:p=>response=p}); return await response;};
+  assert.equal(await (await navigate()).text(),'online');
+  workerOnline=false;
+  const offline=await navigate();
+  assert.equal(offline.status,503);
+  assert.equal(offline.headers.get('Cache-Control'),'no-store');
+  assert.match(await offline.text(),/SimQueue is offline/);
+  assert.equal(workerFetches,2);
+  assert.equal(typeof workerContext.caches,'undefined');
+  console.log('PWA network-only navigation and action bypass checks passed');
+})().catch(error=>{console.error(error);process.exitCode=1;});

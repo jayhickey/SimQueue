@@ -116,7 +116,7 @@ public final class DashboardServer {
             Referrer-Policy: no-referrer\r
             X-Content-Type-Options: nosniff\r
             X-Frame-Options: DENY\r
-            Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r
+            Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'\r
             \r
             """
         var data = Data((headers + "\n").utf8)
@@ -180,6 +180,9 @@ public final class DashboardServer {
                 request.components(separatedBy: "\r\n\r\n").dropFirst().allSatisfy(\.isEmpty),
                 path.hasPrefix("api/")
             else { return Reply("403 Forbidden") }
+        }
+        if first[0] == "GET", let icon = DashboardIcons.files[path] {
+            return Reply("200 OK", "image/png", icon)
         }
         if first[0] == "GET", let asset = DashboardAssets.files[path] {
             return Reply("200 OK", asset.type + "; charset=utf-8", Data(asset.text.utf8))

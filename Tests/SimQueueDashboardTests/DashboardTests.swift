@@ -100,6 +100,50 @@ final class DashboardTests: XCTestCase {
         XCTAssertFalse(String(decoding: route("app.js").body, as: UTF8.self).contains("innerHTML"))
     }
 
+    func testPWAAssetsKeepCapabilityScopeAndServeNativePNGIcons() throws {
+        let api = DashboardAPI { _ in
+            XCTFail("Asset requested the daemon"); throw DashboardError.unavailable
+        }
+        func asset(_ path: String, token: String = "secret") -> DashboardServer.Reply {
+            DashboardServer.route(
+                request: "GET /\(token)/\(path) HTTP/1.1\r\nHost: mini.example.ts.net\r\n\r\n",
+                token: "secret", api: api)
+        }
+        let manifestReply = asset("manifest.webmanifest")
+        XCTAssertEqual(manifestReply.status, "200 OK")
+        XCTAssertTrue(manifestReply.type.hasPrefix("application/manifest+json"))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: manifestReply.body) as? [String: Any])
+        XCTAssertEqual(manifest["start_url"] as? String, "./")
+        XCTAssertEqual(manifest["scope"] as? String, "./")
+        XCTAssertEqual(manifest["id"] as? String, "./")
+        XCTAssertEqual(manifest["display"] as? String, "standalone")
+        let icons = try XCTUnwrap(manifest["icons"] as? [[String: String]])
+        XCTAssertEqual(icons.compactMap { $0["sizes"] }, ["192x192", "512x512"])
+        for size in [180, 192, 512] {
+            let name = "icon-\(size).png"
+            let reply = asset(name)
+            XCTAssertEqual(reply.status, "200 OK")
+            XCTAssertEqual(reply.type, "image/png")
+            XCTAssertEqual(Array(reply.body.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+            func dimension(_ offset: Int) -> Int {
+                reply.body[offset..<(offset + 4)].reduce(0) { ($0 << 8) | Int($1) }
+            }
+            XCTAssertEqual(dimension(16), size)
+            XCTAssertEqual(dimension(20), size)
+            XCTAssertEqual(asset(name, token: "wrong").status, "403 Forbidden")
+        }
+        XCTAssertEqual(asset("manifest.webmanifest", token: "wrong").status, "403 Forbidden")
+        XCTAssertEqual(asset("sw.js", token: "wrong").status, "403 Forbidden")
+        XCTAssertTrue(asset("sw.js").type.hasPrefix("text/javascript"))
+        let html = String(decoding: asset("").body, as: UTF8.self)
+        XCTAssertTrue(html.contains("rel=\"manifest\""))
+        XCTAssertTrue(html.contains("rel=\"apple-touch-icon\""))
+        let wire = String(decoding: DashboardServer.wireResponse(asset("sw.js")), as: UTF8.self)
+        XCTAssertTrue(wire.contains("worker-src 'self'"))
+        XCTAssertTrue(wire.contains("manifest-src 'self'"))
+        XCTAssertFalse(wire.contains("Service-Worker-Allowed"))
+    }
+
     func testHTTPFramingPreservesEntireUTF8Body() throws {
         let body = Data("<!doctype html>\n✓".utf8)
         let response = DashboardServer.wireResponse(.init("200 OK", "text/html", body))
