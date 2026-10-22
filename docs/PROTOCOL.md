@@ -150,6 +150,7 @@ A terminal result can carry `cleanup_pending: true` while owned processes remain
 | 69 | Daemon unavailable |
 | 70 | Internal client error |
 | 73 | Queue backlog limit reached |
+| 77 | `simq run` refused inside a SimQueue job (`SIMQ_JOB_ID` is set); nothing is queued |
 | 128 + signal | The waiting `run` client received a termination signal |
 
 `submit --wait` and `wait` use mapped job results. A drain timeout leaves the drain gate set; a client wait timeout has the command-specific behavior described above.

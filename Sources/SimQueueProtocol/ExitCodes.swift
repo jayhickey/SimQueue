@@ -34,6 +34,9 @@ public enum SimQExitCode: Int32, Sendable, CaseIterable, Codable {
     /// Submit rejected: the submitter already has the maximum queued jobs for the
     /// project. Retry later.
     case queueFull = 73
+    /// `simq run` was called inside a SimQueue job (`SIMQ_JOB_ID` is set). Refused before
+    /// connecting: the nested job would queue behind the parent that waits for it.
+    case nestedRun = 77
 
     /// Exit code for a job that reached a terminal state.
     public static func forTerminal(state: JobState, result: ResultClass?) -> SimQExitCode {
