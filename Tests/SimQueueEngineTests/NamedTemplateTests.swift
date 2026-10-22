@@ -7,6 +7,40 @@ import SimQueueStore
 import XCTest
 
 final class NamedTemplateTests: XCTestCase {
+    func testCreatesRequestedProfileAndRebalancesWithinSharedPoolLimit() throws {
+        let harness = Harness()
+        harness.sims.clonesTemplate = true
+        harness.reliability.cleanupMode = .enforce
+        let store = try JobStore(path: ":memory:")
+        let (engine, _, _) = try harness.start(store: store)
+        var config = SimPoolConfig(maxSims: 1)
+        config.settle.mode = .off
+        engine.pool = config
+        engine.hostTemplates = ["iphone": "phone", "ipad": "tablet"]
+        engine.defaultHostTemplate = "iphone"
+        var command = JobCommand(argv: ["true"]); command.template = "ipad"
+        let job = try store.submit(
+            JobSubmission(
+                project: "app", submitter: "test",
+                resources: ResourceRequest(minSims: 1), command: command), now: harness.clock.now()
+        ).job
+        for _ in 0..<3 { _ = try engine.poolPass(config: config) }
+        XCTAssertEqual(harness.sims.clonedFrom, ["tablet"])
+        XCTAssertEqual(try engine.tick().admitted, [job.id])
+        _ = try store.finish(jobID: job.id, result: .success, now: harness.clock.now())
+        command.template = "iphone"
+        _ = try store.submit(
+            JobSubmission(
+                project: "app", submitter: "test",
+                resources: ResourceRequest(minSims: 1), command: command), now: harness.clock.now())
+        for _ in 0..<5 {
+            _ = try engine.poolPass(config: config)
+            XCTAssertLessThanOrEqual(try store.poolSims().count, 1)
+        }
+        XCTAssertEqual(harness.sims.clonedFrom, ["tablet", "phone"])
+        XCTAssertEqual(try engine.acquirePoolSim(leaseID: "manual")?.clonedFrom?.udid, "phone")
+    }
+
     func testSelectionLeasesOnlyMatchingTemplateAndSharesCapacity() throws {
         let harness = Harness()
         let store = try JobStore(path: ":memory:")
