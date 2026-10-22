@@ -7,6 +7,10 @@ import XCTest
 
 @testable import SimQueueDashboard
 
+#if canImport(FoundationNetworking)
+    import FoundationNetworking
+#endif
+
 private final class ServerWorker: @unchecked Sendable {
     let server: DashboardServer
     init(_ server: DashboardServer) { self.server = server }
@@ -26,13 +30,18 @@ final class DashboardTests: XCTestCase {
     func testStopUnblocksRunningListener() throws {
         let worker = ServerWorker(try DashboardServer(socketPath: "/unused-test-socket"))
         let finished = expectation(description: "Listener stopped")
-        let started = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
-            started.signal()
             try? worker.server.run()
             finished.fulfill()
         }
-        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        let served = expectation(description: "Listener served a request before stopping")
+        let url = try XCTUnwrap(URL(string: worker.server.url))
+        URLSession.shared.dataTask(with: url) { _, response, error in
+            XCTAssertNil(error)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            served.fulfill()
+        }.resume()
+        wait(for: [served], timeout: 3)
         worker.server.stop()
         wait(for: [finished], timeout: 3)
     }
