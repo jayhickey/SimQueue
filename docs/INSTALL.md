@@ -90,6 +90,7 @@ link at `$(brew --prefix)/bin/simq` depends on the order:
 Check which setup owns `simq` with `readlink "$(brew --prefix)/bin/simq"`: the app
 setup points into `SimQueue.app/Contents/Helpers/simq`, the formula into
 `Cellar/simqueue`. Then run `simq --version` and `simq doctor`.
+When SimQueue.app is installed but `simq` isn't its bundled copy, `simq doctor` warns (`app_cli`) with the fix `brew uninstall simqueue && brew link --cask simqueue-app`.
 
 The public formula downloads the tagged release archive without GitHub authentication. Homebrew is the supported installation path; changing Gatekeeper/quarantine settings is not part of installation.
 

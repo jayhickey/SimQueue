@@ -593,6 +593,11 @@ struct Doctor: ParsableCommand {
             }
         }
         report.checks.insert(.version(client: SimQueueVersion.current, daemon: report.daemon?.version), at: 0)
+        if let simq = Bundle.main.executablePath,
+            let appCLI = DoctorCheck.appCLI(runningSimq: simq, apps: DoctorCheck.installedApps())
+        {
+            report.checks.insert(appCLI, at: 1)
+        }
         if connection.json {
             try printJSON(report)
         } else {
