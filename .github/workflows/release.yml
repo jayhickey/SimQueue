@@ -223,3 +223,33 @@ jobs:
           gh release create "$TAG" "$NAME" "$NAME.sha256" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "SimQueue $VERSION" \
             --generate-notes "${FLAGS[@]}"
+
+  homebrew:
+    name: Update Homebrew formula and app cask
+    needs: [build, publish]
+    if: needs.build.outputs.publish == 'true' && !contains(needs.build.outputs.version, '-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.source }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: simqueue-${{ needs.build.outputs.version }}-macos-arm64
+          path: ${{ runner.temp }}/simqueue-dist
+      - name: Update tap from the published signed archive
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || format('{0}/homebrew-tap', github.repository_owner) }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          DIST: ${{ runner.temp }}/simqueue-dist
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Missing HOMEBREW_TAP_TOKEN: fine-grained Contents read/write access to the tap only}"
+          python3 scripts/update-homebrew.py "$TAP_REPOSITORY" "$SOURCE_REPOSITORY" "$VERSION" \
+            "$DIST/simqueue-$VERSION-macos-arm64.tar.gz"

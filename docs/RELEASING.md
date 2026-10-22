@@ -58,8 +58,11 @@ workflow token do not recursively start another tag workflow.
 Every successful new main commit is eligible, including documentation-only changes.
 Keep signing secrets configured before merging this workflow. Missing credentials,
 Apple rejection, timeout, stapling or Gatekeeper failure stop publication before an
-automatic tag is created. The workflow does not update Homebrew automatically;
-update the separate tap using the verified public asset below.
+automatic tag is created. After stable publication, a separate job updates the Homebrew CLI formula and app
+cask together using the signed archive checksum. It never forces a branch update
+or downgrades a newer tap version. Manual validations and prereleases skip this job.
+A tap failure leaves the published GitHub release available and makes the workflow
+fail visibly; retry the tap update using the verified asset below.
 
 Manual `workflow_dispatch` is a validation/recovery tool and never publishes. Its
 optional version defaults to `0.0.0-dev+<source SHA>`; enable `notarize` to test the
@@ -185,3 +188,9 @@ If hosted builds are unavailable, a maintainer may build on an explicitly author
 host using its existing queue and toolchain, validate the same archive contracts, and
 upload that actual package. Never attach a personal Mac runner to this public repository
 as a workaround. The public initial commit must still pass its required hosted CI.
+
+### Automatic tap credentials
+
+Set the repository Actions secret `HOMEBREW_TAP_TOKEN` to a fine-grained token restricted to the tap repository, with Contents read/write permission. The default Actions token cannot write to another repository. No tap credential is supplied to build, test, signing, or public pull request jobs. The token is used only after stable publication; missing or expired credentials fail the tap job explicitly.
+
+The default target is `<repository owner>/homebrew-tap`; set the Actions variable `HOMEBREW_TAP_REPOSITORY` to override it. The updater modifies only `Formula/simqueue.rb` and `Casks/simqueue-app.rb` in one commit, preserves installation/service definitions, removes the previous formula revision, and refuses unexpected layouts or stale-version downgrades. Branch protection must permit the credential holder's update; the updater never bypasses protection. Re-running the updater for identical contents is a no-op. If another tap commit races it, rerun the updater so it reads the new branch head.
