@@ -161,12 +161,15 @@ reasons. Missing metrics from older daemons display unavailable, never zero.
 
 **Review storage** schedules a background pass on the daemon’s existing artifact
 retention lane. Polling reads the cached report; it does not scan directories.
-The report separates DerivedData from the rest of each run so it is not counted
-twice, distinguishes successful/other/active/pinned/untracked managed artifacts,
+The report separates DerivedData and top-level `.xcresult` bundles from the rest
+of each run so they are not counted twice, distinguishes successful/other/active/pinned/untracked managed artifacts,
 and lists up to 100 eligible cleanup targets. Additional accounting samples at
 most 200 run directories; unreadable or unmeasured sizes remain explicitly unknown.
 Sizes are logical file bytes, so APFS cloning/compression can make actual free-space
-changes differ. Managed simulator disk sizes and global caches are not scanned.
+changes differ. Managed simulator and template data sizes come from `simctl` device inventory,
+matched only to live ownership ledger IDs. Missing size readings remain unknown;
+shared simulator runtimes and global Xcode caches are excluded. Simulator data is
+visibility-only here: artifact cleanup never deletes a simulator or template.
 
 **Clean eligible artifacts…** asks for confirmation and schedules a fresh retention
 pass. It rechecks ownership and eligibility before each removal, protects active
@@ -185,3 +188,27 @@ Retention already runs automatically under `age_rules.artifact_retention_days` a
 not an independent dashboard policy. The existing `host.min_free_disk_gib` threshold
 (default 20 GiB, 0 disables) now protects both the system and output volumes; low or
 unreadable output space holds new admissions without interrupting running jobs.
+
+
+Configure retention in the daemon's existing `config.json` (see
+[the configuration example](config.example.json)). For example:
+
+```json
+{
+  "host": {"min_free_disk_gib": 20},
+  "age_rules": {
+    "artifact_budget_gib": 20,
+    "artifact_retention_days": {"derived_data": 0.0833333333, "succeeded": 2, "other": 7, "kept": 90}
+  }
+}
+```
+
+Merge these keys into your existing configuration; retain other settings. Apply
+configuration changes during a normal drained daemon restart, preserving running
+work. These settings persist in the configuration file. Result bundles follow their
+parent run's policy, so failed-run evidence lasts longer than successful output in
+this example. The artifact budget excludes simulator/template data and protects
+active work and pinned runs; it is a cleanup target rather than a hard quota.
+Admission automatically resumes on a subsequent tick once free space is readable
+and above the threshold on all required volumes. It never cancels running jobs to
+recover space. The dashboard reports the effective policy and the actual hold.

@@ -179,13 +179,14 @@ enum DashboardAssets {
               lastStorageRender=renderKey;
               if (!report) { $('storage-summary').replaceChildren(el('p',busy ? 'Reviewing storage in the background…' : 'Choose Review storage to measure managed artifacts. Sizes are not scanned on each refresh.','muted')); return; }
               const summary=el('div'), table=el('table'), header=el('tr');
-              for(const title of ['Storage category','Estimated bytes','Directories']) header.append(el('th',title)); table.append(header);
+              for(const title of ['Storage category','Estimated bytes','Items']) header.append(el('th',title)); table.append(header);
               for(const category of report.categories) {const row=el('tr');row.append(el('td',category.name),el('td',bytes(category.bytes)+(category.unknownSizes ? ` + ${category.unknownSizes} unknown` : '')),el('td',category.count));table.append(row);}
               const r=report.retention, measured=report.categories.reduce((sum,c)=>sum+c.bytes,0);
-              summary.append(el('p',`${bytes(measured)} measured managed artifacts (unknown sizes excluded).`),el('p',`Inventory ${new Date(report.sampledAt*1000).toLocaleString()} · ${report.candidateCount} eligible targets · ${bytes(report.reclaimableBytes)} estimated reclaimable${report.unknownCandidateSizes ? ' + unknown sizes' : ''}.`),report.categories.length ? table : el('p','No managed run directories were found.','muted'),
+              summary.append(el('p',`${bytes(measured)} measured managed storage (unknown sizes excluded).`),el('p',`Inventory ${new Date(report.sampledAt*1000).toLocaleString()} · ${report.candidateCount} eligible targets · ${bytes(report.reclaimableBytes)} estimated reclaimable${report.unknownCandidateSizes ? ' + unknown sizes' : ''}.`),report.categories.length ? table : el('p','No managed run directories were found.','muted'),
                 el('p',`Retention: DerivedData ${days(r.derivedDataSeconds)} · successful runs ${days(r.succeededSeconds)} · other runs ${days(r.otherSeconds)} · pinned ${days(r.keptSeconds ?? 7776000)}. Budget: ${r.budgetBytes == null ? 'Not configured' : bytes(r.budgetBytes)}. Cleanup mode: ${report.cleanupMode}.`, 'muted'),
-                el('p','Sizes are logical file bytes, not guaranteed reclaimed disk space (APFS clones and compression differ). Accounting samples at most 200 run directories; unknown sizes remain marked. Active jobs and pending cleanup are protected.','muted'));
+                el('p','Sizes are logical file bytes, not guaranteed reclaimed disk space (APFS clones and compression differ). Accounting samples at most 200 run directories; unknown sizes remain marked. Active jobs and pending cleanup are protected. Simulator data uses device inventory readings; shared runtimes are excluded. The artifact budget excludes simulator data.','muted'));
               if(report.cleanupAt) summary.append(el('p',`Last cleanup pass ${new Date(report.cleanupAt*1000).toLocaleString()}: ${report.removedCount} removed, ${report.failureCount} failed. Inventory is from before cleanup; review again for updated sizes.`));
+              for(const note of report.notes ?? []) summary.append(el('p',note,'muted'));
               if(report.error) summary.append(el('p',report.error,'error'));
               if(busy) summary.append(el('p','Storage work is running in the background…','muted'));
               $('storage-summary').replaceChildren(summary);

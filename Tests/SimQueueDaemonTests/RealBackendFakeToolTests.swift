@@ -402,6 +402,13 @@ final class RealBackendFakeToolTests: XCTestCase {
         XCTAssertEqual(SimProcessProbe.simCPUPercent(Self.owned, in: lines), 15.5, accuracy: 0.001)
     }
 
+    func testSimulatorDataSizeReadingsAreOptionalAndMalformedValuesStayUnknown() throws {
+        let listing =
+            #"{"devices":{"runtime":[{"udid":"a","name":"a","state":"Shutdown","dataPathSize":123},{"udid":"b","name":"b","state":"Shutdown","dataPathSize":-1},{"udid":"c","name":"c","state":"Shutdown"}]}}"#
+        let devices = try SimctlBackend.parseDeviceList(listing)
+        XCTAssertEqual(devices.map(\.dataSizeBytes), [123, nil, nil])
+    }
+
     /// Cheap, read-only real calls; runs only on the macOS CI job (SIMQ_REAL_READONLY=1).
     /// No boots, no writes.
     func testRealReadOnlyCallsOnMacOS() throws {

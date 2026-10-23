@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import Foundation
+import SimQueueCore
 import SimQueueEngine
 import SimQueueHost
 import SimQueueProtocol
@@ -51,9 +52,21 @@ enum StorageAccounting {
             category.count += 1
             let total = index < 200 ? fileSystem.sizeOfItem(entry.path) : nil
             let derived = index < 200 && entry.hasDerivedData ? fileSystem.sizeOfItem(entry.path + "/DerivedData") : nil
-            // Do not subtract unknown DerivedData from a known total and count it twice.
-            if let total, !entry.hasDerivedData || derived != nil {
-                category.bytes += total - min(total, derived ?? 0)
+            var bundles = categories["Result bundles"] ?? .init(name: "Result bundles")
+            var bundleBytes: UInt64 = 0
+            var bundlesKnown = true
+            for path in entry.resultBundles {
+                bundles.count += 1
+                if let bytes = index < 200 ? fileSystem.sizeOfItem(path) : nil {
+                    bundles.bytes += bytes; bundleBytes += bytes
+                } else {
+                    bundles.unknownSizes += 1; bundlesKnown = false
+                }
+            }
+            if bundles.count > 0 { categories[bundles.name] = bundles }
+            // Only subtract subtrees with known sizes; never count them twice.
+            if let total, (!entry.hasDerivedData || derived != nil), bundlesKnown {
+                category.bytes += total - min(total, (derived ?? 0) + bundleBytes)
             } else {
                 category.unknownSizes += 1
             }
@@ -67,4 +80,27 @@ enum StorageAccounting {
         }
         return categories.values.sorted { $0.name < $1.name }
     }
+    /// Inventory readings are matched by ledger ID, never by simulator name.
+    static func simulators(resources: [OwnedResource], devices: [SimDevice]) -> [ArtifactStorageInfo.Category] {
+        var owned: [String: OwnedResourceKind] = [:]
+        for resource in resources
+        where resource.state != .released && (resource.kind == .sim || resource.kind == .template) {
+            guard let id = UUID(uuidString: resource.externalID)?.uuidString else { continue }
+            if owned[id] != .template { owned[id] = resource.kind }
+        }
+        var sizes: [String: UInt64] = [:]
+        for device in devices {
+            if let id = UUID(uuidString: device.udid)?.uuidString, let size = device.dataSizeBytes { sizes[id] = size }
+        }
+        var categories: [String: ArtifactStorageInfo.Category] = [:]
+        for (id, kind) in owned {
+            let name = kind == .template ? "Managed template data" : "Managed simulator data"
+            var category = categories[name] ?? .init(name: name)
+            category.count += 1
+            if let size = sizes[id] { category.bytes += size } else { category.unknownSizes += 1 }
+            categories[name] = category
+        }
+        return categories.values.sorted { $0.name < $1.name }
+    }
+
 }

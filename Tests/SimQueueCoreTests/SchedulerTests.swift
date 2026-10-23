@@ -8,6 +8,15 @@ import XCTest
 final class SchedulerTests: XCTestCase {
     private let scheduler = Scheduler(config: testConfig())
 
+    func testDiskHoldRecoversWithoutChangingTheQueuedJob() {
+        let job = makeJob("J-disk", seq: 1)
+        let held = scheduler.plan(input(queued: [job], host: makeHost(freeDiskGiB: 1)))
+        XCTAssertTrue(held.admittedIDs.isEmpty)
+        XCTAssertTrue(held.reasonCodes(for: job.id).contains("disk_low"))
+        let recovered = scheduler.plan(input(queued: [job], host: makeHost(freeDiskGiB: 100)))
+        XCTAssertEqual(recovered.admittedIDs, [job.id])
+    }
+
     // MARK: - Basics
 
     func testJobWithoutSimsIsAdmittedWithZeroSims() {

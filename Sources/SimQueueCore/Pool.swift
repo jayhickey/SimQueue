@@ -149,6 +149,7 @@ public struct SimNamingScheme: Sendable, Equatable, Codable {
 
 /// One simulator as the backend reports it.
 public struct SimDevice: Sendable, Equatable, Codable {
+    public var dataSizeBytes: UInt64?
     public var udid: String
     public var name: String
     public var runtime: String?
@@ -159,8 +160,9 @@ public struct SimDevice: Sendable, Equatable, Codable {
 
     public init(
         udid: String, name: String, isBooted: Bool, state: String? = nil, runtime: String? = nil,
-        deviceType: String? = nil
+        deviceType: String? = nil, dataSizeBytes: UInt64? = nil
     ) {
+        self.dataSizeBytes = dataSizeBytes
         self.runtime = runtime
         self.deviceType = deviceType
         self.udid = udid

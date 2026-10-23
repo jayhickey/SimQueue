@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+import Foundation
 import SimQueueCore
 import SimQueueHost
 import SimQueueStore
@@ -140,12 +141,15 @@ extension Engine {
             public let jobID: String
             public let dayStart: Double
             public let hasDerivedData: Bool
+            public let resultBundles: [String]
         }
         public let roots: [String]
         public let directories: [Directory]
     }
 
-    public static func gcInventory(roots: [String], fileSystem: any FileSystem) throws -> GCInventory {
+    public static func gcInventory(roots: [String], fileSystem: any FileSystem, includeStorageDetails: Bool = false)
+        throws -> GCInventory
+    {
         var directories: [GCInventory.Directory] = []
         for root in roots {
             for day in try fileSystem.children(of: root) {
@@ -155,10 +159,16 @@ extension Engine {
                 for path in try fileSystem.children(of: day) {
                     guard let id = path.split(separator: "/").last.map(String.init), path == "\(day)/\(id)"
                     else { continue }
+                    let resultBundles =
+                        includeStorageDetails && directories.count < 200
+                        ? try fileSystem.children(of: path).filter {
+                            $0.hasSuffix(".xcresult") && ($0 as NSString).deletingLastPathComponent == path
+                        }
+                        : []
                     directories.append(
                         .init(
                             root: root, path: path, jobID: id, dayStart: dayStart,
-                            hasDerivedData: fileSystem.fileExists(path + "/DerivedData")))
+                            hasDerivedData: fileSystem.fileExists(path + "/DerivedData"), resultBundles: resultBundles))
                 }
             }
         }
@@ -170,8 +180,10 @@ extension Engine {
         public var path: String
         public var category: String
         public var hasDerivedData: Bool
-        public init(path: String, category: String, hasDerivedData: Bool) {
+        public var resultBundles: [String]
+        public init(path: String, category: String, hasDerivedData: Bool, resultBundles: [String] = []) {
             self.path = path; self.category = category; self.hasDerivedData = hasDerivedData
+            self.resultBundles = resultBundles
         }
     }
     public struct GCPlan: Sendable {
@@ -222,7 +234,9 @@ extension Engine {
             } else {
                 category = "Untracked managed artifacts"
             }
-            return StorageEntry(path: directory.path, category: category, hasDerivedData: directory.hasDerivedData)
+            return StorageEntry(
+                path: directory.path, category: category, hasDerivedData: directory.hasDerivedData,
+                resultBundles: directory.resultBundles)
         }
         return report
     }

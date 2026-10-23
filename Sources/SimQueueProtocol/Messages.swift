@@ -1010,6 +1010,7 @@ public struct StorageInfo: Sendable, Equatable, Codable {
 }
 
 public struct ArtifactStorageInfo: Sendable, Equatable, Codable {
+    public var notes: [String]?
     public struct Category: Sendable, Equatable, Codable {
         public var name: String
         public var bytes: UInt64

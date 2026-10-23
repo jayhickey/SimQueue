@@ -158,7 +158,9 @@ tailing, with pause/resume and auto-follow controls. See the
 
 The dashboard includes machine health (memory pressure, CPU/load, swap and volume
 free space) and an on-demand storage breakdown with a preview of safe artifact
-cleanup. Existing retention and disk admission policies remain the source of truth.
+cleanup, including separate DerivedData, result-bundle and owned simulator/template
+accounting. Configurable age and size retention preserves active work; disk-aware
+admission pauses new work until required volumes recover. Existing retention and disk admission policies remain the source of truth.
 
 ### macOS menu bar app
 
