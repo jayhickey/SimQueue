@@ -148,3 +148,40 @@ For Caddy, `reverse_proxy <dashboard-ip>:8765` preserves Host by default for an 
 upstream. Terminate HTTPS at the proxy. Restrict access to trusted devices: the URL
 grants job controls and access to logs. The app’s own dashboard and existing local
 Tailscale Serve setups keep their loopback default.
+
+## Machine health and managed storage
+
+Machine health shows the daemon’s latest resource sample: available/reclaimable
+memory and pressure, total RAM, swap, interval CPU utilization, one/five-minute
+load averages, core count and thermal state. CPU percent is a tick delta (first
+sample unavailable); load average is a different measure, not CPU percent. Sample
+time and stale readings are visible. System and job-output free space are shown
+separately even when they share a volume. Admission holds show the daemon’s actual
+reasons. Missing metrics from older daemons display unavailable, never zero.
+
+**Review storage** schedules a background pass on the daemon’s existing artifact
+retention lane. Polling reads the cached report; it does not scan directories.
+The report separates DerivedData from the rest of each run so it is not counted
+twice, distinguishes successful/other/active/pinned/untracked managed artifacts,
+and lists up to 100 eligible cleanup targets. Additional accounting samples at
+most 200 run directories; unreadable or unmeasured sizes remain explicitly unknown.
+Sizes are logical file bytes, so APFS cloning/compression can make actual free-space
+changes differ. Managed simulator disk sizes and global caches are not scanned.
+
+**Clean eligible artifacts…** asks for confirmation and schedules a fresh retention
+pass. It rechecks ownership and eligibility before each removal, protects active
+jobs and pending cleanup, respects configured pin/retention rules and cleanup mode,
+and removes at most 20 targets or the configured per-pass maximum, whichever is
+smaller. Pins remain exempt from budget cleanup but have their existing configured
+age retention. No arbitrary paths or global Xcode caches can be deleted. Requests
+are not retried automatically; refresh after an unconfirmed response. Maintenance
+blocks new dashboard storage requests; errors and partial failures appear in the
+report. Review again after cleanup for current sizes. Network requests return
+promptly while a scan runs; an individual existing filesystem size walk can still
+be slow on a large or unhealthy volume.
+
+Retention already runs automatically under `age_rules.artifact_retention_days` and
+`age_rules.artifact_budget_gib` in config.json. The report shows the actual policy,
+not an independent dashboard policy. The existing `host.min_free_disk_gib` threshold
+(default 20 GiB, 0 disables) now protects both the system and output volumes; low or
+unreadable output space holds new admissions without interrupting running jobs.

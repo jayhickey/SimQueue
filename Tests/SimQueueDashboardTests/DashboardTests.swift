@@ -72,6 +72,33 @@ final class DashboardTests: XCTestCase {
         }
     }
 
+    func testStorageActionsRequireNewDaemonBeforeSendingApply() throws {
+        var requests: [RequestParams] = []
+        let old = try JSONDecoder().decode(
+            StatusResult.self,
+            from: Data(
+                """
+                {"daemon":{"version":"old","pid":1,"epoch":1,"started_at":0,"state_path":"s","socket_path":"s","backend":"fake","cleanup_mode":"enforce"},"queued":0,"admitted":0,"running":0,"paused":false,"draining":false,"load_throttled":false,"global_wait_reasons":[]}
+                """.utf8))
+        let api = DashboardAPI { params in
+            requests.append(params); return .status(old)
+        }
+        XCTAssertThrowsError(try api.mutate(path: "storage/cleanup"))
+        XCTAssertEqual(requests, [.status], "Never let an old daemon ignore background and apply synchronously")
+        var current = old
+        current.storageReviewRunning = false
+        let supported = DashboardAPI { params in
+            switch params {
+            case .status: return .status(current)
+            case .gc(let value):
+                XCTAssertEqual(value, GCParams(apply: true, background: true))
+                return .gc(GCResult(applied: false, candidates: [], scheduled: true))
+            default: XCTFail("Unexpected request"); throw DashboardError.unavailable
+            }
+        }
+        XCTAssertNoThrow(try supported.mutate(path: "storage/cleanup"))
+    }
+
     func testSnapshotSeparatesActiveFromBoundedHistory() throws {
         var requests: [RequestParams] = []
         let status = try JSONDecoder().decode(

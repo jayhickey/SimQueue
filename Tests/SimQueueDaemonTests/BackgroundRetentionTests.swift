@@ -78,6 +78,60 @@ final class BackgroundRetentionTests: XCTestCase {
         return job
     }
 
+    func testDashboardCleanupIsCappedAndRecordsResults() throws {
+        let fs = FakeFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        settings.reliability.ageRules.artifactRetention.maxRemovalsPerPass = 100
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let directories = (1...21).map { daemon.paths.jobsRoot + "/2020-01-01/J-\($0)" }
+        for directory in directories { try fs.createDirectory(directory) }
+        guard case .gc(let result) = try daemon.result(.gc(GCParams(apply: true, background: true))) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(result.scheduled, true)
+        daemon.service.waitForBackgroundWork()
+        XCTAssertEqual(directories.filter { !fs.fileExists($0) }.count, 20)
+        let report = try XCTUnwrap(status(daemon).artifactStorage)
+        XCTAssertEqual(report.removedCount, 20)
+        XCTAssertEqual(report.candidateCount, 21)
+        XCTAssertNotNil(report.cleanupAt)
+    }
+
+    func testDashboardCannotApplyInReportOnlyMode() throws {
+        var settings = config()
+        settings.reliability.cleanupMode = .reportOnly
+        let daemon = try TestDaemon(config: settings)
+        defer { daemon.destroy() }
+        XCTAssertThrowsError(try daemon.result(.gc(GCParams(apply: true, background: true))))
+    }
+
+    func testBackgroundStorageReviewReturnsImmediatelyWhileScanIsBlocked() throws {
+        let fs = BlockingFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        fs.block(.children, path: daemon.paths.jobsRoot)
+        guard case .gc(let accepted) = try daemon.result(.gc(GCParams(background: true))) else { return XCTFail() }
+        XCTAssertEqual(accepted.scheduled, true)
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(try status(daemon).storageReviewRunning, true)
+        XCTAssertNotNil(try status(daemon).host)
+        _ = try endedJob(daemon)
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertEqual(try status(daemon).storageReviewRunning, false)
+        XCTAssertNotNil(try status(daemon).artifactStorage)
+    }
+
     func testStartupDefersBlockedInventoryAndKeepsStatusTicksAndAdmissionResponsive() throws {
         let fs = BlockingFileSystem()
         let state = testScratchRoot() + "/retention-" + UUID().uuidString.prefix(8)

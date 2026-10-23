@@ -156,6 +156,10 @@ adjust queued-job priorities directly in the dashboard. Open a job for live log
 tailing, with pause/resume and auto-follow controls. See the
 [dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.
 
+The dashboard includes machine health (memory pressure, CPU/load, swap and volume
+free space) and an on-demand storage breakdown with a preview of safe artifact
+cleanup. Existing retention and disk admission policies remain the source of truth.
+
 ### macOS menu bar app
 
 Install the CLI and daemon with `brew install jayhickey/tap/simqueue`, or the app

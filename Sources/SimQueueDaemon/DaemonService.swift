@@ -27,6 +27,8 @@ public final class DaemonService: @unchecked Sendable {
     private var historyRunning = false
     private let artifactQueue = DispatchQueue(label: "simqd.artifact-retention")
     private var artifactCleanupRunning = false
+    private var artifactStorage: ArtifactStorageInfo?
+    private var lastStorageReviewRequestedAt: Double = -.infinity
     private var artifactCleanupDue = true
     private let artifactRequests = DispatchGroup()
     private var lastHistoryAt: Double = -.infinity
@@ -199,7 +201,13 @@ public final class DaemonService: @unchecked Sendable {
                 do {
                     let roots = Set(
                         [artifacts.root] + (try store.queuedJobs()).compactMap { $0.command?.artifactsRoot })
-                    for root in roots { try JobStorage.check(root) }
+                    try JobStorage.ensureFreeSpace(
+                        JobStorage.freeBytes("/"), minimum: config.scheduler.minFreeDiskBytes)
+                    for root in roots {
+                        try JobStorage.check(root)
+                        try JobStorage.ensureFreeSpace(
+                            JobStorage.freeBytes(root), minimum: config.scheduler.minFreeDiskBytes)
+                    }
                     engine.admissionStorageFailure = nil
                 } catch {
                     engine.admissionStorageFailure = String(describing: error)
@@ -443,6 +451,41 @@ public final class DaemonService: @unchecked Sendable {
     /// `simq gc`: a dry run unless `apply`. Applying is refused while cleanup_mode is
     /// report-only (the same gate the watchdog's retention goes through).
     func garbageCollect(_ params: GCParams) throws -> GCResult {
+        if params.background == true {
+            return try locked {
+                guard !shutdownRequested, !engine.maintenanceDraining else {
+                    throw ProtocolError(.invalidState, "Finish maintenance before reviewing or cleaning storage.")
+                }
+                if params.apply == true, config.reliability.cleanupMode != .enforce {
+                    throw ProtocolError(.invalidState, "Cleanup is disabled by cleanup_mode; review only.")
+                }
+                guard !artifactCleanupRunning else {
+                    throw ProtocolError(.invalidState, "Storage review or cleanup is already running.")
+                }
+                let now = engine.environment.clock.now()
+                guard now - lastStorageReviewRequestedAt >= 10 else {
+                    throw ProtocolError(.invalidState, "Wait ten seconds between storage requests.")
+                }
+                lastStorageReviewRequestedAt = now
+                artifactCleanupRunning = true
+                artifactRequests.enter()
+                artifactQueue.async { [self] in
+                    defer { locked { artifactCleanupRunning = false }; artifactRequests.leave() }
+                    do {
+                        _ = try collectArtifacts(apply: params.apply == true, automatic: false, accounting: true)
+                    } catch {
+                        locked {
+                            artifactStorage = ArtifactStorageInfo(
+                                sampledAt: engine.environment.clock.now(), categories: [],
+                                candidates: [], candidateCount: 0, reclaimableBytes: 0, unknownCandidateSizes: 0,
+                                retention: config.reliability.ageRules.artifactRetention,
+                                cleanupMode: config.reliability.cleanupMode.rawValue, error: String(describing: error))
+                        }
+                    }
+                }
+                return GCResult(applied: false, candidates: [], scheduled: true)
+            }
+        }
         // Manual GC and the automatic worker share one serial lane: no duplicate
         // removals or concurrent whole-tree walks, and neither holds the tick lock.
         try locked {
@@ -459,7 +502,7 @@ public final class DaemonService: @unchecked Sendable {
         }
     }
 
-    private func collectArtifacts(apply: Bool, automatic: Bool) throws -> GCResult {
+    private func collectArtifacts(apply: Bool, automatic: Bool, accounting: Bool = false) throws -> GCResult {
         if apply, config.reliability.cleanupMode != .enforce, !automatic {
             throw ProtocolError(
                 .invalidState,
@@ -471,19 +514,51 @@ public final class DaemonService: @unchecked Sendable {
             return (engine.environment.allArtifactsRoots, engine.environment.fileSystem)
         }
         guard let disk else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
-        let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: disk.fileSystem)
+        let sized = SizingFileSystem(disk.fileSystem)
+        let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: sized)
         let plan = try locked { () -> Engine.GCPlan? in
             guard !automatic || (!engine.maintenanceDraining && !shutdownRequested) else { return nil }
-            return try engine.gcPlan(now: engine.environment.clock.now(), inventory: inventory)
+            return try engine.gcPlan(
+                now: engine.environment.clock.now(), inventory: inventory, includeStorageAccounting: accounting)
         }
         guard let plan else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
-        let candidates = Engine.gcCandidates(plan, fileSystem: disk.fileSystem)
+        let candidates = Engine.gcCandidates(plan, fileSystem: sized)
+        if accounting {
+            let categories = StorageAccounting.categories(plan.storageEntries, fileSystem: sized)
+            let reclaimable = StorageAccounting.reclaimable(
+                candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) })
+            locked {
+                artifactStorage = ArtifactStorageInfo(
+                    sampledAt: engine.environment.clock.now(), categories: categories,
+                    candidates: candidates.prefix(100).map {
+                        GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes)
+                    },
+                    candidateCount: candidates.count, reclaimableBytes: reclaimable.bytes,
+                    unknownCandidateSizes: reclaimable.unknown,
+                    retention: config.reliability.ageRules.artifactRetention,
+                    cleanupMode: config.reliability.cleanupMode.rawValue)
+            }
+        }
         var result = GCResult(
             applied: apply, candidates: candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) },
             budgetBytes: plan.budget)
+        defer {
+            if apply {
+                locked {
+                    artifactStorage?.cleanupAt = engine.environment.clock.now()
+                    artifactStorage?.removedCount = result.removed.count
+                    artifactStorage?.failureCount = result.failures.count
+                    if !accounting, !result.removed.isEmpty, artifactStorage != nil {
+                        artifactStorage?.error =
+                            "Automatic cleanup ran since this inventory. Review storage to refresh sizes."
+                    }
+                }
+            }
+        }
         guard apply else { return result }
         let limit =
-            automatic ? min(20, max(0, config.reliability.ageRules.artifactRetention.maxRemovalsPerPass)) : Int.max
+            automatic || accounting
+            ? min(20, max(0, config.reliability.ageRules.artifactRetention.maxRemovalsPerPass)) : Int.max
         let fileSystem = disk.fileSystem
         var attempted = 0
         for candidate in candidates.prefix(limit) {
@@ -944,7 +1019,9 @@ public final class DaemonService: @unchecked Sendable {
         return StorageInfo(
             stateDirectory: (info.statePath as NSString).deletingLastPathComponent,
             jobOutputRoot: artifacts.root, available: failure == nil,
-            freeBytes: failure == nil ? JobStorage.freeBytes(artifacts.root) : nil, failure: failure)
+            freeBytes: failure == nil ? JobStorage.freeBytes(artifacts.root) : nil, failure: failure,
+            systemFreeBytes: storageChecksEnabled ? JobStorage.freeBytes("/") : nil,
+            minimumFreeBytes: config.scheduler.minFreeDiskBytes)
     }
 
     private func storageCheck() -> DoctorCheck {
@@ -995,7 +1072,8 @@ public final class DaemonService: @unchecked Sendable {
                     } ?? "no active host template; build one, set simctl.template to its UDID, then restart simqd"
                 },
             drainComplete: drainComplete,
-            storage: storageDiagnostics()
+            storage: storageDiagnostics(), host: lastTick?.host, artifactStorage: artifactStorage,
+            storageReviewRunning: artifactCleanupRunning
         )
     }
 

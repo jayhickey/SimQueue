@@ -33,6 +33,14 @@ public enum JobStorage {
         }
     }
 
+    public static func ensureFreeSpace(_ free: UInt64?, minimum: UInt64) throws {
+        guard minimum > 0 else { return }
+        guard let free else { throw Failure("cannot read free space on job output volume") }
+        guard free >= minimum else {
+            throw Failure("job output volume has \(free) bytes free; requires \(minimum) bytes")
+        }
+    }
+
     public static func freeBytes(_ root: String) -> UInt64? {
         var ancestor = root
         while !FileManager.default.fileExists(atPath: ancestor), ancestor != "/" {
