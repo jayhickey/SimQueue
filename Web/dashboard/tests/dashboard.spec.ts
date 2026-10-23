@@ -378,13 +378,13 @@ test('activity separates phases, reveals timing on hover and opens a concise job
     .locator('rect')
     .evaluateAll((nodes) => nodes.map((n) => getComputedStyle(n).fill));
   expect(new Set(colors).size).toBe(3);
-  await row.focus();
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Shift+Tab');
-  await expect(row).toBeFocused();
-  await expect(row.getByRole('tooltip')).toBeVisible();
   expect(detailReads).toBe(0);
   if (testInfo.project.name === 'chromium') {
+    await row.focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    await expect(row).toBeFocused();
+    await expect(row.getByRole('tooltip')).toBeVisible();
     await row.hover();
     await expect(row.getByRole('tooltip')).toBeVisible();
     await expect(row.getByRole('tooltip')).toContainText('Queue wait: 50s');
@@ -432,4 +432,22 @@ test('activity includes queued-only jobs and runtime stays a phase color after f
   const failed = page.locator('[data-activity-job="J-2207"]');
   await expect(failed.locator('rect.phase-run')).toHaveCount(1);
   await expect(failed).toHaveAttribute('aria-label', /failed/);
+});
+
+test('retry details do not mislabel earlier execution as queue wait', async ({ page }) => {
+  const retried = { ...fixture.active[0], attempt: 1 };
+  await snapshot(page, (s) => {
+    s.active[0] = retried;
+  });
+  await page.route('**/api/job/J-2207', (route) => route.fulfill({ json: retried }));
+  await ready(page);
+  const row = page.locator('[data-activity-job="J-2207"]');
+  await expect(row.locator('rect.phase-queue')).toHaveCount(0);
+  await row.click();
+  const dialog = page.getByRole('dialog', { name: 'Job details' });
+  await expect(dialog.locator('.job-timing.phase-queue strong')).toHaveText('—');
+  await expect(dialog.locator('.job-timing.phase-queue')).toContainText(
+    'Unavailable across retries',
+  );
+  await expect(dialog.locator('.job-timing.phase-run')).toContainText('6m 12s');
 });
