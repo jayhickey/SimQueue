@@ -75,7 +75,7 @@ Mutations are sent once. A lost response is reported as unconfirmed; inspect the
 refreshed job state before retrying. Priority changes require the updated daemon;
 upgrade/restart the daemon along with the CLI.
 
-The listener defaults to loopback with a random per-session capability in its URL,
+The listener defaults to loopback with a persistent capability in its URL,
 one valid Host header, no CORS, no external assets, and narrow API routes. Mutations require POST, an HTTP(S) Origin matching the request Host, and an
 explicit action header; cross-origin requests have no CORS permission. Keep
 the URL private: it permits controlling jobs and viewing commands and logs, which may contain secrets.
@@ -108,7 +108,7 @@ path printed by SimQueue. Retain the trailing slash. Both devices must have
 Tailscale connected and the tailnet policy must permit access. Follow Tailscale's
 HTTPS setup prompt if needed. An extra rewriting proxy is not required.
 The Serve configuration persists, but the dashboard process must remain running;
-restarting it generates a new private path. Share the link only with trusted users:
+restarting it reuses the saved private path. Share the link only with trusted users:
 it grants access to logs and job controls. This does not configure Tailscale or
 change existing Serve routes automatically.
 
@@ -124,7 +124,33 @@ The installation and service worker are scoped to the private URL path. No queue
 responses, logs, actions or app shell are stored in an offline cache. An offline
 launch shows a connection message; there is no offline job control, background
 sync or push notification support. Tailscale must be connected for remote access.
-Restarting the dashboard changes its private URL, so reinstall from the new link.
+The private path is saved as `dashboard_token` in the daemon's `config.json` and
+survives dashboard restarts, app updates, and machine reboots. Keep the same
+hostname and port (use `--port` or the app's saved settings) for a stable PWA URL.
+The default CLI port 0 still chooses a new available port.
+
+On the first app launch (or CLI dashboard launch) after upgrading, a missing token is generated and
+written automatically, preserving the other config values. A missing config file
+is created. CLI and menu bar dashboards using the same state directory share this
+token. The config is kept owner-only (0600); protect backups too. No daemon restart
+is needed to initialize or rotate the token.
+
+Older releases kept tokens only in memory. To preserve an existing legacy PWA
+link, copy its UUID path segment into the `dashboard_token` JSON string before
+starting the upgraded dashboard. Otherwise this first upgrade creates a new path
+once; subsequent upgrades keep it. Do not commit this credential to Git.
+
+To deliberately revoke existing links:
+
+```sh
+simq dashboard --rotate-token
+```
+
+Use the same `--state-dir` if you configured one. Reopen the menu bar dashboard or
+rerun `simq dashboard` to obtain the new URL, then replace installed PWA links.
+Running dashboards read the saved token on requests, so rotation also invalidates
+the old path without restarting them. Invalid/unreadable configuration fails
+closed rather than silently issuing a replacement token or accepting an old one.
 
 ## Reverse proxy on another machine
 

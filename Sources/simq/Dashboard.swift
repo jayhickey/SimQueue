@@ -16,8 +16,17 @@ struct Dashboard: ParsableCommand {
     var bindAddress = "127.0.0.1"
     @Flag(help: "Print the URL without opening a browser.") var noOpen = false
 
+    @Flag(help: "Rotate the saved dashboard token, invalidating existing links, then exit.") var rotateToken = false
+
     func run() throws {
-        let server = try DashboardServer(port: port, bindAddress: bindAddress, socketPath: connection.paths.socketPath)
+        if rotateToken {
+            _ = try DashboardTokenStore(configPath: connection.paths.configPath).rotate()
+            print("Dashboard token rotated. Reopen the dashboard for its new URL; saved PWA links must be replaced.")
+            return
+        }
+        let server = try DashboardServer(
+            port: port, bindAddress: bindAddress, socketPath: connection.paths.socketPath,
+            configPath: connection.paths.configPath)
         FileHandle.standardOutput.write(Data("SimQueue dashboard: \(server.url)\n".utf8))
         FileHandle.standardOutput.write(
             Data("Ctrl-C to stop. Keep this URL private: it grants job control and access to commands and logs.\n".utf8)
