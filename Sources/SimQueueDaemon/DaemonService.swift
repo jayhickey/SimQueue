@@ -656,8 +656,13 @@ public final class DaemonService: @unchecked Sendable {
                 try fileSystem.removeItem(path)
                 if fileSystem.fileExists(path) { throw EngineError.cleanupNotVerified(path) }
             } catch { failure = "\(error)" }
-            try locked {
-                try engine.finishArtifactRemoval(intent, failure: failure, now: engine.environment.clock.now())
+            do {
+                try locked {
+                    try engine.finishArtifactRemoval(intent, failure: failure, now: engine.environment.clock.now())
+                }
+            } catch {
+                result.failures.append("\(path): could not record cleanup outcome: \(error)")
+                throw error
             }
             if let failure { result.failures.append("\(path): \(failure)") } else { result.removed.append(path) }
         }

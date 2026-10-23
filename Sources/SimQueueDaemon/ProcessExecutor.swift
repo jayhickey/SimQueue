@@ -113,7 +113,10 @@ public final class ProcessExecutor: JobExecutor {
         let result: ResultClass
         let message: String
         var exitCode: Int32? = nil
+        var storageUnavailable = false
     }
+
+    private struct StorageUnavailable: Error { let message: String }
 
     private enum PreparationState {
         case queued(PreparationWork)
@@ -259,18 +262,23 @@ public final class ProcessExecutor: JobExecutor {
         guard let command = work.job.command else {
             return .failure(.init(result: .commandFailure, message: "job has no command"))
         }
+        @Sendable func validateStorage(_ root: String) throws {
+            do { try work.storageCheck(root) } catch {
+                throw StorageUnavailable(message: String(describing: error))
+            }
+        }
         do {
-            try work.storageCheck(work.root)
+            try validateStorage(work.root)
             work.hook?(.directories)
             let fileSystem = StorageFileSystem(
-                base: RootedFileSystem(roots: [work.root]), roots: [work.root], validate: work.storageCheck)
+                base: RootedFileSystem(roots: [work.root]), roots: [work.root], validate: validateStorage)
             try fileSystem.createDirectory(work.directory)
             try fileSystem.createDirectory(Self.tmpDirectory(directory: work.directory))
             let header =
                 "=== simq \(work.job.id) attempt \(work.job.attempt) at \(Timestamp(work.now).rfc3339): "
                 + command.argv.joined(separator: " ") + (command.cwd.map { " (in \($0))" } ?? "") + "\n"
             work.hook?(.logOpen)
-            try work.storageCheck(work.root)
+            try validateStorage(work.root)
             let descriptor = open(work.logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard descriptor >= 0 else {
                 throw ProcessControlError.system(call: "open \(work.logPath)", errno: errno)
@@ -310,6 +318,8 @@ public final class ProcessExecutor: JobExecutor {
             }
             transferred = true
             return .success(PreparedStart(descriptor: descriptor, executable: executable))
+        } catch let failure as StorageUnavailable {
+            return .failure(.init(result: .artifactFailure, message: failure.message, storageUnavailable: true))
         } catch {
             return .failure(.init(result: .artifactFailure, message: "cannot write \(work.logPath): \(error)"))
         }
@@ -356,6 +366,9 @@ public final class ProcessExecutor: JobExecutor {
         switch outcome {
         case .success(let value): prepared = value
         case .failure(let failure):
+            // The drive may already be back by the time this off-lock result is
+            // consumed. Storage availability failures never spend a job attempt.
+            if failure.storageUnavailable { return }
             _ = try store.finish(
                 jobID: job.id, result: failure.result, message: failure.message,
                 commandExitCode: failure.exitCode, now: now)

@@ -186,6 +186,33 @@ final class BackgroundRetentionTests: XCTestCase {
         XCTAssertTrue(summary.failures.first?.contains("inventory unreadable") == true)
     }
 
+    func testCleanupCommitFailureIsReportedAndKeepsItsRecoveryIntent() throws {
+        let fs = FakeFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let target = daemon.paths.jobsRoot + "/2020-01-01/J-a"
+        try fs.createDirectory(target)
+        fs.sizes[target] = 100
+        try daemon.side.database.execute(
+            """
+            CREATE TRIGGER reject_cleanup_commit BEFORE DELETE ON action_intents
+            WHEN OLD.audit_type = 'artifact_removed'
+            BEGIN SELECT RAISE(FAIL, 'injected cleanup commit failure'); END;
+            """)
+        XCTAssertThrowsError(try daemon.result(.gc(GCParams(apply: true))))
+        let summary = try XCTUnwrap(status(daemon).lastCleanup)
+        XCTAssertEqual(summary.failureCount, 1)
+        XCTAssertEqual(summary.removedCount, 0, "uncommitted outcomes are not confirmed removals")
+        XCTAssertTrue(summary.failures.first?.contains("could not record cleanup outcome") == true)
+        XCTAssertFalse(fs.fileExists(target), "disk removal happened before the failed commit")
+        XCTAssertEqual(try daemon.side.pendingActionIntents().count, 1, "restart recovery still owns the outcome")
+    }
+
     func testDashboardCannotApplyInReportOnlyMode() throws {
         var settings = config()
         settings.reliability.cleanupMode = .reportOnly
