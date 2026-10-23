@@ -44,8 +44,11 @@ let package = Package(
         // Opt-in MCP server (`simq mcp`): a thin wrapper over the socket protocol.
         .target(name: "SimQueueMCP", dependencies: ["SimQueueProtocol", "SimQueueIPC"]),
         .target(
-            name: "SimQueueDashboard", dependencies: ["SimQueueCore", "SimQueueProtocol", "SimQueueIPC"]
+            name: "SimQueueDashboard", dependencies: ["SimQueueCore", "SimQueueProtocol", "SimQueueIPC"],
+            plugins: [.plugin(name: "DashboardAssetsPlugin")]
         ),
+        .executableTarget(name: "DashboardAssetCompiler"),
+        .plugin(name: "DashboardAssetsPlugin", capability: .buildTool(), dependencies: ["DashboardAssetCompiler"]),
         // Daemon: request handling, run loop, single-instance lock, doctor, fake executor.
         .target(
             name: "SimQueueDaemon",

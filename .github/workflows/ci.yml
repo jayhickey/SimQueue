@@ -29,6 +29,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Web/dashboard/package-lock.json
+      - name: Build embedded dashboard
+        working-directory: Web/dashboard
+        run: npm ci --no-audit --no-fund && npm run build
       - name: Isolated paths and ARM64 toolchain
         run: |
           set -eu
@@ -109,11 +117,22 @@ jobs:
           set -euo pipefail
           BIN="$(/usr/bin/swift build --arch arm64 --scratch-path "$SIMQ_CI_ROOT/build" --show-bin-path)"
           test "$("$BIN/simq" --version)" = "$("$BIN/simqd" --version)"
+          echo "SIMQ_BIN_DIR=$BIN" >> "$GITHUB_ENV"
           "$BIN/simq" --help >/dev/null
           "$BIN/simqd" run --foreground --backend fake --probe fake \
             --exit-after-startup --state-dir "$SIMQ_CI_ROOT/smoke"
-      - name: Dashboard JavaScript checks
-        run: node Tests/Dashboard/dashboard.test.cjs
+      - name: Dashboard model and PWA checks
+        run: |
+          node Tests/Dashboard/dashboard.test.cjs
+          npm --prefix Web/dashboard run format:check
+          npm --prefix Web/dashboard test
+      - name: Dashboard Chromium and WebKit interaction checks
+        working-directory: Web/dashboard
+        run: |
+          npx playwright install chromium webkit
+          npm run test:browser
+          npm run test:packaged -- --bin-dir "$SIMQ_BIN_DIR"
+
       - name: Notarization release control flow (fake tools)
         run: |
           python3 Tests/Release/notarization_test.py
@@ -126,6 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/swift format lint --strict --recursive Package.swift Sources Tests
+          /usr/bin/swift format lint --strict --recursive Plugins
           /usr/bin/swift format lint --strict scripts/verify-sparkle-update.swift
           bash -n scripts/stamp-version.sh scripts/package-release.sh scripts/package-app.sh scripts/notarize-release.sh scripts/fetch-sparkle-tools.sh scripts/package-sparkle-update.sh
       - name: Preserve test log

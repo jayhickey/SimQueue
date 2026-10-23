@@ -6,20 +6,34 @@ its private URL and serves until Ctrl-C. It uses an available port on `127.0.0.1
 selects the daemon state directory. It does not start or replace the daemon. Start
 or inspect your configured daemon with `simq status` if the view is disconnected.
 
-The dashboard shows:
+The Runner vitals dashboard follows the system light/dark preference. Desktop
+uses a job column and a supporting activity/storage/runner column; phone screens
+stack cards without horizontally scrolling tables.
 
-- Running, queued and preparing counts; admission state, health and global holds.
-- Active jobs with dispatch position, priority and per-job waiting explanations.
-- Up to 100 retained terminal jobs, ordered by submission (matching `simq jobs`).
-- Search by command, project, kind, submitter or ID, plus project/state filters.
-- When each job was queued and when it started, in your local time (`Oct 22, 12:43 PM`;
-  a dash until it starts; hover for the exact timestamp).
-- Separate queue wait, preparation and execution durations, and execution overlap
-  for the latest 20 started jobs in the filtered window.
-- Job details from `explain`: exact command argv, directory, commit, submitter,
-  attempts, deadlines, simulators, peak process-group memory and artifact paths.
-- A live tail of the latest 32 KiB of output for the selected job. Use `simq logs JOB`
-  for the full output. Artifact paths are displayed, not served as files.
+- A runner status sentence and warning chips show admission holds, low disk,
+  memory pressure, health problems and recent failed jobs. Warning links open the
+  relevant job or storage review. Runner status always describes the whole machine.
+- Four cards show interval CPU utilization (separate from load average), available
+  memory/pressure/swap, state-volume free space relative to the configured floor,
+  and categorical thermal state. Missing readings display unavailable. Thermal
+  state is not a temperature measurement.
+- Small SVG trend lines labeled **this tab** retain at most 120 fresh samples per
+  metric in memory. Duplicate samples are ignored and missing/disconnected periods
+  leave gaps. They start with this tab, not daemon history, and are lost on reload.
+- Running/preparing cards show elapsed time, wait/prep phases, priority and granted
+  simulators. Waiting cards use the daemon's dispatch positions and explanations.
+  No completion percentage is invented for arbitrary commands.
+- Recent results show up to 12 rows initially, expandable to the available window.
+  The API retains the last 100 terminal submissions; rows are ordered by completion
+  within that window. Summary statistics apply to the displayed, filtered window.
+  Pass rate includes successes and failures (including infrastructure, interruption
+  and timeout), excludes canceled/expired jobs, and median execution uses only known
+  valid start/end durations. Other outcomes remain separately counted.
+- Search covers command, project, kind, submitter and ID, with project/state filters.
+  The activity timeline shows execution overlap for up to 20 latest started jobs.
+- Job details retain exact command argv, directories, commit, submitter, attempts,
+  deadlines, simulator information, peak process-group memory and artifact paths.
+  Artifacts are listed as paths, not served as files.
 
 Labels combine the caller's project with its kind, falling back to the command
 executable or job ID. No new naming or scheduling semantics are introduced.
@@ -28,12 +42,16 @@ from admission to start; execution runs from start to completion. Missing phases
 show a dash. Retries retain the original submission timestamp, so wait includes
 prior attempts; prep, execution, simulator and memory details describe the latest
 attempt. Snapshots make separate read requests and can briefly straddle a state
-transition. Active lists are bounded at 10,000 entries; header counts come directly
-from status and can exceed the displayed list.
+transition. The API bounds active jobs at 10,000; waiting cards render in batches
+of 30. Runner counts can exceed the filtered/displayed list.
 
-Polling happens every three seconds after the previous request completes, while
-the tab is visible. On failure, the last snapshot stays visible with a stale-data
-warning. Timing values stop at that snapshot rather than suggesting fresh data.
+One shared snapshot poll runs three seconds after the previous request completes,
+only while visible. Failures back off to at most 30 seconds. **Retry now** and
+returning to the tab trigger a refresh without overlapping requests. On failure,
+the last snapshot stays visible with a stale warning and disabled mutation controls;
+timings freeze at that snapshot. Recovery requires no page reload. Job cards retain
+DOM identity during updates, preserving normal scrolling and focus without scroll
+restoration or touch-gesture hacks.
 
 ## Live run output
 
@@ -65,7 +83,7 @@ confirmation, then uses the daemon's existing cancellation and ownership-safe
 cleanup. Cancellation acceptance does not mean cleanup has already finished.
 
 Queued jobs also have **↑** and **↓** buttons to change base priority by 10 and a
-**Priority…** button to enter an exact integer from 0 to 100. Higher runs first;
+**P…** button to enter an exact integer from 0 to 100. Higher runs first;
 aging and host resource gates still apply. This does not preempt running jobs or
 bypass admission holds. Once a job is admitted its priority cannot change. Races
 with admission/completion return an error and the next snapshot updates the view.
@@ -81,7 +99,7 @@ explicit action header; cross-origin requests have no CORS permission. Keep
 the URL private: it permits controlling jobs and viewing commands and logs, which may contain secrets.
 Other processes/users on the same host are not a security isolation boundary.
 There are no retry, drain or arbitrary file/command endpoints.
-No web dependencies or separate asset installation are required.
+No runtime web dependencies or separate asset installation are required.
 
 ## Menu bar access
 
@@ -197,17 +215,14 @@ matched only to live ownership ledger IDs. Missing size readings remain unknown;
 shared simulator runtimes and global Xcode caches are excluded. Simulator data is
 visibility-only here: artifact cleanup never deletes a simulator or template.
 
-**Clean eligible artifacts…** asks for confirmation and schedules a fresh retention
-pass. It rechecks ownership and eligibility before each removal, protects active
-jobs and pending cleanup, respects configured pin/retention rules and cleanup mode,
-and removes at most 20 targets or the configured per-pass maximum, whichever is
-smaller. Pins remain exempt from budget cleanup but have their existing configured
-age retention. No arbitrary paths or global Xcode caches can be deleted. Requests
-are not retried automatically; refresh after an unconfirmed response. Maintenance
-blocks new dashboard storage requests; errors and partial failures appear in the
-report. Review again after cleanup for current sizes. Network requests return
-promptly while a scan runs; an individual existing filesystem size walk can still
-be slow on a large or unhealthy volume.
+**Review cleanup** opens the same read-only review with eligible targets, unknown
+sizes, retention/pin policy, cleanup mode and last-pass failures. It does not delete
+files. Use `simq gc` to review current candidates and `simq gc --apply` to apply the
+existing retention policy from the command line. The existing backend cleanup API
+is unchanged; this UI does not invoke it. Review requests are sent once, never
+retried automatically after an ambiguous response. Maintenance blocks new storage
+requests. An individual existing filesystem size walk can still be slow on a large
+or unhealthy volume.
 
 Retention already runs automatically under `age_rules.artifact_retention_days` and
 `age_rules.artifact_budget_gib` in config.json. The report shows the actual policy,
@@ -238,3 +253,44 @@ active work and pinned runs; it is a cleanup target rather than a hard quota.
 Admission automatically resumes on a subsequent tick once free space is readable
 and above the threshold on all required volumes. It never cancels running jobs to
 recover space. The dashboard reports the effective policy and the actual hold.
+
+## Frontend development and packaging
+
+Node 22 is a development dependency, not a dashboard runtime. The generated JavaScript
+and stylesheet have gzip size budgets of 24 KiB and 6 KiB respectively (enforced by
+the build). The server continues to serve the embedded assets directly. Before a Swift build:
+
+```sh
+cd Web/dashboard
+npm ci --no-audit --no-fund
+npm run build
+cd ../..
+```
+
+The TypeScript/Preact entry point, CSS, manifest and network-only service worker live
+in `Web/dashboard/src`. esbuild writes minified assets to `.build/dashboard`. The
+SwiftPM `DashboardAssetsPlugin` embeds those assets in a generated Swift source in
+the build directory, so copied executables still serve the whole app without a
+resource bundle. Generated assets, npm dependencies and browser evidence are ignored.
+CI, release and nightly workflows prepare assets before compiling Swift. Rebuild
+web assets after frontend changes; SwiftPM tracks their contents as build inputs.
+
+```sh
+npm --prefix Web/dashboard test
+node Tests/Dashboard/dashboard.test.cjs
+cd Web/dashboard
+npx playwright install chromium webkit
+npm run test:browser
+```
+
+Browser tests serve disposable fixtures with the dashboard's content-security
+policy. They never reach the daemon or simulators. They cover light/dark responsive
+states, missing metrics, offline recovery, focus/scroll retention, safe text,
+confirmation/priority races, storage review and log interactions. WebKit emulation
+is useful browser evidence, not a claim of validation on a physical iPhone.
+
+For an opt-in 60-second Chromium heap/main-thread profile against the synthetic
+fixture, run `npm run profile` in `Web/dashboard`. `-- --baseline-ref REF` also
+profiles a historical revision that still embeds assets in DashboardAssets.swift.
+The profile uses a separate loopback fixture port and writes ignored evidence to
+`.build/dashboard/performance.json`; no daemon or simulator is contacted.

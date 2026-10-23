@@ -1,0 +1,24 @@
+{
+  "name": "simqueue-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "test": "node --test tests/model.test.mjs",
+    "test:browser": "playwright test",
+    "format": "prettier --write src tests build.mjs playwright.config.ts .prettierrc.json package.json tsconfig.json",
+    "format:check": "prettier --check src tests build.mjs playwright.config.ts .prettierrc.json package.json tsconfig.json",
+    "profile": "node tests/performance.mjs",
+    "test:packaged": "node tests/packaged.mjs"
+  },
+  "dependencies": {
+    "preact": "10.27.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "esbuild": "0.25.11",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  }
+}
