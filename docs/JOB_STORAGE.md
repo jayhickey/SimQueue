@@ -31,6 +31,10 @@ intentionally recreated on the internal disk. Cleanup checks availability too.
 
 This is basic availability protection. It does not pin a volume UUID, detect a
 replacement disk, or guarantee writes/cleanup through a disconnect/replacement race.
-Do not disconnect storage during jobs or cleanup. The state-volume disk admission
-threshold (`host.min_free_disk_gib`, default 20 GiB) is the only disk floor; output free
-space is diagnostic, not an additional threshold. A command may still choose its own output paths outside managed storage.
+Do not disconnect storage during jobs or cleanup. The existing disk admission
+threshold (`host.min_free_disk_gib`, default 20 GiB, 0 disables) also applies to the
+system and required job-output volumes. Low or unreadable output free space holds
+new work without interrupting running jobs; admission resumes automatically once
+space recovers. The dashboard shows the actual hold and offers a background storage
+review with a cleanup preview (see [the dashboard guide](DASHBOARD.md)). A command
+may still choose its own output paths outside managed storage.
