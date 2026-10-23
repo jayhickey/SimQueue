@@ -67,13 +67,14 @@ final class DashboardTokenTests: XCTestCase {
         }
     }
 
-    func testSymlinkConfigIsRejectedWithoutTouchingTarget() throws {
+    func testSymlinkConfigIsPreservedAndItsTargetGetsTheToken() throws {
         let path = try configPath()
         let target = path + ".target"
         try Data("{}".utf8).write(to: URL(fileURLWithPath: target))
         try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: target)
-        XCTAssertThrowsError(try DashboardTokenStore(configPath: path).loadOrCreate())
-        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "{}")
+        let token = try DashboardTokenStore(configPath: path).loadOrCreate()
+        XCTAssertEqual(try DashboardTokenStore(configPath: target).current(), token)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: path), target)
     }
 
     func testConcurrentFirstLaunchesAgreeOnOneToken() throws {

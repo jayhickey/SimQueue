@@ -11,7 +11,11 @@ import Foundation
 /// Shared by CLI and app dashboards for one daemon configuration.
 public struct DashboardTokenStore {
     public let configPath: String
-    public init(configPath: String) { self.configPath = configPath }
+    public init(configPath: String) {
+        // Match project onboarding: preserve a configured symlink and atomically
+        // replace its resolved target rather than destroying the link.
+        self.configPath = URL(fileURLWithPath: configPath).resolvingSymlinksInPath().path
+    }
 
     public func loadOrCreate() throws -> String { try update(rotate: false) }
     public func rotate() throws -> String { try update(rotate: true) }
