@@ -39,10 +39,12 @@ public enum Method: String, Sendable, Codable, CaseIterable {
 
 /// `gc`: list what artifact retention would remove now; remove it with `apply`.
 public struct GCParams: Sendable, Equatable, Codable {
+    public var background: Bool?
     /// Nil or false: dry run (changes nothing).
     public var apply: Bool?
 
-    public init(apply: Bool? = nil) {
+    public init(apply: Bool? = nil, background: Bool? = nil) {
+        self.background = background
         self.apply = apply
     }
 }
@@ -60,6 +62,7 @@ public struct GCEntry: Sendable, Equatable, Codable {
 }
 
 public struct GCResult: Sendable, Equatable, Codable {
+    public var scheduled: Bool?
     public var applied: Bool
     /// Everything retention (age rules and the size budget) would remove now.
     public var candidates: [GCEntry]
@@ -71,8 +74,9 @@ public struct GCResult: Sendable, Equatable, Codable {
 
     public init(
         applied: Bool, candidates: [GCEntry], removed: [String] = [], failures: [String] = [],
-        budgetBytes: UInt64? = nil
+        budgetBytes: UInt64? = nil, scheduled: Bool? = nil
     ) {
+        self.scheduled = scheduled
         self.applied = applied
         self.candidates = candidates
         self.removed = removed
@@ -81,7 +85,7 @@ public struct GCResult: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case applied, candidates, removed, failures
+        case applied, candidates, removed, failures, scheduled
         case budgetBytes = "budget_bytes"
     }
 }
@@ -979,16 +983,24 @@ public struct DaemonInfo: Sendable, Equatable, Codable {
 }
 
 public struct StorageInfo: Sendable, Equatable, Codable {
+    public var systemFreeBytes: UInt64?
+    public var minimumFreeBytes: UInt64?
     public var stateDirectory: String
     public var jobOutputRoot: String
     public var available: Bool
     public var freeBytes: UInt64?
     public var failure: String?
-    public init(stateDirectory: String, jobOutputRoot: String, available: Bool, freeBytes: UInt64?, failure: String?) {
+    public init(
+        stateDirectory: String, jobOutputRoot: String, available: Bool, freeBytes: UInt64?, failure: String?,
+        systemFreeBytes: UInt64? = nil, minimumFreeBytes: UInt64? = nil
+    ) {
+        self.systemFreeBytes = systemFreeBytes; self.minimumFreeBytes = minimumFreeBytes
         self.stateDirectory = stateDirectory; self.jobOutputRoot = jobOutputRoot
         self.available = available; self.freeBytes = freeBytes; self.failure = failure
     }
     enum CodingKeys: String, CodingKey {
+        case systemFreeBytes = "system_free_bytes"
+        case minimumFreeBytes = "minimum_free_bytes"
         case stateDirectory = "state_directory"
         case jobOutputRoot = "job_output_root"
         case available
@@ -997,7 +1009,45 @@ public struct StorageInfo: Sendable, Equatable, Codable {
     }
 }
 
+public struct ArtifactStorageInfo: Sendable, Equatable, Codable {
+    public struct Category: Sendable, Equatable, Codable {
+        public var name: String
+        public var bytes: UInt64
+        public var count: Int
+        public var unknownSizes: Int
+        public init(name: String, bytes: UInt64 = 0, count: Int = 0, unknownSizes: Int = 0) {
+            self.name = name; self.bytes = bytes; self.count = count; self.unknownSizes = unknownSizes
+        }
+    }
+    public var sampledAt: Double
+    public var categories: [Category]
+    public var candidates: [GCEntry]
+    public var candidateCount: Int
+    public var reclaimableBytes: UInt64
+    public var unknownCandidateSizes: Int
+    public var retention: ArtifactRetention
+    public var cleanupMode: String
+    public var cleanupAt: Double?
+    public var removedCount: Int
+    public var failureCount: Int
+    public var error: String?
+    public init(
+        sampledAt: Double, categories: [Category], candidates: [GCEntry], candidateCount: Int,
+        reclaimableBytes: UInt64, unknownCandidateSizes: Int, retention: ArtifactRetention, cleanupMode: String,
+        removedCount: Int = 0, failureCount: Int = 0, error: String? = nil
+    ) {
+        self.sampledAt = sampledAt; self.categories = categories; self.candidates = candidates
+        self.candidateCount = candidateCount; self.reclaimableBytes = reclaimableBytes
+        self.unknownCandidateSizes = unknownCandidateSizes; self.retention = retention; self.cleanupMode = cleanupMode
+        self.cleanupAt = nil
+        self.removedCount = removedCount; self.failureCount = failureCount; self.error = error
+    }
+}
+
 public struct StatusResult: Sendable, Equatable, Codable {
+    public var host: HostSnapshot?
+    public var artifactStorage: ArtifactStorageInfo?
+    public var storageReviewRunning: Bool?
     public var storage: StorageInfo?
     public var daemon: DaemonInfo
     public var queued: Int
@@ -1029,8 +1079,10 @@ public struct StatusResult: Sendable, Equatable, Codable {
         health: HealthInfo? = nil,
         templateHint: String? = nil,
         drainComplete: Bool? = nil,
-        storage: StorageInfo? = nil
+        storage: StorageInfo? = nil, host: HostSnapshot? = nil, artifactStorage: ArtifactStorageInfo? = nil,
+        storageReviewRunning: Bool? = nil
     ) {
+        self.host = host; self.artifactStorage = artifactStorage; self.storageReviewRunning = storageReviewRunning
         self.storage = storage
         self.templateHint = templateHint
         self.drainComplete = drainComplete
@@ -1047,7 +1099,8 @@ public struct StatusResult: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case daemon, queued, admitted, running, paused, draining, health, storage
+        case daemon, queued, admitted, running, paused, draining, health, storage, host, artifactStorage,
+            storageReviewRunning
         case drainComplete = "drain_complete"
         case loadThrottled = "load_throttled"
         case globalWaitReasons = "global_wait_reasons"
@@ -1060,6 +1113,9 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        host = try container.decodeIfPresent(HostSnapshot.self, forKey: .host)
+        artifactStorage = try container.decodeIfPresent(ArtifactStorageInfo.self, forKey: .artifactStorage)
+        storageReviewRunning = try container.decodeIfPresent(Bool.self, forKey: .storageReviewRunning)
         storage = try container.decodeIfPresent(StorageInfo.self, forKey: .storage)
         daemon = try container.decode(DaemonInfo.self, forKey: .daemon)
         queued = try container.decode(Int.self, forKey: .queued)
@@ -1079,6 +1135,9 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(host, forKey: .host)
+        try container.encodeIfPresent(artifactStorage, forKey: .artifactStorage)
+        try container.encodeIfPresent(storageReviewRunning, forKey: .storageReviewRunning)
         try container.encodeIfPresent(storage, forKey: .storage)
         try container.encode(daemon, forKey: .daemon)
         try container.encode(queued, forKey: .queued)

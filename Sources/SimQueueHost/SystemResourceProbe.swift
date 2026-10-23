@@ -15,6 +15,7 @@ import SimQueueCore
 /// has a timeout; a reading that fails throws, so admission holds rather than guessing.
 /// Parsers are pure and tested against recorded macOS output.
 public struct SystemResourceProbe: ResourceProbe {
+    private let cpuSampler = CPUSampler()
     public var runner: ToolRunner
     public var diskPath: String
     #if canImport(Darwin)
@@ -81,7 +82,7 @@ public struct SystemResourceProbe: ResourceProbe {
             sampledAt: now, totalMemoryBytes: ProcessInfo.processInfo.physicalMemory, availableMemoryBytes: available,
             swapUsedBytes: swapUsed, memoryPressure: pressure, load1: loads[0], load5: loads[1],
             cpuCount: ProcessInfo.processInfo.activeProcessorCount, freeDiskBytes: freeDisk,
-            thermalState: Self.currentThermal())
+            thermalState: Self.currentThermal(), cpuUsagePercent: cpuSampler.sample())
     }
 
     private func toolReadings() throws -> (available: UInt64, swap: UInt64, pressure: MemoryPressure) {
@@ -223,5 +224,42 @@ public struct SimProcessProbe: Sendable {
     /// Total %CPU of the sim's own processes (their command runs under `/Devices/<UDID>/`).
     public static func simCPUPercent(_ udid: String, in lines: [ProcessLine]) -> Double {
         lines.filter { $0.command.contains("/Devices/\(udid)/") }.reduce(0) { $0 + $1.cpuPercent }
+    }
+}
+
+/// CPU utilization is a tick delta, not load average. The first sample is unavailable.
+final class CPUSampler: @unchecked Sendable {
+    #if canImport(Darwin)
+        private static let hostPort = mach_host_self()
+    #endif
+    private let lock = NSLock()
+    private var previous: [UInt32]?
+    static func percent(previous: [UInt32]?, current: [UInt32]) -> Double? {
+        guard let previous, previous.count == 4, current.count == 4 else { return nil }
+        let delta = zip(current, previous).map { UInt64($0.0 &- $0.1) }
+        let total = delta.reduce(0, +)
+        guard total > 0 else { return nil }
+        return 100 * Double(total - delta[2]) / Double(total)
+    }
+    func sample() -> Double? {
+        #if canImport(Darwin)
+            lock.lock()
+            defer { lock.unlock() }
+            var info = host_cpu_load_info_data_t()
+            var count = mach_msg_type_number_t(
+                MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    host_statistics(Self.hostPort, HOST_CPU_LOAD_INFO, $0, &count)
+                }
+            }
+            guard result == KERN_SUCCESS else { return nil }
+            let current = [info.cpu_ticks.0, info.cpu_ticks.1, info.cpu_ticks.2, info.cpu_ticks.3]
+            let usage = Self.percent(previous: previous, current: current)
+            previous = current
+            return usage
+        #else
+            return nil
+        #endif
     }
 }

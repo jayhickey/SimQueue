@@ -59,6 +59,21 @@ assert.equal(cells[4].textContent,'—','not started yet');
 elements.get('search').value='';
 console.log('Dashboard JavaScript timing, filtering and safe-text checks passed');
 
+const previousSnapshot=run('snapshot');
+run("snapshot={status:{host:{sampledAt:100,totalMemoryBytes:34359738368,availableMemoryBytes:8589934592,swapUsedBytes:0,memoryPressure:'normal',cpuUsagePercent:40,load1:6.2,load5:8,cpuCount:10,freeDiskBytes:100,thermalState:'nominal'},storage:{system_free_bytes:21474836480,free_bytes:42949672960,minimum_free_bytes:21474836480,available:true},global_wait_reasons:[],storageReviewRunning:false},active:[],recent:[],generatedAt:101};renderMachine();renderStorage()");
+assert.equal(elements.get('machine').children[0].children[1].textContent,'8.0 GiB');
+assert.equal(elements.get('machine').children[1].children[1].textContent,'40%');
+assert.match(elements.get('machine').children[1].children[2].textContent,/Load 6.2 \/ 8.0/);
+assert.equal(elements.get('cleanup-storage').disabled,true,'cleanup requires a reviewed eligible inventory');
+run("snapshot.status={global_wait_reasons:[{summary:'disk is low'}]};renderMachine();renderStorage()");
+assert.equal(elements.get('machine').children[0].children[1].textContent,'Unavailable');
+assert.match(elements.get('admission-health').textContent,/disk is low/);
+assert.equal(elements.get('review-storage').disabled,true,'old daemons never receive background cleanup requests');
+context.savedHealthSnapshot=previousSnapshot;
+run('snapshot=savedHealthSnapshot');
+console.log('Dashboard machine health, unavailable readings and storage capability checks passed');
+
+
 // Independent table offsets survive refreshed rows and updated durations.
 run("table([{id:'J-scroll',project:'test',state:'running',priority:50,queue_time:1,started_at:2}], 'active'); table([{id:'J-done',project:'test',state:'succeeded',priority:50,queue_time:1,started_at:2,finished_at:3}], 'recent')");
 const activeScroller=elements.get('active').firstElementChild;

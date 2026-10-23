@@ -76,6 +76,21 @@ public struct DashboardAPI {
     }
 
     public func mutate(path: String) throws -> Data {
+        if path == "storage/review" || path == "storage/cleanup" {
+            // Older daemons ignore unknown GC fields; never send an apply request
+            // before confirming support for bounded background cleanup.
+            guard case .status(let status) = try observe(.status), status.storageReviewRunning != nil else {
+                throw ProtocolError(.invalidState, "Storage actions require an updated daemon.")
+            }
+            guard case .gc(let result) = try observe(.gc(GCParams(apply: path == "storage/cleanup", background: true)))
+            else {
+                throw DashboardError.unavailable
+            }
+            guard result.scheduled == true else {
+                throw ProtocolError(.invalidState, "Storage actions require an updated daemon.")
+            }
+            return try JSONEncoder().encode(result)
+        }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2, !parts[1].isEmpty, parts[1].utf8.count <= 128,
             parts[1].utf8.allSatisfy({

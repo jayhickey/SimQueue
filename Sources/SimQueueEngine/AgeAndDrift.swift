@@ -166,7 +166,16 @@ extension Engine {
     }
 
     /// The store half consumes an immutable inventory: no directory, existence or size I/O.
+    public struct StorageEntry: Sendable {
+        public var path: String
+        public var category: String
+        public var hasDerivedData: Bool
+        public init(path: String, category: String, hasDerivedData: Bool) {
+            self.path = path; self.category = category; self.hasDerivedData = hasDerivedData
+        }
+    }
     public struct GCPlan: Sendable {
+        public var storageEntries: [StorageEntry] = []
         public var aged: [(path: String, reason: String)]
         public var entries: [BudgetEntry]
         public var budget: UInt64?
@@ -179,7 +188,7 @@ extension Engine {
                 roots: environment.allArtifactsRoots, fileSystem: environment.fileSystem))
     }
 
-    public func gcPlan(now: Double, inventory: GCInventory) throws -> GCPlan {
+    public func gcPlan(now: Double, inventory: GCInventory, includeStorageAccounting: Bool = false) throws -> GCPlan {
         let aged = try inventory.roots.flatMap { root in
             try ageCandidates(directories: inventory.directories.filter { $0.root == root }, now: now)
         }
@@ -188,7 +197,34 @@ extension Engine {
         if budget != nil {
             entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path))
         }
-        return GCPlan(aged: aged, entries: entries, budget: budget)
+        var report = GCPlan(aged: aged, entries: entries, budget: budget)
+        guard includeStorageAccounting else { return report }
+        report.storageEntries = try inventory.directories.filter { !$0.jobID.hasPrefix(".") }.enumerated().map {
+            index, directory in
+            guard index < 200 else {
+                return StorageEntry(
+                    path: directory.path, category: "Unmeasured run directories",
+                    hasDerivedData: directory.hasDerivedData)
+            }
+            let job = try store.job(id: directory.jobID)
+            let category: String
+            if let job {
+                let hasProcesses = try hasOwnedCommandProcesses(job)
+                if !job.state.isTerminal || hasProcesses
+                    || artifactWritersInFlight.contains(job.id)
+                {
+                    category = "Active / cleanup pending"
+                } else if try isPinned(job) {
+                    category = "Pinned"
+                } else {
+                    category = job.state == .succeeded ? "Successful runs" : "Other finished runs"
+                }
+            } else {
+                category = "Untracked managed artifacts"
+            }
+            return StorageEntry(path: directory.path, category: category, hasDerivedData: directory.hasDerivedData)
+        }
+        return report
     }
 
     /// `simq gc`'s disk half (no lock needed): sizes, the budget's picks, and each
