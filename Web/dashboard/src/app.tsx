@@ -237,7 +237,7 @@ function Vitals({
           </div>
           <p>{detail}</p>
           <Sparkline samples={samples} metric={metric} />
-          <span class="trend-label">this tab{stale ? ' · stale' : ''}</span>
+          {stale && <span class="trend-label">Stale</span>}
         </article>
       ))}
     </section>
