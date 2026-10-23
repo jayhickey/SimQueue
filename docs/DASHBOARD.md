@@ -129,7 +129,7 @@ survives dashboard restarts, app updates, and machine reboots. Keep the same
 hostname and port (use `--port` or the app's saved settings) for a stable PWA URL.
 The default CLI port 0 still chooses a new available port.
 
-On the first dashboard launch after upgrading, a missing token is generated and
+On the first app launch (or CLI dashboard launch) after upgrading, a missing token is generated and
 written automatically, preserving the other config values. A missing config file
 is created. CLI and menu bar dashboards using the same state directory share this
 token. The config is kept owner-only (0600); protect backups too. No daemon restart

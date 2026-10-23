@@ -39,6 +39,9 @@
         private var statusLine = NSMenuItem(title: "Connecting…", action: nil, keyEquivalent: "")
 
         func applicationDidFinishLaunching(_ notification: Notification) {
+            // Sparkle relaunches the app after upgrading: initialize the persistent
+            // capability even before the user opens the dashboard for the first time.
+            do { _ = try DashboardTokenStore(configPath: paths.configPath).loadOrCreate() } catch { showError(error) }
             item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.button?.image = NSImage(systemSymbolName: "square.stack", accessibilityDescription: "SimQueue")
             item.button?.target = self
