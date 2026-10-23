@@ -120,7 +120,7 @@ final class DashboardTokenTests: XCTestCase {
         get(savedURL, expected: 200)
         _ = try DashboardTokenStore(configPath: path).rotate()
         XCTAssertNotEqual(worker.server.url, savedURL.absoluteString)
-        get(savedURL, expected: 404)
+        get(savedURL, expected: 403)
         get(try XCTUnwrap(URL(string: worker.server.url)), expected: 200)
         try Data("{broken".utf8).write(to: URL(fileURLWithPath: path))
         get(try XCTUnwrap(URL(string: worker.server.url)), expected: 503)
