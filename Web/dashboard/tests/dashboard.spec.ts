@@ -15,6 +15,37 @@ async function ready(page: Page) {
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
+test('failure banner names the job and opens its log on a narrow phone', async ({ page }) => {
+  const name = 'PR #241 · Unit tests · Tall widget long-quote compatibility';
+  await snapshot(page, (s) => {
+    s.recent[0].kind = name;
+    s.recent[0].finished_at = s.generatedAt;
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await ready(page);
+  const banner = page.locator('.warning-chip.danger');
+  await expect(banner.locator('b')).toHaveText(`mobile · ${name} failed`);
+  await noOverflow(page);
+  const header = page.locator('.app-header');
+  expect(
+    await header.evaluate((el) => parseFloat(getComputedStyle(el).paddingTop)),
+  ).toBeGreaterThanOrEqual(18);
+  await page.screenshot({ path: '../../.build/dashboard/failure-banner-phone.png' });
+  await banner.getByRole('button', { name: 'View log' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('dialog')).toContainText('J-2206');
+});
+test('failure banner falls back to the job ID when name and command are absent', async ({
+  page,
+}) => {
+  await snapshot(page, (s) => {
+    delete s.recent[0].kind;
+    delete s.recent[0].command;
+    s.recent[0].finished_at = s.generatedAt;
+  });
+  await ready(page);
+  await expect(page.locator('.warning-chip.danger b')).toHaveText('mobile · J-2206 failed');
+});
 for (const colorScheme of ['light', 'dark'] as const) {
   test(`complete ${colorScheme} dashboard, missing-data safety and responsive layouts`, async ({
     page,

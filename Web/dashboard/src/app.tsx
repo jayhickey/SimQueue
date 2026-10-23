@@ -346,7 +346,7 @@ function StatusSummary({
           {recentFailure && (
             <div class="warning-chip danger">
               <span>
-                <b>{recentFailure.id} failed</b> ·{' '}
+                <b>{label(recentFailure)} failed</b> ·{' '}
                 {duration(now - (epoch(recentFailure.finished_at) ?? now))} ago
               </span>
               <button onClick={() => openJob(recentFailure.id)}>View log</button>
