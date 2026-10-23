@@ -1,10 +1,12 @@
 # SimQueue
 
-**A local job queue and reusable iOS Simulator pool for your Mac.**
+**A shared build queue and reusable iOS Simulator pool for parallel iOS development.**
 
 SimQueue coordinates builds, tests, and other commands sharing an Apple Silicon Mac. Submit work from your terminal, CI workflows, or coding agents, and it runs independent jobs together as host resources become available. Each test job runs its complete suite on its leased simulator.
 
-If you use a Mac mini as a shared build machine, SimQueue gives all of those callers one place to coordinate. You can queue the next batch of work, see why a job is waiting, and reuse booted simulators between runs.
+Separate worktrees keep code changes apart, but their builds and simulator tests still share the Mac's CPU, memory, and devices. SimQueue gives coding-agent swarms, developers, and CI workflows one place to coordinate that work. More agents can submit jobs while execution stays bounded by host capacity; waiting jobs do not each need a booted simulator.
+
+Whether you develop on your own Mac or use a Mac mini as a shared build machine, you can queue the next batch of work, see why a job is waiting, and reuse booted simulators between runs.
 
 - **Use the Mac's available capacity.** Admission responds to current memory pressure, CPU load, swap growth, thermal state, disk space, and simulator availability. Builds and lint can run without a simulator.
 - **Share a simulator pool.** Select one host template, then let SimQueue create, boot, lease, and reuse its clones. Request an app reset or a fresh simulator when your job needs it.
@@ -67,7 +69,13 @@ The app can run its own signed daemon from a stable path inside
 The app includes Sparkle update checks and waits for jobs before updating its
 bundled daemon.
 
-## Use with coding agents
+## Use with coding-agent swarms
+
+SimQueue's goal is to let large agent swarms share a bounded pool of build and simulator capacity. Agents work in separate checkouts and submit independent jobs to the same local queue. SimQueue starts jobs as resources become available and leases simulators for the jobs that need them. A larger swarm can have more work waiting without running every build or booting a simulator for every agent at once.
+
+SimQueue coordinates the commands agents submit; your agent harness manages the agents and their code changes. Route every build and simulator test through the queue, use the supplied simulator and artifact paths, and bound each command's compiler workers. Host admission checks do not enforce a command's memory or worker limits.
+
+The queue is bounded too: default backlog limits are 128 queued jobs per submitter/project and 1024 globally. Handle queue-full responses as backpressure instead of repeatedly resubmitting. These limits describe queue capacity, not a validated agent count or a promise of build throughput. See [admission and capacity](docs/ARCHITECTURE.md#admission-and-capacity) for scheduling details.
 
 Run `simq agent-guide` for the installed version's concise operational instructions.
 It works offline without starting the daemon. `simq docs` prints the installed full
