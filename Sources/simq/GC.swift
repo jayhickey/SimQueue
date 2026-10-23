@@ -30,7 +30,18 @@ struct GC: ParsableCommand {
         }
         let budget = result.budgetBytes.map { " (budget \(Self.size($0)))" } ?? ""
         if result.applied {
-            print("removed \(result.removed.count) of \(result.candidates.count), \(Self.size(total))\(budget)")
+            if let summary = result.cleanup {
+                print(
+                    "removed \(summary.removedCount) of \(result.candidates.count), \(Self.size(summary.removedBytes)) logical bytes\(summary.unknownRemovedSizes > 0 ? " + unknown sizes" : "")\(budget)"
+                )
+                print(
+                    "\(summary.deferredCount) deferred or protected; \(summary.unavailableRoots.count) unavailable roots"
+                )
+                for root in summary.unavailableRoots { print("storage: \(root)") }
+            } else {
+                print(
+                    "removed \(result.removed.count) of \(result.candidates.count); removed size unavailable\(budget)")
+            }
             for failure in result.failures { print("failed: \(failure)") }
         } else if !result.candidates.isEmpty {
             print("dry run: \(result.candidates.count) run dirs, \(Self.size(total))\(budget); --apply to remove")

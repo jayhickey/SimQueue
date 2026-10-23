@@ -32,6 +32,9 @@ final class IdlePollingTests: XCTestCase {
             if observed == nil { Thread.sleep(forTimeInterval: 0.01) }
         }
         let firstTick = try XCTUnwrap(observed)
+        // The first tick schedules retention. Idle pacing only applies after
+        // that host work (including its durable cleanup report) has finished.
+        daemon.service.waitForBackgroundWork()
         XCTAssertEqual(daemon.service.nextTickInterval, 5)
         Thread.sleep(forTimeInterval: 0.25)
         guard case .status(let idle) = try daemon.result(.status) else { return XCTFail("no status") }

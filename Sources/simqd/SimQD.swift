@@ -177,6 +177,10 @@ struct Run: ParsableCommand {
         let outputRoot = daemonConfig.jobOutputRoot ?? paths.jobsRoot
         let outputConfiguration = try JobOutputConfiguration.prepare(
             stateDirectory: paths.stateDir, root: outputRoot, store: store, persist: !dryRun)
+        let volumeGuard = try StorageVolumeGuard(path: paths.stateDir + "/storage-volumes.json", persist: !dryRun)
+        // Offline roots keep the daemon available for inspection; admission retries
+        // automatically. Existing bindings are never replaced after an error.
+        for root in outputConfiguration.roots { try? volumeGuard.check(root) }
         if resolved == .simctl {
             let poolSims = try store.poolSims()
             if !poolSims.isEmpty {
@@ -217,10 +221,10 @@ struct Run: ParsableCommand {
                 ? DryRunFileSystem(
                     StorageFileSystem(
                         base: RootedFileSystem(roots: [paths.runsRoot] + outputConfiguration.roots),
-                        roots: outputConfiguration.roots), log: dryRunLog)
+                        roots: outputConfiguration.roots, validate: volumeGuard.check), log: dryRunLog)
                 : StorageFileSystem(
                     base: RootedFileSystem(roots: [paths.runsRoot] + outputConfiguration.roots),
-                    roots: outputConfiguration.roots),
+                    roots: outputConfiguration.roots, validate: volumeGuard.check),
             layout: RunDirectoryLayout(root: paths.runsRoot),
             naming: naming,
             processGraceSeconds: daemonConfig.timeouts.killGraceSeconds,
@@ -273,6 +277,8 @@ struct Run: ParsableCommand {
         let service = DaemonService(
             engine: engine, config: daemonConfig, info: info, executor: jobExecutor, artifacts: artifacts)
         service.storageChecksEnabled = true
+        service.validateStorage = volumeGuard.check
+        (jobExecutor as? ProcessExecutor)?.storageCheck = volumeGuard.check
         let server: DaemonServer
         do {
             server = try DaemonServer(service: service, socketPath: paths.socketPath)

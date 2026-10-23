@@ -224,6 +224,22 @@ retried automatically after an ambiguous response. Maintenance blocks new storag
 requests. An individual existing filesystem size walk can still be slow on a large
 or unhealthy volume.
 
+The storage card shows the last completed cleanup even before an inventory review.
+The report is a single small `last-cleanup.json` file on the state volume, retained
+across restarts. It reports confirmed removed targets and their measured logical
+bytes, separately counts unknown removed sizes, and lists deferred/protected
+candidates, failures (at most 100 details), and unavailable roots. Failed removals
+are never counted as reclaimed bytes. Shared APFS blocks, compression, and
+concurrent writes mean logical bytes removed are not a measured free-space gain.
+Read-only reviews do not reset the last cleanup result.
+
+The review also groups protected/retained run data by active work or pending
+process cleanup, pins, and retention eligibility. These totals include each run's
+DerivedData and results and subtract eligible DerivedData subtrees; they are a
+separate explanation of protection, not extra bytes to add to the composition bar.
+Accounting remains bounded to 200 runs and explicitly marks unknown sizes.
+Missing or replacement drives appear with recovery guidance, never as empty roots.
+
 Retention already runs automatically under `age_rules.artifact_retention_days` and
 `age_rules.artifact_budget_gib` in config.json. The report shows the actual policy,
 not an independent dashboard policy. The existing `host.min_free_disk_gib` threshold

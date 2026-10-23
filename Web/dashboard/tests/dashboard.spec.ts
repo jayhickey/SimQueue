@@ -324,3 +324,38 @@ test('late log responses cannot replace a newly selected job and completed tails
   await expect(page.getByLabel('Job output')).toHaveText('finished output');
   expect(newReads).toBe(1);
 });
+
+test('cleanup accountability shows confirmed bytes, protected data and actionable failures', async ({
+  page,
+}) => {
+  await snapshot(page, (s) => {
+    s.status.lastCleanup = {
+      finishedAt: 1792782000,
+      automatic: true,
+      inventoryIncomplete: true,
+      removedCount: 2,
+      removedBytes: 1048576,
+      unknownRemovedSizes: 1,
+      deferredCount: 3,
+      failureCount: 1,
+      failures: ['Could not remove <unsafe> output'],
+      unavailableRoots: ['Original output drive is disconnected'],
+    };
+    s.status.artifactStorage.protected = [
+      { name: 'Pinned', bytes: 2097152, count: 2, unknownSizes: 1 },
+      { name: 'Active / cleanup pending', bytes: 4194304, count: 1, unknownSizes: 0 },
+    ];
+  });
+  await ready(page);
+  await expect(
+    page.getByText('Inventory incomplete; remaining targets unknown', { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText('2 targets removed', { exact: false })).toBeVisible();
+  await page.getByText('Needs attention', { exact: true }).click();
+  await expect(page.getByText('Could not remove <unsafe> output', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Review storage', exact: true }).first().click();
+  await expect(page.getByRole('heading', { name: 'Protected and retained' })).toBeVisible();
+  await expect(page.getByText('Pinned · 2 runs', { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await noOverflow(page);
+});

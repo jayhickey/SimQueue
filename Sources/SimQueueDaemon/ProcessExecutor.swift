@@ -45,6 +45,7 @@ public final class ProcessExecutor: JobExecutor {
     public var requiresCommand: Bool { true }
     public var drainsProcessGroups: Bool { true }
     public var heldJobIDs: Set<String> = []
+    public var storageCheck: @Sendable (String) throws -> Void = JobStorage.check
 
     public let artifacts: JobArtifacts
     private let processes: any ProcessTable
@@ -94,6 +95,7 @@ public final class ProcessExecutor: JobExecutor {
         let hook: (@Sendable (PreparationStage) -> Void)?
         let environment: [String: String]
         let gitCheckout: GitCheckout
+        let storageCheck: @Sendable (String) throws -> Void
     }
 
     /// Immutable descriptor ownership transferred from the serial preparation worker to
@@ -111,7 +113,10 @@ public final class ProcessExecutor: JobExecutor {
         let result: ResultClass
         let message: String
         var exitCode: Int32? = nil
+        var storageUnavailable = false
     }
+
+    private struct StorageUnavailable: Error { let message: String }
 
     private enum PreparationState {
         case queued(PreparationWork)
@@ -228,7 +233,7 @@ public final class ProcessExecutor: JobExecutor {
         guard let job = try store.job(id: jobID), !job.state.isActive else { return }
         let tmp = Self.tmpDirectory(directory: artifacts.directory(for: job))
         let root = job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root
-        guard (try? JobStorage.check(root)) != nil else { return }
+        guard (try? storageCheck(root)) != nil else { return }
         let fileSystem = RootedFileSystem(roots: [root])
         guard fileSystem.fileExists(tmp) else { return }
         do {
@@ -244,7 +249,8 @@ public final class ProcessExecutor: JobExecutor {
         return PreparationWork(
             job: job, directory: artifacts.directory(for: job), logPath: artifacts.logPath(for: job),
             root: job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root,
-            now: now, hook: beforePreparationStage, environment: environment, gitCheckout: gitCheckout)
+            now: now, hook: beforePreparationStage, environment: environment, gitCheckout: gitCheckout,
+            storageCheck: storageCheck)
     }
 
     /// Only immutable inputs and host I/O: never touches the store or executor state.
@@ -256,16 +262,23 @@ public final class ProcessExecutor: JobExecutor {
         guard let command = work.job.command else {
             return .failure(.init(result: .commandFailure, message: "job has no command"))
         }
+        @Sendable func validateStorage(_ root: String) throws {
+            do { try work.storageCheck(root) } catch {
+                throw StorageUnavailable(message: String(describing: error))
+            }
+        }
         do {
-            try JobStorage.check(work.root)
+            try validateStorage(work.root)
             work.hook?(.directories)
-            let fileSystem = RootedFileSystem(roots: [work.root])
+            let fileSystem = StorageFileSystem(
+                base: RootedFileSystem(roots: [work.root]), roots: [work.root], validate: validateStorage)
             try fileSystem.createDirectory(work.directory)
             try fileSystem.createDirectory(Self.tmpDirectory(directory: work.directory))
             let header =
                 "=== simq \(work.job.id) attempt \(work.job.attempt) at \(Timestamp(work.now).rfc3339): "
                 + command.argv.joined(separator: " ") + (command.cwd.map { " (in \($0))" } ?? "") + "\n"
             work.hook?(.logOpen)
+            try validateStorage(work.root)
             let descriptor = open(work.logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard descriptor >= 0 else {
                 throw ProcessControlError.system(call: "open \(work.logPath)", errno: errno)
@@ -305,6 +318,8 @@ public final class ProcessExecutor: JobExecutor {
             }
             transferred = true
             return .success(PreparedStart(descriptor: descriptor, executable: executable))
+        } catch let failure as StorageUnavailable {
+            return .failure(.init(result: .artifactFailure, message: failure.message, storageUnavailable: true))
         } catch {
             return .failure(.init(result: .artifactFailure, message: "cannot write \(work.logPath): \(error)"))
         }
@@ -315,6 +330,14 @@ public final class ProcessExecutor: JobExecutor {
             _ = try store.finish(
                 jobID: job.id, result: .commandFailure, message: "job has no command; this daemon runs commands",
                 now: now)
+            return
+        }
+        // A transient disconnect must not turn an admitted, unstarted job into a
+        // failed attempt. Retry preparation when the bound filesystem returns.
+        guard (try? storageCheck(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)) != nil else {
+            // A live worker keeps its writer fence until its syscall returns. Ready
+            // descriptors belong to the old mount and must be closed, not reused.
+            if case .working = preparations[job.id] {} else { preparations[job.id] = nil }
             return
         }
         let directory = artifacts.directory(for: job)
@@ -343,12 +366,20 @@ public final class ProcessExecutor: JobExecutor {
         switch outcome {
         case .success(let value): prepared = value
         case .failure(let failure):
+            // The drive may already be back by the time this off-lock result is
+            // consumed. Storage availability failures never spend a job attempt.
+            if failure.storageUnavailable { return }
             _ = try store.finish(
                 jobID: job.id, result: failure.result, message: failure.message,
                 commandExitCode: failure.exitCode, now: now)
             // Preserve pre-start command/git failure artifacts. Completion summary I/O
             // is still synchronous, as it is for a normally completed command.
             if failure.result != .artifactFailure { try writeSummary(jobID: job.id, store: store) }
+            return
+        }
+        do { try storageCheck(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root) } catch {
+            // Discard a prepared descriptor from a disconnected mount. Keep the job
+            // admitted, then prepare again when the original volume becomes available.
             return
         }
         // The off-lock check may be older than this tick. Preserve the existing bounded
@@ -626,6 +657,8 @@ public final class ProcessExecutor: JobExecutor {
 
     private func writeSummary(jobID: String, store: JobStore) throws {
         guard let job = try store.job(id: jobID) else { return }
+        guard (try? storageCheck(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)) != nil
+        else { return }
         var info = JobInfo(job: job, explanation: nil)
         info.logPath = artifacts.logPath(for: job)
         info.runDir = artifacts.directory(for: job)
@@ -633,8 +666,6 @@ public final class ProcessExecutor: JobExecutor {
         info = ArtifactListing.attach(to: info)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-        guard (try? JobStorage.check(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)) != nil
-        else { return }
         let path = artifacts.summaryPath(for: job)
         try? (try encoder.encode(info) + Data("\n".utf8)).write(to: URL(fileURLWithPath: path), options: .atomic)
         // summary.md and the job's own events.jsonl, best effort like job.json.

@@ -61,7 +61,33 @@ public struct GCEntry: Sendable, Equatable, Codable {
     }
 }
 
+/// Last completed retention pass. Removed bytes are measured logical file sizes,
+/// not a claim about free-space deltas on shared/compressed filesystems.
+public struct CleanupSummary: Sendable, Equatable, Codable {
+    public var inventoryIncomplete: Bool?
+    public var finishedAt: Double
+    public var automatic: Bool
+    public var removedCount: Int
+    public var removedBytes: UInt64
+    public var unknownRemovedSizes: Int
+    public var deferredCount: Int
+    public var failureCount: Int
+    public var failures: [String]
+    public var unavailableRoots: [String]
+    public init(
+        finishedAt: Double, automatic: Bool, removedCount: Int, removedBytes: UInt64,
+        unknownRemovedSizes: Int, deferredCount: Int, failureCount: Int, failures: [String], unavailableRoots: [String]
+    ) {
+        self.finishedAt = finishedAt; self.automatic = automatic; self.removedCount = removedCount
+        self.removedBytes = removedBytes; self.unknownRemovedSizes = unknownRemovedSizes
+        self.deferredCount = deferredCount; self.failureCount = failureCount; self.failures = failures
+        self.unavailableRoots = unavailableRoots
+    }
+}
+
 public struct GCResult: Sendable, Equatable, Codable {
+    public var cleanup: CleanupSummary?
+
     public var scheduled: Bool?
     public var applied: Bool
     /// Everything retention (age rules and the size budget) would remove now.
@@ -85,7 +111,7 @@ public struct GCResult: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case applied, candidates, removed, failures, scheduled
+        case applied, candidates, removed, failures, scheduled, cleanup
         case budgetBytes = "budget_bytes"
     }
 }
@@ -1011,6 +1037,8 @@ public struct StorageInfo: Sendable, Equatable, Codable {
 
 public struct ArtifactStorageInfo: Sendable, Equatable, Codable {
     public var notes: [String]?
+    /// Independent of the composition categories: includes protected subtrees too.
+    public var protected: [Category]?
     public struct Category: Sendable, Equatable, Codable {
         public var name: String
         public var bytes: UInt64
@@ -1048,6 +1076,7 @@ public struct ArtifactStorageInfo: Sendable, Equatable, Codable {
 public struct StatusResult: Sendable, Equatable, Codable {
     public var host: HostSnapshot?
     public var artifactStorage: ArtifactStorageInfo?
+    public var lastCleanup: CleanupSummary?
     public var storageReviewRunning: Bool?
     public var storage: StorageInfo?
     public var daemon: DaemonInfo
@@ -1081,8 +1110,9 @@ public struct StatusResult: Sendable, Equatable, Codable {
         templateHint: String? = nil,
         drainComplete: Bool? = nil,
         storage: StorageInfo? = nil, host: HostSnapshot? = nil, artifactStorage: ArtifactStorageInfo? = nil,
-        storageReviewRunning: Bool? = nil
+        storageReviewRunning: Bool? = nil, lastCleanup: CleanupSummary? = nil
     ) {
+        self.lastCleanup = lastCleanup
         self.host = host; self.artifactStorage = artifactStorage; self.storageReviewRunning = storageReviewRunning
         self.storage = storage
         self.templateHint = templateHint
@@ -1101,7 +1131,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case daemon, queued, admitted, running, paused, draining, health, storage, host, artifactStorage,
-            storageReviewRunning
+            storageReviewRunning, lastCleanup
         case drainComplete = "drain_complete"
         case loadThrottled = "load_throttled"
         case globalWaitReasons = "global_wait_reasons"
@@ -1114,6 +1144,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        lastCleanup = try container.decodeIfPresent(CleanupSummary.self, forKey: .lastCleanup)
         host = try container.decodeIfPresent(HostSnapshot.self, forKey: .host)
         artifactStorage = try container.decodeIfPresent(ArtifactStorageInfo.self, forKey: .artifactStorage)
         storageReviewRunning = try container.decodeIfPresent(Bool.self, forKey: .storageReviewRunning)
@@ -1136,6 +1167,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(lastCleanup, forKey: .lastCleanup)
         try container.encodeIfPresent(host, forKey: .host)
         try container.encodeIfPresent(artifactStorage, forKey: .artifactStorage)
         try container.encodeIfPresent(storageReviewRunning, forKey: .storageReviewRunning)

@@ -80,6 +80,35 @@ enum StorageAccounting {
         }
         return categories.values.sorted { $0.name < $1.name }
     }
+    static func protection(
+        _ entries: [Engine.StorageEntry], candidates: [GarbageCollection.Candidate], fileSystem: any FileSystem
+    ) -> [ArtifactStorageInfo.Category] {
+        let eligible = Set(candidates.map(\.path))
+        var groups: [String: ArtifactStorageInfo.Category] = [:]
+        for (index, entry) in entries.enumerated() where !eligible.contains(entry.path) {
+            let reason =
+                ["Pinned", "Active / cleanup pending"].contains(entry.category)
+                ? entry.category : "Within retention / not eligible"
+            var group = groups[reason] ?? .init(name: reason)
+            group.count += 1
+            if index < 200, let total = fileSystem.sizeOfItem(entry.path) {
+                if eligible.contains(entry.path + "/DerivedData") {
+                    if let derived = fileSystem.sizeOfItem(entry.path + "/DerivedData") {
+                        group.bytes += total - min(total, derived)
+                    } else {
+                        group.unknownSizes += 1
+                    }
+                } else {
+                    group.bytes += total
+                }
+            } else {
+                group.unknownSizes += 1
+            }
+            groups[reason] = group
+        }
+        return groups.values.sorted { $0.name < $1.name }
+    }
+
     /// Inventory readings are matched by ledger ID, never by simulator name.
     static func simulators(resources: [OwnedResource], devices: [SimDevice]) -> [ArtifactStorageInfo.Category] {
         var owned: [String: OwnedResourceKind] = [:]

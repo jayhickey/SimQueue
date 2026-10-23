@@ -248,13 +248,16 @@ final class StartPreparationTests: XCTestCase {
         let work: ProcessExecutor.PreparationWork
         var marker: String { root + "/attempts" }
 
-        init(retryable: Bool = false) throws {
+        init(retryable: Bool = false, storageCheck: @escaping @Sendable (String) throws -> Void = JobStorage.check)
+            throws
+        {
             root = testScratchRoot() + "/prep-" + UUID().uuidString.prefix(8)
             try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
             store = try JobStore(path: ":memory:")
             epoch = try store.acquireDaemonLease(ownerID: "first", pid: 1, now: 0)
             executor = ProcessExecutor(artifacts: JobArtifacts(root: root), processes: SystemProcessTable())
             executor.asynchronousPreparation = true
+            executor.storageCheck = storageCheck
             let submitted = try store.submit(
                 JobSubmission(
                     project: "prepare", submitter: "test", retryable: retryable, maxRetries: 1,
@@ -278,6 +281,56 @@ final class StartPreparationTests: XCTestCase {
         guard case .success(let prepared) = try XCTUnwrap(result) else { throw TestFailure("preparation failed") }
         XCTAssertNotEqual(fcntl(prepared.descriptor, F_GETFD), -1)
         return prepared.descriptor
+    }
+
+    func testDisconnectAfterPreparationClosesDescriptorAndKeepsUnstartedJobForRecovery() throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        var prepared: Result<ProcessExecutor.PreparedStart, ProcessExecutor.PreparationFailure>? = fixture.executor
+            .prepareStart(fixture.work)
+        let descriptor = try preparedDescriptor(prepared)
+        fixture.executor.finishPreparation(fixture.work, result: try XCTUnwrap(prepared))
+        prepared = nil
+        fixture.executor.storageCheck = { _ in throw JobStorage.Failure("disconnected") }
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 3)
+        XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.state, .admitted)
+        XCTAssertNil(try fixture.store.job(id: fixture.job.id)?.startedAt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.marker))
+        fixture.executor.storageCheck = JobStorage.check
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 4)
+        XCTAssertEqual(fixture.executor.takePreparationWork().count, 1, "reconnection prepares a fresh descriptor")
+    }
+
+    private final class TransientStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        func check(_ root: String) throws {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            if calls == 2 { throw JobStorage.Failure("drive disconnected during preparation") }
+        }
+    }
+
+    func testRecoveredDriveDoesNotTurnAnEarlierPreparationFailureIntoAFailedAttempt() throws {
+        let storage = TransientStorage()
+        let fixture = try ExecutorFixture(storageCheck: storage.check)
+        defer { fixture.remove() }
+        let outcome = fixture.executor.prepareStart(fixture.work)
+        guard case .failure(let failure) = outcome else { return XCTFail("expected transient storage failure") }
+        XCTAssertTrue(failure.storageUnavailable)
+        fixture.executor.finishPreparation(fixture.work, result: outcome)
+        // All subsequent checks succeed: reconnection preceded result consumption.
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 3)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.state, .admitted)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.attempt, fixture.job.attempt)
+        XCTAssertNil(try fixture.store.job(id: fixture.job.id)?.startedAt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.marker))
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 4)
+        let fresh = try XCTUnwrap(fixture.executor.takePreparationWork().first)
+        if case .failure = fixture.executor.prepareStart(fresh) {
+            XCTFail("recovered storage should prepare successfully")
+        }
     }
 
     func testCanceledCompletedPreparationClosesDescriptorWithoutSpawn() throws {
