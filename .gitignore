@@ -20,3 +20,8 @@
 *.xcodeproj/
 xcuserdata/
 DerivedData/
+
+# Dashboard development
+node_modules/
+Web/dashboard/test-results/
+Web/dashboard/playwright-report/

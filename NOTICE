@@ -25,3 +25,8 @@ their original copyright notices will be listed here.
 The macOS menu bar app includes Sparkle 2.10.0 (MIT license),
 https://sparkle-project.org. See docs/licenses/Sparkle.txt and the license
 inside SimQueue.app/Contents/Resources.
+
+The embedded dashboard includes Preact 10.27.2 (MIT license),
+https://preactjs.com. Copyright (c) 2015-present Jason Miller.
+See docs/licenses/Preact.txt. The license is also included in the embedded
+JavaScript, including when the executable is copied without its documentation.

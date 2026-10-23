@@ -135,11 +135,13 @@ nonpublishing validation runs.
 
 ## Contributing
 
-Development requires Swift 6, SQLite headers, and the Xcode toolchain on macOS.
+Development requires Swift 6, Node 22 for dashboard asset generation, SQLite headers, and the Xcode toolchain on macOS.
 
 ```sh
 git clone https://github.com/jayhickey/SimQueue.git
 cd SimQueue
+npm --prefix Web/dashboard ci --no-audit --no-fund
+npm --prefix Web/dashboard run build
 swift build --build-tests -j 4
 swift test --skip-build -j 4
 ```
@@ -150,8 +152,10 @@ Licensed under the [MIT License](LICENSE); see [NOTICE](NOTICE).
 
 ## Queue dashboard
 
-Run `simq dashboard` for a live local browser view of the queue, recent
-results, timings, waiting reasons, commands and bounded logs. Cancel jobs and
+Run `simq dashboard` for Runner vitals: CPU, memory, disk and thermal state,
+warning chips, running/waiting job cards, recent results, activity and managed
+storage. The responsive dashboard follows the system light/dark setting and
+updates through the local API, with bounded trends labeled “this tab.” Cancel jobs and
 adjust queued-job priorities directly in the dashboard. Open a job for live log
 tailing, with pause/resume and auto-follow controls. See the
 [dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.
