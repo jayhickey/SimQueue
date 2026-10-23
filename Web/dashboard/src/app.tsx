@@ -172,7 +172,11 @@ function Vitals({
       finite(h?.cpuUsagePercent) ? `${numeric(h.cpuUsagePercent, 0)}%` : '—',
       finite(h?.cpuCount) ? `${h.cpuCount} cores` : 'Unavailable',
       `Load ${numeric(h?.load1)} / ${numeric(h?.load5)} · 1m / 5m`,
-      s?.load_throttled ? 'warning' : 'running',
+      !finite(h?.cpuCount) && !finite(h?.cpuUsagePercent)
+        ? 'muted'
+        : s?.load_throttled
+          ? 'warning'
+          : 'running',
     ],
     [
       'Memory',
@@ -180,7 +184,7 @@ function Vitals({
       bytes(h?.availableMemoryBytes),
       pressure ? human(pressure) : 'Unavailable',
       `of ${bytes(h?.totalMemoryBytes)} · Swap ${bytes(h?.swapUsedBytes)}`,
-      memoryWarning ? 'warning' : 'success',
+      !pressure ? 'muted' : memoryWarning ? 'warning' : 'success',
     ],
     [
       'Disk free',
@@ -198,7 +202,7 @@ function Vitals({
           ? 'Admission disk floor disabled'
           : `${margin === null ? '—' : bytes(Math.abs(margin))} ${margin !== null && margin < 0 ? 'below' : 'above'} ${bytes(floor, 0)} floor`
         : 'Admission floor unavailable',
-      margin !== null && margin < 5 * 1024 ** 3 ? 'warning' : 'success',
+      margin === null ? 'muted' : margin < 5 * 1024 ** 3 ? 'warning' : 'success',
     ],
     [
       'Thermal',
@@ -212,7 +216,7 @@ function Vitals({
             ? 'Warm'
             : 'Healthy',
       h?.sampledAt ? `Sample ${clockStamp(h.sampledAt)}` : 'No resource sample',
-      thermal !== undefined && thermal > 0 ? 'warning' : 'success',
+      thermal === undefined ? 'muted' : thermal > 0 ? 'warning' : 'success',
     ],
   ];
   return (

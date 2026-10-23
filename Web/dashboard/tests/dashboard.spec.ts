@@ -75,6 +75,7 @@ test('older daemon without host or storage support renders useful jobs', async (
   await ready(page);
   await page.getByRole('button', { name: 'Review storage', exact: true }).click();
   await expect(page.getByText('Storage review requires an updated daemon.')).toBeVisible();
+  await expect(page.locator('.vital .mini-badge.muted')).toHaveCount(4);
 });
 test('polling retains card identity, scroll, filters and focus', async ({ page }) => {
   await ready(page);
