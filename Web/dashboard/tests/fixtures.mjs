@@ -9,7 +9,7 @@ const job = (id, kind, state, seconds, extra = {}) => ({
   priority: 50,
   run_timeout_seconds: 1800,
   submitter: 'developer',
-  attempt: 1,
+  attempt: 0,
   queue_time: iso(seconds + 60),
   admitted_at: state === 'queued' ? null : iso(seconds + 10),
   started_at: ['queued', 'admitted'].includes(state) ? null : iso(seconds),

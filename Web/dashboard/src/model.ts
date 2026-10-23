@@ -191,12 +191,56 @@ export function timings(j: Job, now: number): [number | null, number | null, num
     a = epoch(j.admitted_at),
     s = epoch(j.started_at),
     f = epoch(j.finished_at),
-    end = f ?? now;
-  return [
-    q === null ? null : (a ?? s ?? end) - q,
-    a === null ? null : (s ?? end) - a,
-    s === null ? null : end - s,
-  ];
+    end = f ?? (!j.state || isActive(j) ? now : null);
+  const interval = (start: number | null, end: number | null) =>
+    start !== null && end !== null && end >= start ? end - start : null;
+  return [interval(q, a ?? s ?? end), interval(a, s ?? end), interval(s, end)];
+}
+export function phaseTimings(j: Job, now: number): [number | null, number | null, number | null] {
+  const values = timings(j, now);
+  // Original submission time cannot establish queue wait across earlier attempts.
+  if ((j.attempt ?? 0) > 0) values[0] = null;
+  return values;
+}
+export interface ActivitySegment {
+  phase: 'queue' | 'preparation' | 'run';
+  start: number;
+  end: number;
+}
+export function activitySegments(job: Job, now: number): ActivitySegment[] {
+  const queued = epoch(job.queue_time),
+    admitted = epoch(job.admitted_at),
+    started = epoch(job.started_at),
+    finished = epoch(job.finished_at),
+    end = finished ?? (isActive(job) ? now : null);
+  const segments: ActivitySegment[] = [];
+  const known = [queued, admitted, started, finished].filter((v): v is number => v !== null);
+  if (known.some((value, index) => index > 0 && value < known[index - 1])) return segments;
+  function add(phase: ActivitySegment['phase'], start: number | null, end: number | null) {
+    if (start !== null && end !== null && end > start) segments.push({ phase, start, end });
+  }
+  if ((job.attempt ?? 0) === 0) add('queue', queued, admitted ?? started ?? end);
+  add('preparation', admitted, started ?? end);
+  add('run', started, end);
+  return segments;
+}
+export function waitLabel(job: Job): string {
+  return (job.attempt ?? 0) === 0 &&
+    epoch(job.admitted_at) === null &&
+    epoch(job.started_at) !== null
+    ? 'Before start'
+    : 'Queue wait';
+}
+export function activityDescription(job: Job, now: number): string {
+  const [wait, prep, run] = phaseTimings(job, now);
+  return (
+    `${waitLabel(job)}: ${duration(wait)} · Preparation: ${duration(prep)} · Runtime: ${duration(run)}` +
+    ((job.attempt ?? 0) > 0
+      ? ' · Queue wait unavailable across retries; original submission includes earlier attempts.'
+      : epoch(job.admitted_at) === null && epoch(job.started_at) !== null
+        ? ' · Admission time unavailable; before-start time includes preparation.'
+        : '')
+  );
 }
 export function matches(j: Job, query: string, project: string, state: string): boolean {
   return (
