@@ -17,12 +17,17 @@ public final class DashboardServer {
     private var stopping = false
     private var running = false
     private var closed = false
-    private let token = UUID().uuidString
+    private let token: String
+    private let tokenStore: DashboardTokenStore?
     private let api: DashboardAPI
     private let authority: String
-    public var url: String { "http://\(authority)/\(token)/" }
+    public var url: String { "http://\(authority)/\((try? tokenStore?.current()) ?? token)/" }
 
-    public init(port: UInt16 = 0, bindAddress: String = "127.0.0.1", socketPath: String) throws {
+    public init(port: UInt16 = 0, bindAddress: String = "127.0.0.1", socketPath: String, configPath: String? = nil)
+        throws
+    {
+        tokenStore = configPath.map { DashboardTokenStore(configPath: $0) }
+        token = try tokenStore?.loadOrCreate() ?? UUID().uuidString
         var bindIP = in_addr()
         guard inet_pton(AF_INET, bindAddress, &bindIP) == 1 else { throw DashboardError.invalidBindAddress }
         #if canImport(Glibc)
@@ -130,8 +135,13 @@ public final class DashboardServer {
             guard count > 0 else { return }
             request.append(contentsOf: bytes.prefix(count))
         }
-        let reply = Self.route(
-            request: String(decoding: request, as: UTF8.self), token: token, api: api)
+        let reply: Reply
+        do {
+            let current = try tokenStore?.current() ?? token
+            reply = Self.route(request: String(decoding: request, as: UTF8.self), token: current, api: api)
+        } catch {
+            reply = Reply("503 Service Unavailable", "text/plain", Data("Dashboard configuration unavailable".utf8))
+        }
         let data = Self.wireResponse(reply)
         let sendDeadline = ProcessInfo.processInfo.systemUptime + 2
         data.withUnsafeBytes { buffer in

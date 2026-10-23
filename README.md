@@ -154,7 +154,9 @@ Run `simq dashboard` for a live local browser view of the queue, recent
 results, timings, waiting reasons, commands and bounded logs. Cancel jobs and
 adjust queued-job priorities directly in the dashboard. Open a job for live log
 tailing, with pause/resume and auto-follow controls. See the
-[dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details.
+[dashboard guide](docs/DASHBOARD.md) for options, limits and privacy details. The
+private URL token is saved automatically in `config.json`, so fixed-port PWA links
+survive restarts and upgrades; rotate it explicitly with `simq dashboard --rotate-token`.
 
 The dashboard includes machine health (memory pressure, CPU/load, swap and volume
 free space) and an on-demand storage breakdown with a preview of safe artifact

@@ -11,7 +11,9 @@
     private final class DashboardHost: @unchecked Sendable {
         let server: DashboardServer
         init(socketPath: String, settings: DashboardSettings) throws {
-            server = try DashboardServer(port: settings.port, bindAddress: settings.bindAddress, socketPath: socketPath)
+            server = try DashboardServer(
+                port: settings.port, bindAddress: settings.bindAddress, socketPath: socketPath,
+                configPath: (socketPath as NSString).deletingLastPathComponent + "/config.json")
         }
         func stop() { server.stop() }
         func start() { Thread.detachNewThread { [self] in try? server.run() } }
