@@ -41,16 +41,19 @@ public struct DashboardTokenStore {
         if !rotate, config["dashboard_token"] != nil { return try current() }
         let token = UUID().uuidString
         config["dashboard_token"] = token
-        let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+        let data = try JSONSerialization.data(
+            withJSONObject: config, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         let temporary = configPath + "." + UUID().uuidString + ".tmp"
         let fd = open(temporary, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw Failure.unavailable }
         defer { _ = unlink(temporary) }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        try file.write(contentsOf: data)
+        try file.write(contentsOf: data + Data("\n".utf8))
         try file.synchronize()
         try file.close()
         guard rename(temporary, configPath) == 0 else { throw Failure.unavailable }
+        let directory = open(parent, O_RDONLY)
+        if directory >= 0 { _ = fsync(directory); _ = close(directory) }
         return token
     }
 
