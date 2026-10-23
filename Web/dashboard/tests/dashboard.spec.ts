@@ -182,6 +182,7 @@ test('job details preserve exact safe text, log pause, and focus restoration', a
     .getByRole('button', { name: 'Log', exact: true });
   await opener.click();
   const dialog = page.getByRole('dialog', { name: 'Job details' });
+  await dialog.getByText('Technical details and artifacts', { exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Command · exact argv' })).toBeVisible();
   await expect(dialog.getByLabel('Job output')).toContainText('Running tests…');
   await dialog.getByRole('button', { name: 'Pause live output', exact: true }).click();
@@ -358,4 +359,77 @@ test('cleanup accountability shows confirmed bytes, protected data and actionabl
   await expect(page.getByText('Pinned · 2 runs', { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 320, height: 740 });
   await noOverflow(page);
+});
+
+test('activity separates phases, reveals timing on hover and opens a concise job summary', async ({
+  page,
+}, testInfo) => {
+  let detailReads = 0;
+  await page.route('**/api/job/**', (route) => {
+    detailReads++;
+    return route.continue();
+  });
+  await ready(page);
+  const row = page.locator('[data-activity-job="J-2207"]');
+  await expect(row.locator('rect.phase-queue')).toHaveCount(1);
+  await expect(row.locator('rect.phase-preparation')).toHaveCount(1);
+  await expect(row.locator('rect.phase-run')).toHaveCount(1);
+  const colors = await row
+    .locator('rect')
+    .evaluateAll((nodes) => nodes.map((n) => getComputedStyle(n).fill));
+  expect(new Set(colors).size).toBe(3);
+  await row.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(row).toBeFocused();
+  await expect(row.getByRole('tooltip')).toBeVisible();
+  expect(detailReads).toBe(0);
+  if (testInfo.project.name === 'chromium') {
+    await row.hover();
+    await expect(row.getByRole('tooltip')).toBeVisible();
+    await expect(row.getByRole('tooltip')).toContainText('Queue wait: 50s');
+    await expect(row.getByRole('tooltip')).toContainText('Runtime: 6m 12s');
+    await page.screenshot({
+      path: `../../.build/dashboard/activity-hover-${testInfo.project.name}.png`,
+      fullPage: false,
+    });
+  }
+  await row.click();
+  const dialog = page.getByRole('dialog', { name: 'Job details' });
+  await expect(
+    dialog.getByRole('heading', { name: 'mobile · Smoke · Test filter', exact: true }),
+  ).toBeVisible();
+  await expect(dialog.locator('.job-timing.phase-queue')).toContainText('50s');
+  await expect(dialog.locator('.job-timing.phase-preparation')).toContainText('10s');
+  await expect(dialog.locator('.job-timing.phase-run')).toContainText('6m 12s');
+  await expect(dialog.getByRole('heading', { name: 'Command · exact argv' })).not.toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Live output' })).toBeVisible();
+  await page.screenshot({
+    path: `../../.build/dashboard/job-summary-${testInfo.project.name}.png`,
+    fullPage: false,
+  });
+  await page.setViewportSize({ width: 320, height: 740 });
+  await noOverflow(page);
+  expect(await dialog.evaluate((d) => d.scrollWidth <= d.clientWidth)).toBe(true);
+  await page.screenshot({
+    path: `../../.build/dashboard/job-summary-compact-${testInfo.project.name}.png`,
+    fullPage: false,
+  });
+});
+
+test('activity includes queued-only jobs and runtime stays a phase color after failure', async ({
+  page,
+}) => {
+  await snapshot(page, (s) => {
+    s.active[0].state = 'failed';
+    s.active[0].finished_at = s.generatedAt;
+  });
+  await ready(page);
+  const queued = page.locator('[data-activity-job="J-2210"]');
+  await expect(queued).toBeVisible();
+  await expect(queued.locator('rect.phase-queue')).toHaveCount(1);
+  await expect(queued.locator('rect.phase-run')).toHaveCount(0);
+  const failed = page.locator('[data-activity-job="J-2207"]');
+  await expect(failed.locator('rect.phase-run')).toHaveCount(1);
+  await expect(failed).toHaveAttribute('aria-label', /failed/);
 });

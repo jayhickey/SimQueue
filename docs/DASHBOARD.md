@@ -76,6 +76,19 @@ Follow the planned upgrade procedure before restarting a shared daemon.
 Recent activity names wrap instead of truncating. Hovering also shows the full
 name, and clicking opens the same job details and output.
 
+Activity uses a shared time axis with light-blue queue wait, amber preparation, and
+green command execution. A failed command's execution stays green because the
+bar represents a phase; its outcome is shown separately. Hovering a desktop row or
+focusing it with the keyboard reveals the phase durations. Clicking it opens job
+details with the same durations first, followed by live output; exact commands,
+paths, scheduling fields and artifacts remain in a collapsible technical section.
+Queued and preparing jobs appear even before execution begins. Missing or
+inconsistent timestamps remain unavailable rather than becoming zero-length runs.
+The first attempt is numbered zero. On retries, the original submission timestamp
+cannot establish actual queue wait, so queue wait is explicitly unavailable and
+its bar is omitted; preparation and runtime describe the latest attempt. Older
+daemons without admission timestamps show combined before-start time with a note.
+
 ## Job controls
 
 Cancel waiting, preparing or running jobs using **Cancel**. The browser asks for

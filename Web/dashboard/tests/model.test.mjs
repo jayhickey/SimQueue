@@ -134,3 +134,39 @@ test('timestamp formatting keeps viewer timezone and missing-value semantics', (
   assert.equal(m.stamp(null), '—');
   assert.equal(m.clockStamp(null), '—');
 });
+
+test('activity phase ranges distinguish queue, preparation, execution and missing history', () => {
+  const job = {
+    state: 'succeeded',
+    attempt: 0,
+    queue_time: 0,
+    admitted_at: 10,
+    started_at: 20,
+    finished_at: 50,
+  };
+  assert.deepEqual(m.activitySegments(job, 100000), [
+    { phase: 'queue', start: 0, end: 10000 },
+    { phase: 'preparation', start: 10000, end: 20000 },
+    { phase: 'run', start: 20000, end: 50000 },
+  ]);
+  assert.deepEqual(m.activitySegments({ state: 'queued', queue_time: 10 }, 50000), [
+    { phase: 'queue', start: 10000, end: 50000 },
+  ]);
+  assert.deepEqual(
+    m.activitySegments({ state: 'admitted', queue_time: 0, admitted_at: 10 }, 50000),
+    [
+      { phase: 'queue', start: 0, end: 10000 },
+      { phase: 'preparation', start: 10000, end: 50000 },
+    ],
+  );
+  assert.deepEqual(m.activitySegments({ state: 'failed', started_at: 20 }, 100000), []);
+  assert.deepEqual(m.timings({ state: 'failed', started_at: 20 }, 100000), [null, null, null]);
+  assert.equal(m.timings({ state: 'succeeded', started_at: 20, finished_at: 10 }, 100000)[2], null);
+  assert.deepEqual(m.phaseTimings({ ...job, attempt: 1 }, 100000), [null, 10000, 30000]);
+  assert.equal(
+    m.activitySegments({ ...job, attempt: 1 }, 100000).some((s) => s.phase === 'queue'),
+    false,
+  );
+  assert.match(m.activityDescription({ ...job, attempt: 1 }, 100000), /unavailable across retries/);
+  assert.equal(m.waitLabel({ started_at: 20 }), 'Before start');
+});

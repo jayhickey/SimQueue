@@ -3,6 +3,10 @@ import { Component, render, type ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   APIError,
+  activitySegments,
+  activityDescription,
+  waitLabel,
+  phaseTimings,
   addSample,
   bytes,
   clockStamp,
@@ -550,57 +554,94 @@ function Recent({
   );
 }
 function Timeline({ jobs, now, open }: { jobs: Job[]; now: number; open: (id: string) => void }) {
-  const started = jobs
-    .filter((j) => epoch(j.started_at) !== null)
-    .sort((a, b) => (epoch(b.started_at) ?? 0) - (epoch(a.started_at) ?? 0))
-    .slice(0, 20);
-  const start = started.length ? Math.min(...started.map((j) => epoch(j.started_at)!)) : now;
-  const end = started.length ? Math.max(...started.map((j) => epoch(j.finished_at) ?? now)) : now;
+  const rows = jobs
+    .filter((j) => activitySegments(j, now).length > 0)
+    .sort(
+      (a, b) =>
+        (epoch(b.started_at) ?? epoch(b.admitted_at) ?? epoch(b.queue_time) ?? 0) -
+        (epoch(a.started_at) ?? epoch(a.admitted_at) ?? epoch(a.queue_time) ?? 0),
+    )
+    .slice(0, 20)
+    .map((job) => ({ job, segments: activitySegments(job, now) }));
+  const segments = rows.flatMap((r) => r.segments);
+  const start = segments.length ? Math.min(...segments.map((s) => s.start)) : now;
+  const end = segments.length ? Math.max(...segments.map((s) => s.end)) : now;
   const span = Math.max(1000, end - start),
-    active = started.some((j) => !j.finished_at);
+    active = rows.some(({ job }) => isActive(job));
   return (
     <section class="side-section" aria-labelledby="activity-title">
       <Heading id="activity-title" title="Activity" aside={`last ${duration(span)}`} />
       <div class="timeline card">
-        {started.length ? (
+        <div class="timeline-legend" aria-label="Activity phases">
+          <span>
+            <i class="phase-queue" />
+            Queue wait
+          </span>
+          <span>
+            <i class="phase-preparation" />
+            Preparing
+          </span>
+          <span>
+            <i class="phase-run" />
+            Running
+          </span>
+        </div>
+        {rows.length ? (
           <>
             <div class="timeline-axis">
               <span>{clockStamp(start / 1000)}</span>
               <span>{active ? 'now' : clockStamp(end / 1000)}</span>
             </div>
-            {started.map((j) => (
+            {rows.map(({ job, segments }) => (
               <button
                 class="timeline-row"
-                key={j.id}
-                onClick={() => open(j.id)}
-                title={`${label(j)} · ${stamp(j.started_at)} → ${stamp(j.finished_at)} · ${duration(timings(j, now)[2])}`}
+                key={job.id}
+                data-activity-job={job.id}
+                onClick={() => open(job.id)}
+                aria-label={`${label(job)} · ${stateLabel(job)}`}
+                aria-describedby={`activity-${job.id}-timing`}
               >
-                <span>{label(j)}</span>
+                <span class="timeline-label">
+                  <span class={`timeline-status ${tone(job)}`} aria-hidden="true">
+                    {job.state === 'succeeded'
+                      ? '✓'
+                      : ['failed', 'infra_failed', 'timed_out', 'interrupted'].includes(job.state)
+                        ? '×'
+                        : job.state === 'running'
+                          ? '▶'
+                          : '·'}
+                  </span>
+                  {label(job)}
+                </span>
                 <svg
                   viewBox="0 0 100 8"
                   preserveAspectRatio="none"
                   role="img"
-                  aria-label={`${human(j.state)}, ${duration(timings(j, now)[2])}`}
+                  aria-label={activityDescription(job, now)}
                 >
                   <path class="timeline-track" d="M0 4 H100" />
-                  <rect
-                    class={tone(j)}
-                    x={Math.max(0, ((epoch(j.started_at)! - start) * 100) / span)}
-                    y="1"
-                    width={Math.max(
-                      1,
-                      (((epoch(j.finished_at) ?? now) - epoch(j.started_at)!) * 100) / span,
-                    )}
-                    height="6"
-                    rx="1"
-                  />
+                  {segments.map((segment) => (
+                    <rect
+                      key={segment.phase}
+                      class={`phase-${segment.phase}`}
+                      x={((segment.start - start) * 100) / span}
+                      y="1"
+                      width={((segment.end - segment.start) * 100) / span}
+                      height="6"
+                      rx="0.8"
+                    />
+                  ))}
                   {active && <path class="now-marker" d="M99 0 V8" />}
                 </svg>
+                <span class="timeline-tooltip" role="tooltip" id={`activity-${job.id}-timing`}>
+                  <strong>{stateLabel(job)}</strong>
+                  <span>{activityDescription(job, now)}</span>
+                </span>
               </button>
             ))}
           </>
         ) : (
-          <Empty>No execution history yet.</Empty>
+          <Empty>No activity history yet.</Empty>
         )}
       </div>
     </section>
@@ -1009,7 +1050,9 @@ function JobDetail({
         'Dispatch position': job.position,
         'Effective score': job.effective_score,
         Attempt: job.attempt,
-        'Wait / prep / run': timings(job, now).map(duration).join(' / '),
+        'Before latest admission / preparation / runtime': timings(job, now)
+          .map(duration)
+          .join(' / '),
         Queued: stamp(job.queue_time),
         Admitted: stamp(job.admitted_at),
         Started: stamp(job.started_at),
@@ -1034,17 +1077,84 @@ function JobDetail({
     : {};
   return (
     <Modal title="Job details" close={close} wide>
-      <p class="action-status" role="status">
-        {actionStatus}
-      </p>
-      <p class="danger" role="status">
-        {error}
-      </p>
+      {actionStatus && (
+        <p class="action-status" role="status">
+          {actionStatus}
+        </p>
+      )}
+      {error && (
+        <p class="danger" role="status">
+          {error}
+        </p>
+      )}
       {job ? (
         <>
+          <section class="job-overview" aria-label="Job summary">
+            <div class="job-identity">
+              <div>
+                <p class="eyebrow">
+                  {job.id} · {job.project}
+                </p>
+                <h3>{label(job)}</h3>
+              </div>
+              <span class={`mini-badge ${tone(job)}`}>{stateLabel(job)}</span>
+            </div>
+            <div class="job-timing-grid">
+              {[
+                {
+                  name: waitLabel(job),
+                  value: phaseTimings(job, now)[0],
+                  phase: 'queue',
+                  help:
+                    (job.attempt ?? 0) > 0
+                      ? 'Unavailable across retries; see technical details'
+                      : epoch(job.admitted_at) === null && epoch(job.started_at) !== null
+                        ? 'Includes preparation; admission time unavailable'
+                        : 'Submission to admission',
+                },
+                {
+                  name: 'Preparation',
+                  value: phaseTimings(job, now)[1],
+                  phase: 'preparation',
+                  help: 'Admission to command start',
+                },
+                {
+                  name: 'Runtime',
+                  value: phaseTimings(job, now)[2],
+                  phase: 'run',
+                  help:
+                    job.state === 'running'
+                      ? 'Running now · latest attempt'
+                      : epoch(job.started_at) === null
+                        ? 'Command has not started'
+                        : 'Latest command execution',
+                },
+              ].map((metric) => (
+                <div class={`job-timing phase-${metric.phase}`} key={metric.phase}>
+                  <span>{metric.name}</span>
+                  <strong>{duration(metric.value)}</strong>
+                  <small>{metric.help}</small>
+                </div>
+              ))}
+            </div>
+            <div class="job-result-line">
+              <span>{job.result_class ? human(job.result_class) : stateLabel(job)}</span>
+              {job.command_exit_code != null && <span>Exit {job.command_exit_code}</span>}
+              <span>
+                {epoch(job.finished_at) !== null
+                  ? `Finished ${stamp(job.finished_at)}`
+                  : `Submitted ${stamp(job.queue_time)}`}
+              </span>
+            </div>
+            {job.message && <p class={tone(job)}>{job.message}</p>}
+            {!!job.wait_reasons?.length && (
+              <p class="muted">{job.wait_reasons.map((r) => r.summary).join('; ')}</p>
+            )}
+            {job.cleanup_pending && <p class="warning">Process cleanup is still pending.</p>}
+          </section>
           <JobControls job={job} disabled={!online} pending={pending} act={act} />
-          <details class="job-metadata" open>
-            <summary>{label(job)}</summary>
+          <details class="job-metadata">
+            <summary>Technical details and artifacts</summary>
             <dl>
               {Object.entries(fields)
                 .filter(([, v]) => v !== undefined && v !== null && v !== '')
