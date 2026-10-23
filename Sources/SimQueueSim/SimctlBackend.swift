@@ -86,6 +86,16 @@ public final class SimctlBackend: SimBackend, @unchecked Sendable {
                 var name: String
                 var state: String
                 var deviceTypeIdentifier: String?
+                var dataPathSize: UInt64?
+                enum CodingKeys: String, CodingKey { case udid, name, state, deviceTypeIdentifier, dataPathSize }
+                init(from decoder: Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    udid = try values.decode(String.self, forKey: .udid)
+                    name = try values.decode(String.self, forKey: .name)
+                    state = try values.decode(String.self, forKey: .state)
+                    deviceTypeIdentifier = try values.decodeIfPresent(String.self, forKey: .deviceTypeIdentifier)
+                    dataPathSize = try? values.decode(UInt64.self, forKey: .dataPathSize)
+                }
             }
             var devices: [String: [Device]]
         }
@@ -96,7 +106,7 @@ public final class SimctlBackend: SimBackend, @unchecked Sendable {
             listing.devices[runtime, default: []].map {
                 SimDevice(
                     udid: $0.udid, name: $0.name, isBooted: $0.state == "Booted", state: $0.state, runtime: runtime,
-                    deviceType: $0.deviceTypeIdentifier)
+                    deviceType: $0.deviceTypeIdentifier, dataSizeBytes: $0.dataPathSize)
             }
         }
     }

@@ -515,7 +515,7 @@ public final class DaemonService: @unchecked Sendable {
         }
         guard let disk else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
         let sized = SizingFileSystem(disk.fileSystem)
-        let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: sized)
+        let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: sized, includeStorageDetails: accounting)
         let plan = try locked { () -> Engine.GCPlan? in
             guard !automatic || (!engine.maintenanceDraining && !shutdownRequested) else { return nil }
             return try engine.gcPlan(
@@ -524,7 +524,16 @@ public final class DaemonService: @unchecked Sendable {
         guard let plan else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
         let candidates = Engine.gcCandidates(plan, fileSystem: sized)
         if accounting {
-            let categories = StorageAccounting.categories(plan.storageEntries, fileSystem: sized)
+            var categories = StorageAccounting.categories(plan.storageEntries, fileSystem: sized)
+            let owned = try locked { try store.liveResources(kinds: [.sim, .template]) }
+            var notes: [String] = []
+            var devices: [SimDevice] = []
+            if !owned.isEmpty {
+                do { devices = try engine.environment.sims.listDevices() } catch {
+                    notes.append("Simulator inventory unavailable; owned device sizes are unknown.")
+                }
+            }
+            categories += StorageAccounting.simulators(resources: owned, devices: devices)
             let reclaimable = StorageAccounting.reclaimable(
                 candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) })
             locked {
@@ -537,6 +546,7 @@ public final class DaemonService: @unchecked Sendable {
                     unknownCandidateSizes: reclaimable.unknown,
                     retention: config.reliability.ageRules.artifactRetention,
                     cleanupMode: config.reliability.cleanupMode.rawValue)
+                artifactStorage?.notes = notes
             }
         }
         var result = GCResult(
