@@ -628,8 +628,11 @@ function CleanupOutcome({ snapshot }: { snapshot?: Snapshot }) {
         {summary.unknownRemovedSizes > 0 ? ` + ${summary.unknownRemovedSizes} unknown sizes` : ''}
       </p>
       <p class="muted">
-        {summary.automatic ? 'Automatic retention' : 'Requested cleanup'} · {summary.deferredCount}{' '}
-        deferred or protected · {summary.failureCount} failures
+        {summary.automatic ? 'Automatic retention' : 'Requested cleanup'} ·{' '}
+        {summary.inventoryIncomplete
+          ? 'Inventory incomplete; remaining targets unknown'
+          : `${summary.deferredCount} deferred or protected`}{' '}
+        · {summary.failureCount} failures
       </p>
       <p class="muted">Logical bytes removed; actual disk space recovered may differ.</p>
       {(summary.failureCount > 0 || summary.unavailableRoots.length > 0) && (

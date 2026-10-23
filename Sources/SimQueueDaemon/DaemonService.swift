@@ -516,6 +516,32 @@ public final class DaemonService: @unchecked Sendable {
     }
 
     private func collectArtifacts(apply: Bool, automatic: Bool, accounting: Bool = false) throws -> GCResult {
+        let previous = locked { lastCleanup }
+        do { return try performArtifactCollection(apply: apply, automatic: automatic, accounting: accounting) } catch {
+            // Discovery can fail before a per-target report exists. Preserve partial
+            // outcomes when already published; otherwise make the failed pass visible.
+            if apply, automatic || config.reliability.cleanupMode == .enforce, locked({ lastCleanup == previous }) {
+                var summary = CleanupSummary(
+                    finishedAt: locked { engine.environment.clock.now() }, automatic: automatic,
+                    removedCount: 0, removedBytes: 0, unknownRemovedSizes: 0, deferredCount: 0,
+                    failureCount: 1, failures: ["Cleanup could not complete its inventory: \(error)"],
+                    unavailableRoots: [])
+                summary.inventoryIncomplete = true
+                saveCleanupSummary(summary)
+                locked { lastCleanup = summary }
+            }
+            throw error
+        }
+    }
+
+    private func saveCleanupSummary(_ summary: CleanupSummary) {
+        guard info.statePath != ":memory:" else { return }
+        do {
+            try JSONEncoder().encode(summary).write(to: URL(fileURLWithPath: cleanupSummaryPath), options: .atomic)
+        } catch { log("could not save cleanup summary: \(error)") }
+    }
+
+    private func performArtifactCollection(apply: Bool, automatic: Bool, accounting: Bool) throws -> GCResult {
         if apply, config.reliability.cleanupMode != .enforce, !automatic {
             throw ProtocolError(
                 .invalidState,
@@ -588,12 +614,7 @@ public final class DaemonService: @unchecked Sendable {
                     deferredCount: max(0, candidates.count - attempted),
                     failureCount: result.failures.count, failures: Array(result.failures.prefix(100)),
                     unavailableRoots: unavailable)
-                if info.statePath != ":memory:" {
-                    do {
-                        try JSONEncoder().encode(summary).write(
-                            to: URL(fileURLWithPath: cleanupSummaryPath), options: .atomic)
-                    } catch { log("could not save cleanup summary: \(error)") }
-                }
+                saveCleanupSummary(summary)
                 locked {
                     lastCleanup = summary
                     artifactStorage?.cleanupAt = summary.finishedAt

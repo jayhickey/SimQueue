@@ -64,6 +64,7 @@ public struct GCEntry: Sendable, Equatable, Codable {
 /// Last completed retention pass. Removed bytes are measured logical file sizes,
 /// not a claim about free-space deltas on shared/compressed filesystems.
 public struct CleanupSummary: Sendable, Equatable, Codable {
+    public var inventoryIncomplete: Bool?
     public var finishedAt: Double
     public var automatic: Bool
     public var removedCount: Int

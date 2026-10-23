@@ -19,6 +19,8 @@ final class BackgroundRetentionTests: XCTestCase {
         private let lock = NSLock()
         private var operation: Operation?
         private var path: String?
+        private var failingInventory: String?
+        func failInventory(at path: String) { lock.lock(); failingInventory = path; lock.unlock() }
 
         func block(_ operation: Operation, path: String) {
             lock.lock(); defer { lock.unlock() }
@@ -39,6 +41,8 @@ final class BackgroundRetentionTests: XCTestCase {
             return base.fileExists(path)
         }
         func children(of path: String) throws -> [String] {
+            lock.lock(); let failed = failingInventory == path; lock.unlock()
+            if failed { throw JobStorage.Failure("inventory unreadable") }
             pause(.children, path: path)
             return try base.children(of: path)
         }
@@ -163,6 +167,23 @@ final class BackgroundRetentionTests: XCTestCase {
         XCTAssertEqual(result.cleanup?.failureCount, 1)
         XCTAssertEqual(result.cleanup?.deferredCount, 0)
         XCTAssertTrue(result.cleanup?.failures.first?.contains("empty day cleanup") == true)
+    }
+
+    func testInventoryFailurePublishesAttentionInsteadOfLeavingAnOldSuccess() throws {
+        let fs = BlockingFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        fs.failInventory(at: daemon.paths.jobsRoot)
+        XCTAssertThrowsError(try daemon.result(.gc(GCParams(apply: true))))
+        let summary = try XCTUnwrap(status(daemon).lastCleanup)
+        XCTAssertEqual(summary.inventoryIncomplete, true)
+        XCTAssertEqual(summary.failureCount, 1)
+        XCTAssertTrue(summary.failures.first?.contains("inventory unreadable") == true)
     }
 
     func testDashboardCannotApplyInReportOnlyMode() throws {

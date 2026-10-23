@@ -332,6 +332,7 @@ test('cleanup accountability shows confirmed bytes, protected data and actionabl
     s.status.lastCleanup = {
       finishedAt: 1792782000,
       automatic: true,
+      inventoryIncomplete: true,
       removedCount: 2,
       removedBytes: 1048576,
       unknownRemovedSizes: 1,
@@ -346,6 +347,9 @@ test('cleanup accountability shows confirmed bytes, protected data and actionabl
     ];
   });
   await ready(page);
+  await expect(
+    page.getByText('Inventory incomplete; remaining targets unknown', { exact: false }),
+  ).toBeVisible();
   await expect(page.getByText('2 targets removed', { exact: false })).toBeVisible();
   await page.getByText('Needs attention', { exact: true }).click();
   await expect(page.getByText('Could not remove <unsafe> output', { exact: true })).toBeVisible();

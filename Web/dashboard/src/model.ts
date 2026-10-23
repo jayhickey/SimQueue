@@ -78,6 +78,7 @@ export interface StorageReport {
   failureCount: number;
 }
 export interface CleanupSummary {
+  inventoryIncomplete?: boolean;
   finishedAt: number;
   automatic: boolean;
   removedCount: number;
