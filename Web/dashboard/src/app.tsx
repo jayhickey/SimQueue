@@ -237,7 +237,7 @@ function Vitals({
           </div>
           <p>{detail}</p>
           <Sparkline samples={samples} metric={metric} />
-          <span class="trend-label">this tab{stale ? ' · stale' : ''}</span>
+          {stale && <span class="trend-label">Stale</span>}
         </article>
       ))}
     </section>
@@ -346,7 +346,7 @@ function StatusSummary({
           {recentFailure && (
             <div class="warning-chip danger">
               <span>
-                <b>{recentFailure.id} failed</b> ·{' '}
+                <b>{label(recentFailure)} failed</b> ·{' '}
                 {duration(now - (epoch(recentFailure.finished_at) ?? now))} ago
               </span>
               <button onClick={() => openJob(recentFailure.id)}>View log</button>
