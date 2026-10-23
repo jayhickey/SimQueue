@@ -1,11 +1,11 @@
 import SimQueueCore
-import SimQueueEngine
 import SimQueueHost
 import SimQueueProtocol
 // SPDX-License-Identifier: MIT
 import XCTest
 
 @testable import SimQueueDaemon
+@testable import SimQueueEngine
 
 final class StorageAccountingTests: XCTestCase {
     func testReclaimableEstimateDoesNotDoubleCountNestedCandidates() {
@@ -16,6 +16,23 @@ final class StorageAccountingTests: XCTestCase {
         ])
         XCTAssertEqual(result.bytes, 100)
         XCTAssertEqual(result.unknown, 1)
+    }
+
+    func testProtectionIncludesDerivedDataAndResultsAndSubtractsEligibleSubtrees() {
+        let fs = FakeFileSystem()
+        fs.sizes = ["/runs/active": 100, "/runs/pinned": 200, "/runs/retained": 300, "/runs/retained/DerivedData": 100]
+        let entries = [
+            Engine.StorageEntry(path: "/runs/active", category: "Active / cleanup pending", hasDerivedData: true),
+            Engine.StorageEntry(path: "/runs/pinned", category: "Pinned", hasDerivedData: true),
+            Engine.StorageEntry(path: "/runs/retained", category: "Successful runs", hasDerivedData: true),
+            Engine.StorageEntry(path: "/runs/unknown", category: "Pinned", hasDerivedData: false),
+        ]
+        let result = StorageAccounting.protection(
+            entries, candidates: [.init(path: "/runs/retained/DerivedData", reason: "age", bytes: 100)], fileSystem: fs)
+        XCTAssertEqual(result.first { $0.name == "Active / cleanup pending" }?.bytes, 100)
+        XCTAssertEqual(result.first { $0.name == "Pinned" }?.bytes, 200)
+        XCTAssertEqual(result.first { $0.name == "Pinned" }?.unknownSizes, 1)
+        XCTAssertEqual(result.first { $0.name == "Within retention / not eligible" }?.bytes, 200)
     }
 
     func testDerivedDataIsNotCountedTwiceAndUnknownSizesStayUnknown() {

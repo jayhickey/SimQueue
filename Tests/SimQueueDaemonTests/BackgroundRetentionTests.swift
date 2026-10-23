@@ -100,6 +100,69 @@ final class BackgroundRetentionTests: XCTestCase {
         XCTAssertEqual(report.removedCount, 20)
         XCTAssertEqual(report.candidateCount, 21)
         XCTAssertNotNil(report.cleanupAt)
+        let summary = try XCTUnwrap(status(daemon).lastCleanup)
+        XCTAssertEqual(summary.deferredCount, 1)
+        XCTAssertEqual(summary.unknownRemovedSizes, 20)
+    }
+
+    func testCleanupReportsOnlyConfirmedRemovedBytesAndPreservesOutcomeAcrossReview() throws {
+        let fs = FakeFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let base = daemon.paths.jobsRoot + "/2020-01-01/"
+        for id in ["J-a", "J-b", "J-c"] { try fs.createDirectory(base + id) }
+        fs.sizes[base + "J-a"] = 100
+        fs.sizes[base + "J-b"] = 900
+        fs.removeFails.insert(base + "J-b")
+        guard case .gc(let result) = try daemon.result(.gc(GCParams(apply: true))) else { return XCTFail() }
+        let summary = try XCTUnwrap(result.cleanup)
+        XCTAssertEqual(summary.removedCount, 2)
+        XCTAssertEqual(summary.removedBytes, 100, "failed removal must not inflate reclaimed bytes")
+        XCTAssertEqual(summary.unknownRemovedSizes, 1)
+        XCTAssertEqual(summary.failureCount, 1)
+        XCTAssertTrue(summary.failures.first?.contains("J-b") == true)
+        XCTAssertEqual(summary.deferredCount, 0)
+        let saved = try JSONDecoder().decode(
+            CleanupSummary.self,
+            from: Data(contentsOf: URL(fileURLWithPath: daemon.paths.stateDir + "/last-cleanup.json")))
+        XCTAssertEqual(saved, summary)
+        guard case .gc = try daemon.result(.gc(GCParams(background: true))) else { return XCTFail() }
+        daemon.service.waitForBackgroundWork()
+        XCTAssertEqual(try status(daemon).lastCleanup, summary, "read-only reviews must not erase cleanup outcomes")
+        XCTAssertEqual(try status(daemon).artifactStorage?.failureCount, 1)
+        let restarted = DaemonService(
+            engine: daemon.service.engine, config: settings, info: daemon.service.info, executor: nil,
+            artifacts: daemon.service.artifacts)
+        guard case .result(.status(let restored)) = restarted.handle(Request(params: .status)).body else {
+            return XCTFail()
+        }
+        XCTAssertEqual(restored.lastCleanup, summary)
+    }
+
+    func testEmptyDayFailureIsVisibleWithoutUndoingConfirmedRemovalAccounting() throws {
+        let fs = FakeFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let day = daemon.paths.jobsRoot + "/2020-01-01", target = day + "/J-a"
+        try fs.createDirectory(target)
+        fs.sizes[target] = 100
+        fs.removeFails.insert(day)
+        guard case .gc(let result) = try daemon.result(.gc(GCParams(apply: true))) else { return XCTFail() }
+        XCTAssertEqual(result.cleanup?.removedBytes, 100)
+        XCTAssertEqual(result.cleanup?.removedCount, 1)
+        XCTAssertEqual(result.cleanup?.failureCount, 1)
+        XCTAssertEqual(result.cleanup?.deferredCount, 0)
+        XCTAssertTrue(result.cleanup?.failures.first?.contains("empty day cleanup") == true)
     }
 
     func testDashboardCannotApplyInReportOnlyMode() throws {

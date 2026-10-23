@@ -280,6 +280,25 @@ final class StartPreparationTests: XCTestCase {
         return prepared.descriptor
     }
 
+    func testDisconnectAfterPreparationClosesDescriptorAndKeepsUnstartedJobForRecovery() throws {
+        let fixture = try ExecutorFixture()
+        defer { fixture.remove() }
+        var prepared: Result<ProcessExecutor.PreparedStart, ProcessExecutor.PreparationFailure>? = fixture.executor
+            .prepareStart(fixture.work)
+        let descriptor = try preparedDescriptor(prepared)
+        fixture.executor.finishPreparation(fixture.work, result: try XCTUnwrap(prepared))
+        prepared = nil
+        fixture.executor.storageCheck = { _ in throw JobStorage.Failure("disconnected") }
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 3)
+        XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.state, .admitted)
+        XCTAssertNil(try fixture.store.job(id: fixture.job.id)?.startedAt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.marker))
+        fixture.executor.storageCheck = JobStorage.check
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 4)
+        XCTAssertEqual(fixture.executor.takePreparationWork().count, 1, "reconnection prepares a fresh descriptor")
+    }
+
     func testCanceledCompletedPreparationClosesDescriptorWithoutSpawn() throws {
         let fixture = try ExecutorFixture()
         defer { fixture.remove() }

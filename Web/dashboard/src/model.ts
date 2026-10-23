@@ -55,6 +55,7 @@ export interface Host {
   thermalState?: string;
 }
 export interface StorageReport {
+  protected?: { name: string; bytes: number; count: number; unknownSizes: number }[];
   sampledAt: number;
   categories: { name: string; bytes: number; count: number; unknownSizes: number }[];
   reclaimableBytes: number;
@@ -76,7 +77,19 @@ export interface StorageReport {
   removedCount: number;
   failureCount: number;
 }
+export interface CleanupSummary {
+  finishedAt: number;
+  automatic: boolean;
+  removedCount: number;
+  removedBytes: number;
+  unknownRemovedSizes: number;
+  deferredCount: number;
+  failureCount: number;
+  failures: string[];
+  unavailableRoots: string[];
+}
 export interface Status {
+  lastCleanup?: CleanupSummary;
   running: number;
   admitted: number;
   queued: number;

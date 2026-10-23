@@ -2,7 +2,7 @@
 
 import Foundation
 
-/// Basic availability checks, not volume identity or disconnect-race guarantees.
+/// Basic availability checks. StorageVolumeGuard adds persistent volume identity checks.
 public enum JobStorage {
     public static func check(_ root: String) throws {
         let manager = FileManager.default
@@ -60,9 +60,14 @@ public enum JobStorage {
 public struct StorageFileSystem: FileSystem {
     public var base: any FileSystem
     public var roots: [String]
-    public init(base: any FileSystem, roots: [String]) { self.base = base; self.roots = roots }
+    public var validate: @Sendable (String) throws -> Void
+    public init(
+        base: any FileSystem, roots: [String], validate: @escaping @Sendable (String) throws -> Void = JobStorage.check
+    ) {
+        self.base = base; self.roots = roots; self.validate = validate
+    }
     private func check(_ path: String) throws {
-        for root in roots where path == root || path.hasPrefix(root + "/") { try JobStorage.check(root) }
+        for root in roots where path == root || path.hasPrefix(root + "/") { try validate(root) }
     }
     public func fileExists(_ path: String) -> Bool {
         // Recovery must not mistake an offline volume for confirmed deletion.

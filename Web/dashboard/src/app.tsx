@@ -615,6 +615,49 @@ function agePolicy(n: number | undefined) {
         : `${numeric(n / 86400, 0)} days`
     : 'not configured';
 }
+function CleanupOutcome({ snapshot }: { snapshot?: Snapshot }) {
+  const summary = snapshot?.status.lastCleanup;
+  if (!summary) return <p class="muted">No completed cleanup report yet.</p>;
+  return (
+    <div class="cleanup-outcome">
+      <p>
+        <strong>Last cleanup · {stamp(summary.finishedAt)}</strong>
+      </p>
+      <p>
+        {summary.removedCount} targets removed · {bytes(summary.removedBytes)} logical data
+        {summary.unknownRemovedSizes > 0 ? ` + ${summary.unknownRemovedSizes} unknown sizes` : ''}
+      </p>
+      <p class="muted">
+        {summary.automatic ? 'Automatic retention' : 'Requested cleanup'} · {summary.deferredCount}{' '}
+        deferred or protected · {summary.failureCount} failures
+      </p>
+      <p class="muted">Logical bytes removed; actual disk space recovered may differ.</p>
+      {(summary.failureCount > 0 || summary.unavailableRoots.length > 0) && (
+        <details>
+          <summary class="danger">Needs attention</summary>
+          {[...summary.failures, ...summary.unavailableRoots].map((message) => (
+            <p class="danger" key={message}>
+              {message}
+            </p>
+          ))}
+          {summary.failureCount > summary.failures.length && (
+            <p class="muted">
+              Showing {summary.failures.length} of {summary.failureCount} failures. Full details are
+              in the daemon audit log.
+            </p>
+          )}
+          {summary.unavailableRoots.length > 0 && (
+            <p class="muted">
+              Reconnect the original drive at its configured mount path. Queued work resumes
+              automatically; interrupted commands are not replayed automatically.
+            </p>
+          )}
+        </details>
+      )}
+    </div>
+  );
+}
+
 function Storage({
   snapshot,
   online,
@@ -698,6 +741,7 @@ function Storage({
             Measure managed artifacts on demand. No storage scan runs on page refresh.
           </p>
         )}
+        <CleanupOutcome snapshot={snapshot} />
         <div class="storage-buttons">
           <button onClick={open}>Review storage</button>
           <button
@@ -1118,6 +1162,31 @@ function StorageDetail({
               Showing {report.candidates.length} of {report.candidateCount} candidates.
             </p>
           )}
+          <h3>Protected and retained</h3>
+          {report.protected ? (
+            <ul class="storage-categories">
+              {report.protected.map((item) => (
+                <li key={item.name}>
+                  <span>
+                    {item.name} · {item.count} runs
+                  </span>
+                  <span>
+                    {bytes(item.bytes)}
+                    {item.unknownSizes ? ` + ${item.unknownSizes} unknown sizes` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p class="muted">Per-reason protection accounting requires an updated daemon.</p>
+          )}
+          <p class="muted">
+            Pinned data is exempt from budget cleanup and the shorter DerivedData lifetime. Active
+            work and pending process cleanup are protected. Other data stays until its retention
+            policy allows removal.
+          </p>
+          <h3>Cleanup outcome</h3>
+          <CleanupOutcome snapshot={snapshot} />
           <h3>Retention policy</h3>
           <dl>
             {Object.entries({

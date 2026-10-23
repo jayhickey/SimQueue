@@ -29,8 +29,26 @@ A configured `/Volumes/<name>/...` path requires that mount to use a separate
 filesystem from `/Volumes` before directories are created; an absent mount is never
 intentionally recreated on the internal disk. Cleanup checks availability too.
 
-This is basic availability protection. It does not pin a volume UUID, detect a
-replacement disk, or guarantee writes/cleanup through a disconnect/replacement race.
+Each root is pinned to its filesystem UUID in `storage-volumes.json` in the state
+folder. On first use (including upgrade from older releases), an available root is
+bound to the drive currently mounted there. Existing bindings survive daemon
+restarts. A different drive with the same mount name is rejected; admission,
+preparation, and cleanup require the original volume. An unreadable identity or a
+binding that cannot be saved fails closed. Offline historical roots remain
+recorded and are skipped during discovery, rather than treated as deleted.
+
+Reconnect the original drive at the configured mount path to recover. Queued and
+admitted-but-unstarted jobs resume without resubmission; a prepared log descriptor
+is revalidated before spawn. Running commands retain their normal exit/result
+semantics: filesystem errors may fail them, and SimQueue does not replay commands
+or recover lost writes merely because the drive returned. The database remains on
+the state volume. A recovered admission hold schedules another retention pass.
+For an intentional replacement disk, drain, stop the daemon, and configure a new
+dedicated `job_output_root` before restarting. The old root's binding remains to
+protect retained evidence; do not edit the internal identity map to adopt a drive.
+
+Identity checks narrow replacement risks but cannot make an unplug during an
+individual filesystem syscall atomic or guarantee recovery of in-flight writes.
 Do not disconnect storage during jobs or cleanup. The existing disk admission
 threshold (`host.min_free_disk_gib`, default 20 GiB, 0 disables) also applies to the
 system and required job-output volumes. Low or unreadable output free space holds

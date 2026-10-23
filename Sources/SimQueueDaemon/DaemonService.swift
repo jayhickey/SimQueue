@@ -28,6 +28,10 @@ public final class DaemonService: @unchecked Sendable {
     private let artifactQueue = DispatchQueue(label: "simqd.artifact-retention")
     private var artifactCleanupRunning = false
     private var artifactStorage: ArtifactStorageInfo?
+    private var lastCleanup: CleanupSummary?
+    private var cleanupSummaryPath: String {
+        (info.statePath as NSString).deletingLastPathComponent + "/last-cleanup.json"
+    }
     private var lastStorageReviewRequestedAt: Double = -.infinity
     private var artifactCleanupDue = true
     private let artifactRequests = DispatchGroup()
@@ -70,6 +74,7 @@ public final class DaemonService: @unchecked Sendable {
     public var gitCheckout = GitCheckout()
     /// `<state dir>/events.jsonl`, appended every tick (nil: off).
     public var storageChecksEnabled = false
+    public var validateStorage: @Sendable (String) throws -> Void = JobStorage.check
     public var eventLog: EventLog?
 
     public init(
@@ -95,6 +100,13 @@ public final class DaemonService: @unchecked Sendable {
         }
         self.info = info
         self.executor = executor
+        if info.statePath != ":memory:" {
+            self.lastCleanup =
+                (try? Data(
+                    contentsOf: URL(
+                        fileURLWithPath: (info.statePath as NSString).deletingLastPathComponent + "/last-cleanup.json")))
+                .flatMap { try? JSONDecoder().decode(CleanupSummary.self, from: $0) }
+        }
         (executor as? ProcessExecutor)?.asynchronousPreparation = true
         self.eventLog = EventLog(
             path: ((info.statePath as NSString).deletingLastPathComponent as NSString)
@@ -204,10 +216,11 @@ public final class DaemonService: @unchecked Sendable {
                     try JobStorage.ensureFreeSpace(
                         JobStorage.freeBytes("/"), minimum: config.scheduler.minFreeDiskBytes)
                     for root in roots {
-                        try JobStorage.check(root)
+                        try validateStorage(root)
                         try JobStorage.ensureFreeSpace(
                             JobStorage.freeBytes(root), minimum: config.scheduler.minFreeDiskBytes)
                     }
+                    if engine.admissionStorageFailure != nil { artifactCleanupDue = true }
                     engine.admissionStorageFailure = nil
                 } catch {
                     engine.admissionStorageFailure = String(describing: error)
@@ -221,7 +234,7 @@ public final class DaemonService: @unchecked Sendable {
                 let outputRoots = engine.environment.allArtifactsRoots
                 historyQueue.async { [self] in
                     do {
-                        for root in outputRoots { try JobStorage.check(root) }
+                        for root in outputRoots { try validateStorage(root) }
                         _ = try JobStore.archiveHistory(path: statePath, artifactsRoot: artifactRoot, now: now)
                     } catch { log("history archival deferred: \(error)") }
                     locked { historyRunning = false }
@@ -514,6 +527,11 @@ public final class DaemonService: @unchecked Sendable {
             return (engine.environment.allArtifactsRoots, engine.environment.fileSystem)
         }
         guard let disk else { return GCResult(applied: apply, candidates: [], budgetBytes: nil) }
+        let unavailable =
+            storageChecksEnabled
+            ? disk.roots.compactMap { root -> String? in
+                do { try validateStorage(root); return nil } catch { return "\(root): \(error)" }
+            } : []
         let sized = SizingFileSystem(disk.fileSystem)
         let inventory = try Engine.gcInventory(roots: disk.roots, fileSystem: sized, includeStorageDetails: accounting)
         let plan = try locked { () -> Engine.GCPlan? in
@@ -526,7 +544,7 @@ public final class DaemonService: @unchecked Sendable {
         if accounting {
             var categories = StorageAccounting.categories(plan.storageEntries, fileSystem: sized)
             let owned = try locked { try store.liveResources(kinds: [.sim, .template]) }
-            var notes: [String] = []
+            var notes: [String] = unavailable.map { "Storage unavailable: " + $0 }
             var devices: [SimDevice] = []
             if !owned.isEmpty {
                 do { devices = try engine.environment.sims.listDevices() } catch {
@@ -536,6 +554,8 @@ public final class DaemonService: @unchecked Sendable {
             categories += StorageAccounting.simulators(resources: owned, devices: devices)
             let reclaimable = StorageAccounting.reclaimable(
                 candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) })
+            let protection = StorageAccounting.protection(
+                plan.storageEntries, candidates: candidates, fileSystem: sized)
             locked {
                 artifactStorage = ArtifactStorageInfo(
                     sampledAt: engine.environment.clock.now(), categories: categories,
@@ -547,15 +567,36 @@ public final class DaemonService: @unchecked Sendable {
                     retention: config.reliability.ageRules.artifactRetention,
                     cleanupMode: config.reliability.cleanupMode.rawValue)
                 artifactStorage?.notes = notes
+                artifactStorage?.protected = protection
+                artifactStorage?.cleanupAt = lastCleanup?.finishedAt
+                artifactStorage?.removedCount = lastCleanup?.removedCount ?? 0
+                artifactStorage?.failureCount = lastCleanup?.failureCount ?? 0
             }
         }
         var result = GCResult(
             applied: apply, candidates: candidates.map { GCEntry(path: $0.path, reason: $0.reason, bytes: $0.bytes) },
             budgetBytes: plan.budget)
-        defer {
+        var attempted = 0
+        func publishCleanup() -> CleanupSummary? {
             if apply {
+                let removed = Set(result.removed)
+                let measured = StorageAccounting.reclaimable(result.candidates.filter { removed.contains($0.path) })
+                let summary = CleanupSummary(
+                    finishedAt: locked { engine.environment.clock.now() }, automatic: automatic,
+                    removedCount: result.removed.count, removedBytes: measured.bytes,
+                    unknownRemovedSizes: measured.unknown,
+                    deferredCount: max(0, candidates.count - attempted),
+                    failureCount: result.failures.count, failures: Array(result.failures.prefix(100)),
+                    unavailableRoots: unavailable)
+                if info.statePath != ":memory:" {
+                    do {
+                        try JSONEncoder().encode(summary).write(
+                            to: URL(fileURLWithPath: cleanupSummaryPath), options: .atomic)
+                    } catch { log("could not save cleanup summary: \(error)") }
+                }
                 locked {
-                    artifactStorage?.cleanupAt = engine.environment.clock.now()
+                    lastCleanup = summary
+                    artifactStorage?.cleanupAt = summary.finishedAt
                     artifactStorage?.removedCount = result.removed.count
                     artifactStorage?.failureCount = result.failures.count
                     if !accounting, !result.removed.isEmpty, artifactStorage != nil {
@@ -563,14 +604,17 @@ public final class DaemonService: @unchecked Sendable {
                             "Automatic cleanup ran since this inventory. Review storage to refresh sizes."
                     }
                 }
+                return summary
             }
+            return nil
         }
+        var published = false
+        defer { if !published { _ = publishCleanup() } }
         guard apply else { return result }
         let limit =
             automatic || accounting
             ? min(20, max(0, config.reliability.ageRules.artifactRetention.maxRemovalsPerPass)) : Int.max
         let fileSystem = disk.fileSystem
-        var attempted = 0
         for candidate in candidates.prefix(limit) {
             let path = candidate.path
             let intent: ActionIntent? = try locked {
@@ -598,15 +642,19 @@ public final class DaemonService: @unchecked Sendable {
         }
         let finishDays = locked { !automatic || (!engine.maintenanceDraining && !shutdownRequested) }
         if !result.removed.isEmpty && finishDays {
-            let days = try Engine.removeEmptyArtifactDays(roots: disk.roots, fileSystem: fileSystem)
-            try locked {
-                for day in days {
-                    try store.audit(
-                        Engine.artifactRemovedAuditType, detail: "removed empty \(day)",
-                        now: engine.environment.clock.now())
+            do {
+                let days = try Engine.removeEmptyArtifactDays(roots: disk.roots, fileSystem: fileSystem)
+                try locked {
+                    for day in days {
+                        try store.audit(
+                            Engine.artifactRemovedAuditType, detail: "removed empty \(day)",
+                            now: engine.environment.clock.now())
+                    }
                 }
-            }
+            } catch { result.failures.append("empty day cleanup: \(error)") }
         }
+        result.cleanup = publishCleanup()
+        published = true
         return result
     }
 
@@ -1025,7 +1073,7 @@ public final class DaemonService: @unchecked Sendable {
 
     private func storageDiagnostics() -> StorageInfo {
         let failure: String?
-        do { try JobStorage.check(artifacts.root); failure = nil } catch { failure = String(describing: error) }
+        do { try validateStorage(artifacts.root); failure = nil } catch { failure = String(describing: error) }
         return StorageInfo(
             stateDirectory: (info.statePath as NSString).deletingLastPathComponent,
             jobOutputRoot: artifacts.root, available: failure == nil,
@@ -1083,7 +1131,7 @@ public final class DaemonService: @unchecked Sendable {
                 },
             drainComplete: drainComplete,
             storage: storageDiagnostics(), host: lastTick?.host, artifactStorage: artifactStorage,
-            storageReviewRunning: artifactCleanupRunning
+            storageReviewRunning: artifactCleanupRunning, lastCleanup: lastCleanup
         )
     }
 
