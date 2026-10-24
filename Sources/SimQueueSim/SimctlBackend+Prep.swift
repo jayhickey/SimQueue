@@ -48,10 +48,10 @@ extension SimctlBackend {
     }
 
     /// Per-app notification settings, relative to a sim's data path (iOS 11 and later).
-    static let notificationSettingsPath = "Library/BulletinBoard/VersionedSectionInfo.plist"
+    public static let notificationSettingsPath = "Library/BulletinBoard/VersionedSectionInfo.plist"
 
     /// The `sectionInfo` dictionary (bundle id: archived settings), nil if there's no file.
-    static func notificationSettings(at file: URL) throws -> [String: Any]? {
+    public static func notificationSettings(at file: URL) throws -> [String: Any]? {
         guard let data = FileManager.default.contents(atPath: file.path) else { return nil }
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         return plist?["sectionInfo"] as? [String: Any]
