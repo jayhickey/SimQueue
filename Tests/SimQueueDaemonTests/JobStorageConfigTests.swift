@@ -92,6 +92,69 @@ final class JobStorageConfigTests: XCTestCase {
         XCTAssertEqual(Set(result.roots), [outer, sibling])
     }
 
+    func testDeepTargetAncestorSymlinkCannotHideNewOrPersistedOverlap() throws {
+        let manager = FileManager.default
+        for suffix in ["live", "missing", "missing/parents/live"] {
+            let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+            let outer = state + "/outputs", anchor = outer + "/2020-01-01/new-root/anchor"
+            let alias = state + "/alias", inner = alias + "/" + suffix
+            try manager.createDirectory(atPath: anchor + "/live", withIntermediateDirectories: true)
+            defer { try? manager.removeItem(atPath: state) }
+            try manager.createSymbolicLink(atPath: alias, withDestinationPath: anchor)
+            let marker = URL(fileURLWithPath: anchor + "/live/keep")
+            let bytes = Data("preserve evidence".utf8)
+            try bytes.write(to: marker)
+            let store = try JobStore(path: ":memory:")
+            let routing = URL(fileURLWithPath: state + "/job-output.json")
+            // Proposed changes in either direction, persisted overlap, and a current
+            // root omitted from history must all fail before rewriting any files.
+            for (current, history, requested) in [
+                (outer, [outer], inner), (inner, [inner], outer),
+                (inner, [outer, inner], inner), (inner, [outer], inner),
+            ] {
+                try saveRouting(state: state, root: current, roots: history)
+                let before = try Data(contentsOf: routing)
+                let entries = try manager.subpathsOfDirectory(atPath: state).sorted()
+                for persist in [false, true] {
+                    XCTAssertThrowsError(
+                        try JobOutputConfiguration.prepare(
+                            stateDirectory: state, root: requested, store: store, persist: persist)
+                    ) { error in
+                        XCTAssertTrue(String(describing: error).contains("overlap"), "\(error)")
+                    }
+                    XCTAssertEqual(try Data(contentsOf: routing), before)
+                    XCTAssertEqual(try manager.subpathsOfDirectory(atPath: state).sorted(), entries)
+                    XCTAssertEqual(try Data(contentsOf: marker), bytes)
+                    XCTAssertEqual(try manager.destinationOfSymbolicLink(atPath: alias), anchor)
+                }
+            }
+        }
+    }
+
+    #if os(macOS)
+        func testTmpAliasOverlapPreservesMissingSuffix() throws {
+            let manager = FileManager.default
+            let state = "/tmp/simqueue-routing-" + UUID().uuidString
+            try manager.createDirectory(atPath: state, withIntermediateDirectories: true)
+            defer { try? manager.removeItem(atPath: state) }
+            let physical = URL(fileURLWithPath: state).resolvingSymlinksInPath().path
+            let outer = physical + "/outputs"
+            try manager.createDirectory(atPath: outer + "/live", withIntermediateDirectories: true)
+            let store = try JobStore(path: ":memory:")
+            try saveRouting(state: state, root: outer, roots: [outer])
+            let routing = URL(fileURLWithPath: state + "/job-output.json")
+            let before = try Data(contentsOf: routing)
+            let entries = try manager.subpathsOfDirectory(atPath: state).sorted()
+            for suffix in ["live", "missing", "missing/parents/live"] {
+                XCTAssertThrowsError(
+                    try JobOutputConfiguration.prepare(
+                        stateDirectory: state, root: state + "/outputs/" + suffix, store: store))
+                XCTAssertEqual(try Data(contentsOf: routing), before)
+                XCTAssertEqual(try manager.subpathsOfDirectory(atPath: state).sorted(), entries)
+            }
+        }
+    #endif
+
     func testConfigurationDefaultsAndValidation() throws {
         XCTAssertNil(DaemonConfig().jobOutputRoot)
         XCTAssertTrue(DaemonConfig().hostTemplates.isEmpty)

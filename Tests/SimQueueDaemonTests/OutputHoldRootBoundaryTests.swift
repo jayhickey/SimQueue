@@ -14,10 +14,11 @@ final class OutputHoldRootBoundaryTests: XCTestCase {
     func testRootedAncestorCannotDeleteHeldOutputThroughAgeOrBudgetGC() throws {
         for budgetOnly in [false, true] {
             for route in ["manual", "background", "watchdog"] {
-                for nested in [false, true] {
+                for layout in ["root", "nested", "deep-alias"] {
                     let state = testScratchRoot() + "/boundary-" + UUID().uuidString.prefix(8)
                     let outer = state + "/outputs", candidate = outer + "/2020-01-01/new-root"
-                    let inner = candidate + (nested ? "/nested" : "")
+                    let deepAlias = layout == "deep-alias"
+                    let inner = deepAlias ? state + "/alias/live" : candidate + (layout == "nested" ? "/nested" : "")
                     let files = RootedFileSystem(roots: [outer, inner, state + "/work"])
                     try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
                     defer { try? FileManager.default.removeItem(atPath: state) }
@@ -39,6 +40,12 @@ final class OutputHoldRootBoundaryTests: XCTestCase {
                         store: store, environment: environment, config: config.scheduler,
                         reliability: config.reliability,
                         ownerID: "test", pid: 1)
+                    if deepAlias {
+                        let anchor = candidate + "/anchor"
+                        try FileManager.default.createDirectory(atPath: anchor, withIntermediateDirectories: true)
+                        try FileManager.default.createSymbolicLink(
+                            atPath: state + "/alias", withDestinationPath: anchor)
+                    }
                     let id = UUID().uuidString
                     try store.createOutputHold(id: id, label: "evidence", now: clock.now())
                     let job = try store.submitHeld(
@@ -55,15 +62,23 @@ final class OutputHoldRootBoundaryTests: XCTestCase {
                     let inventory = try Engine.gcInventory(roots: [outer, inner], fileSystem: files)
                     XCTAssertTrue(inventory.directories.contains { $0.path == candidate && $0.jobID == "new-root" })
                     let plan = try engine.gcPlan(now: clock.now(), inventory: inventory)
-                    XCTAssertFalse(engine.gcCandidates(plan).contains { $0.path == candidate })
+                    // Configuration is deliberately bypassed here. Lexical engine
+                    // planning cannot resolve the alias under the service lock; the
+                    // physical filesystem boundary must refuse the attempted removal.
+                    XCTAssertEqual(engine.gcCandidates(plan).contains { $0.path == candidate }, deepAlias)
                     for spelling in [candidate, candidate + "/", candidate + "/."] {
-                        XCTAssertFalse(try engine.stillRemovable(spelling, now: clock.now()))
+                        XCTAssertEqual(try engine.stillRemovable(spelling, now: clock.now()), deepAlias)
                     }
                     if route == "manual" {
-                        XCTAssertTrue(try engine.garbageCollect(apply: true, now: clock.now()).removed.isEmpty)
+                        let result = try engine.garbageCollect(apply: true, now: clock.now())
+                        XCTAssertTrue(result.removed.isEmpty)
+                        XCTAssertEqual(
+                            result.failures.contains { $0.contains(candidate) && $0.contains("refusing") }, deepAlias)
                     } else if route == "watchdog" {
-                        XCTAssertTrue(
-                            try engine.watchdogPass(.full, config: WatchdogConfig()).age.artifactsRemoved.isEmpty)
+                        let report = try engine.watchdogPass(.full, config: WatchdogConfig()).age
+                        XCTAssertTrue(report.artifactsRemoved.isEmpty)
+                        XCTAssertEqual(
+                            report.failures.contains { $0.contains(candidate) && $0.contains("refusing") }, deepAlias)
                     } else {
                         let service = DaemonService(
                             engine: engine, config: config,
@@ -81,12 +96,33 @@ final class OutputHoldRootBoundaryTests: XCTestCase {
                         }
                         XCTAssertEqual(accepted.scheduled, true)
                         service.waitForBackgroundWork()
+                        guard case .result(.status(let status)) = service.handle(Request(params: .status)).body else {
+                            return XCTFail("background GC status unavailable")
+                        }
+                        let summary = try XCTUnwrap(status.lastCleanup)
+                        XCTAssertEqual(summary.removedCount, 0)
+                        XCTAssertEqual(summary.failureCount, deepAlias ? 1 : 0)
+                        if deepAlias {
+                            XCTAssertTrue(
+                                summary.failures.contains { $0.contains(candidate) && $0.contains("refusing") })
+                        }
                     }
-                    XCTAssertNil(
-                        try engine.beginArtifactRemoval(
-                            path: candidate, reason: "stale ancestor plan", now: clock.now()))
+                    if !deepAlias {
+                        XCTAssertNil(
+                            try engine.beginArtifactRemoval(
+                                path: candidate, reason: "stale ancestor plan", now: clock.now()))
+                    } else {
+                        let audit = try store.auditEntries()
+                        XCTAssertTrue(
+                            audit.contains { $0.type == "cleanup_failed" && $0.detail?.contains(candidate) == true })
+                        XCTAssertFalse(
+                            audit.contains {
+                                $0.type == Engine.artifactRemovedAuditType && $0.detail?.contains(candidate) == true
+                            })
+                    }
                     XCTAssertEqual(
-                        try Data(contentsOf: URL(fileURLWithPath: marker)), bytes, "\(route), budget=\(budgetOnly)")
+                        try Data(contentsOf: URL(fileURLWithPath: marker)), bytes,
+                        "\(route), budget=\(budgetOnly), layout=\(layout)")
                     XCTAssertTrue(try store.hasActiveOutputHold(jobID: job.id))
                 }
             }

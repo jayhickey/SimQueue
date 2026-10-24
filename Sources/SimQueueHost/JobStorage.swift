@@ -90,6 +90,9 @@ public enum JobStorage {
         #else
             let caseSensitive = true
         #endif
+        // Walk physical parents so trusted symlinks cannot skip an enclosing root.
+        // Keep the missing-path suffix accumulated before resolving the existing ancestor.
+        ancestor = existing.path
         // Trusted ancestors can have symlink, mount or macOS firmlink aliases.
         // Compare device/inode identities plus the relative suffix at each ancestor.
         var identities: [DirectoryIdentity: String] = [:]
