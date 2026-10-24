@@ -369,7 +369,7 @@ public struct Scheduler: Sendable {
         if boots > 0 && !state.allowNewBoots {
             reasons.append(.poolWarming(needed: sims, ready: state.idleRunning))
         }
-        if boots > 0 && state.allowNewBoots {
+        if boots > 0 {
             // Boots run one after another (at most `maxConcurrentBoots` at a time), so a
             // job may be admitted whenever a boot slot is free; its remaining boots queue
             // behind it and keep the slots busy until done. Requiring every boot to start

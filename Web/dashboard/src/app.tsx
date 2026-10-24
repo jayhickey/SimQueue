@@ -509,6 +509,25 @@ function Recent({
       <p class="summary-caption">
         Displayed results · pass rate excludes canceled/expired · median uses known runs
       </p>
+      <dl class="timing-averages" aria-label="Average job timings">
+        <div>
+          <dt>Average queue wait</dt>
+          <dd>{duration(stats.averageWait)}</dd>
+          <small>
+            {stats.waitCount} {stats.waitCount === 1 ? 'job' : 'jobs'} · excludes preparation
+          </small>
+        </div>
+        <div>
+          <dt>Average execution</dt>
+          <dd>{duration(stats.averageRun)}</dd>
+          <small>
+            {stats.runCount} {stats.runCount === 1 ? 'job' : 'jobs'} · latest attempt
+          </small>
+        </div>
+      </dl>
+      <p class="summary-caption">
+        Matching recent completed jobs, up to 100. Known timings only; queue wait excludes retries.
+      </p>
       <div class="recent-list">
         {jobs.length ? (
           jobs.slice(0, all ? 100 : 12).map((j) => (

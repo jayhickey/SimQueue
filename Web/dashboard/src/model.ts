@@ -257,7 +257,8 @@ export function recentSummary(jobs: Job[]) {
   const failed = jobs.filter((j) =>
     ['failed', 'infra_failed', 'timed_out', 'interrupted'].includes(j.state),
   ).length;
-  const durations = jobs
+  const completed = jobs.filter((j) => !isActive(j) && epoch(j.finished_at) !== null);
+  const durations = completed
     .map((j) => {
       const s = epoch(j.started_at),
         f = epoch(j.finished_at);
@@ -266,12 +267,37 @@ export function recentSummary(jobs: Job[]) {
     .filter(finite)
     .sort((a, b) => a - b);
   const mid = Math.floor(durations.length / 2);
+  const waits = completed
+    .map((j) => {
+      const q = epoch(j.queue_time),
+        a = epoch(j.admitted_at),
+        s = epoch(j.started_at),
+        f = epoch(j.finished_at);
+      // Legacy pre-start spans include preparation; retries include earlier attempts.
+      return (j.attempt ?? 0) === 0 &&
+        q !== null &&
+        a !== null &&
+        s !== null &&
+        f !== null &&
+        q <= a &&
+        a <= s &&
+        s <= f
+        ? a - q
+        : null;
+    })
+    .filter(finite);
+  const average = (values: number[]) =>
+    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
   return {
     passed,
     failed,
     other: jobs.length - passed - failed,
     rate: passed + failed ? Math.round((passed * 100) / (passed + failed)) : null,
     median: durations.length ? (durations[mid] + durations[durations.length - 1 - mid]) / 2 : null,
+    averageWait: average(waits),
+    waitCount: waits.length,
+    averageRun: average(durations),
+    runCount: durations.length,
   };
 }
 export const thermalValue = (state: string | undefined) =>

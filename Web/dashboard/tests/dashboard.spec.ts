@@ -46,6 +46,44 @@ test('failure banner falls back to the job ID when name and command are absent',
   await ready(page);
   await expect(page.locator('.warning-chip.danger b')).toHaveText('mobile · J-2206 failed');
 });
+test('pool wait details include the measured boot gate and fit a phone', async ({ page }) => {
+  await snapshot(page, (s) => {
+    s.active.find((j: any) => j.state === 'queued').wait_reasons = [
+      { code: 'pool_warming', summary: 'waiting for the simulator pool: needs 1, 0 ready' },
+      {
+        code: 'load_too_high_for_boot',
+        summary:
+          'simulator boot held: one-minute CPU load 31.5 exceeds boot limit 30.0; rechecks automatically',
+      },
+    ];
+  });
+  await ready(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await expect(page.locator('.wait-reason').first()).toContainText('31.5 exceeds boot limit 30.0');
+  await noOverflow(page);
+});
+test('average timings show sample sizes, follow filters and fit a phone', async ({
+  page,
+}, testInfo) => {
+  await ready(page);
+  const panel = page.locator('.timing-averages');
+  await expect(panel).toContainText('Average queue wait');
+  await expect(panel.locator('dd').first()).toHaveText('50s');
+  await expect(panel.locator('dd').last()).toHaveText('5m 24s');
+  await expect(panel).toContainText('11 jobs');
+  await page.setViewportSize({ width: 320, height: 900 });
+  await panel.scrollIntoViewIfNeeded();
+  await noOverflow(page);
+  await page.screenshot({ path: `../../.build/dashboard/averages-${testInfo.project.name}.png` });
+  await page.getByRole('button', { name: 'Search and filter', exact: true }).first().click();
+  await page.getByRole('searchbox').fill('Smoke');
+  await expect(panel.locator('dd').last()).toHaveText('5m 20s');
+  await expect(panel).toContainText('1 job ·');
+  await page.getByRole('searchbox').fill('no matching job');
+  await expect(panel.locator('dd').first()).toHaveText('—');
+  await expect(panel.locator('dd').last()).toHaveText('—');
+  await expect(panel).toContainText('0 jobs');
+});
 for (const colorScheme of ['light', 'dark'] as const) {
   test(`complete ${colorScheme} dashboard, missing-data safety and responsive layouts`, async ({
     page,

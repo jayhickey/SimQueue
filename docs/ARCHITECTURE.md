@@ -35,9 +35,11 @@ When memory pressure blocks admission, the pool shuts down verified idle, unleas
 
 By default, entry occurs when five-minute load exceeds 3 × active cores, or one-minute load exceeds 3 × cores while five-minute load exceeds 1.5 × cores. A recovered one-minute load at or below 2 × cores suppresses those historical gates. On a ten-core Mac that recovery threshold is 20, so a previous boot spike need not keep admissions waiting for the entire five-minute average to decay.
 
+The separate simulator-boot gate permits new boots when one-minute load is at or below **3 × core count** (30 on a ten-core Mac). `host.boot_load_per_core` overrides this factor. Memory, disk, swap growth, thermal limits, boot concurrency, and post-boot settling still apply. Raising the boot default from 2× to 3× does not change those limits or host-wide admission throttling.
+
 The existing `host.throttle_clear_load5_per_core` factor supplies both short-average recovery and historical hysteresis. Above its one-minute threshold, the original entry rules remain, and a prior hold persists until entry rules stop and five-minute load clears that threshold. Optional `max_load5` and `resume_below_load5` always take precedence, including during recovery. Default recovery applies on every pass, so stale five-minute history cannot toggle the hold solely because its persisted state changed.
 
-Boots have an additional one-minute load gate, normally 2 × cores. Memory, pressure, swap, thermal and disk gates still apply after load recovery. Load averages are not instantaneous CPU utilization; an idle-looking CPU sample alone does not bypass these checks.
+Memory, pressure, swap, thermal and disk gates still apply after load recovery. Load averages are not instantaneous CPU utilization; an idle-looking CPU sample alone does not bypass these checks.
 
 ### Ordering and backfill
 

@@ -27,8 +27,8 @@ public struct SchedulerConfig: Sendable, Equatable {
     public var maxConcurrentBoots: Int
     /// Exclusive jobs (`--exclusive`) that may run at once. Default 1: one at a time.
     public var maxConcurrentExclusive: Int
-    /// Boot-only gate: a boot is allowed only when load1 <= factor x cpuCount. Default 2.0
-    /// from manzanas. Stricter than the host-wide load throttle on hosts with few cores.
+    /// Boot-only gate: a boot is allowed only when load1 <= factor x cpuCount. Default 3.0.
+    /// This boot gate is separate from host-wide admission throttling.
     public var bootLoadFactor: Double
     /// Free-space floor on the state-directory volume: admissions and pool boots hold below
     /// it. Default 20 GiB; config `host.min_free_disk_gib` overrides it (0 turns the gate off).
@@ -66,7 +66,7 @@ public struct SchedulerConfig: Sendable, Equatable {
         maxParkedSims: Int = 0,
         maxConcurrentBoots: Int = 1,
         maxConcurrentExclusive: Int = 1,
-        bootLoadFactor: Double = 2.0,
+        bootLoadFactor: Double = 3.0,
         minFreeDiskBytes: UInt64 = 20 * ByteSize.gibibyte,
         swapGrowthLimitBytesPerMinute: Double = Double(50 * ByteSize.mebibyte),
         maxSwapUsedBytes: UInt64 = 3 * ByteSize.gibibyte,

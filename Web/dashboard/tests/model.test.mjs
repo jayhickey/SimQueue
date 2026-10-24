@@ -43,6 +43,42 @@ test('summaries distinguish cancellation from failure and use known durations', 
     null,
   );
 });
+test('averages use completed known phases, skip ambiguous waits and count samples', () => {
+  const job = {
+    state: 'succeeded',
+    attempt: 0,
+    queue_time: 0,
+    admitted_at: 10,
+    started_at: 15,
+    finished_at: 35,
+  };
+  const jobs = [
+    job,
+    { ...job, admitted_at: 30, started_at: 35, finished_at: 75 },
+    { ...job, attempt: 1 },
+    { ...job, admitted_at: undefined },
+    { ...job, state: 'canceled', started_at: undefined },
+    { ...job, state: 'running' },
+    { ...job, admitted_at: -1 },
+    { ...job, started_at: 40 },
+    { ...job, finished_at: 'invalid' },
+  ];
+  const stats = m.recentSummary(jobs);
+  assert.equal(stats.averageWait, 20000);
+  assert.equal(stats.waitCount, 2);
+  assert.equal(stats.averageRun, 24000);
+  assert.equal(stats.runCount, 5);
+  const zero = m.recentSummary([{ ...job, admitted_at: 0, started_at: 0, finished_at: 0 }]);
+  assert.equal(zero.averageWait, 0);
+  assert.equal(zero.averageRun, 0);
+  for (const empty of [[], [{ state: 'failed', finished_at: 10 }]]) {
+    const result = m.recentSummary(empty);
+    assert.equal(result.averageWait, null);
+    assert.equal(result.averageRun, null);
+    assert.equal(result.waitCount, 0);
+    assert.equal(result.runCount, 0);
+  }
+});
 test('filters include caller labels, commands, IDs and submitters', () => {
   const j = fixture.active[0];
   assert.equal(m.matches(j, 'TEST FILTER', '', ''), true);

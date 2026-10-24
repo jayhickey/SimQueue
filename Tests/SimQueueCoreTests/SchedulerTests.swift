@@ -139,6 +139,29 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(plan.reasonCodes(for: "J-1"), ["sim_capacity"])
     }
 
+    func testManagedPoolExplainsLoadAndBootSlotHoldsWithoutChangingAdmission() {
+        let job = makeJob("J-pool", seq: 1, resources: sims(1))
+        var request = input(
+            queued: [job], host: makeHost(load1: 31, load5: 0),
+            pool: PoolSnapshot(bootsInProgress: 1))
+        request.allowNewBoots = false
+        let plan = scheduler.plan(request)
+        XCTAssertTrue(plan.admissions.isEmpty)
+        XCTAssertEqual(
+            plan.reasonCodes(for: job.id), ["pool_warming", "boot_capacity", "load_too_high_for_boot"])
+        XCTAssertTrue(plan.waiting[0].reasons.last!.summary.contains("31.0 exceeds boot limit 30.0"))
+
+        request.host.load1 = 30
+        request.pool = PoolSnapshot()
+        let warming = scheduler.plan(request)
+        XCTAssertEqual(warming.reasonCodes(for: job.id), ["pool_warming"])
+        XCTAssertTrue(warming.admissions.isEmpty)
+
+        request.pool = PoolSnapshot(idleRunning: 1)
+        request.host.load1 = 31
+        XCTAssertEqual(scheduler.plan(request).admittedIDs, [job.id])
+    }
+
     func testParkedThawCountsAgainstRunningCap() {
         let job = makeJob("J-1", seq: 1, retryable: true, resources: sims(1))
         let config = testConfig(maxRunningSims: 2, maxParkedSims: 1)
@@ -181,7 +204,7 @@ final class SchedulerTests: XCTestCase {
     }
 
     func testBootLoadGateOnlyAppliesToBoots() {
-        let host = makeHost(load1: 25, load5: 10, cpuCount: 10)  // limit 2 x 10 = 20
+        let host = makeHost(load1: 31, load5: 10, cpuCount: 10)  // limit 3 x 10 = 30
         let job = makeJob("J-1", seq: 1, retryable: true, resources: sims(1))
         XCTAssertEqual(
             scheduler.plan(input(queued: [job], host: host)).reasonCodes(for: "J-1"), ["load_too_high_for_boot"])

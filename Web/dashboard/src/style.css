@@ -659,6 +659,29 @@ aside > section + section {
   color: var(--muted);
   margin: 4px 0 10px;
 }
+.timing-averages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 8px;
+}
+.timing-averages > div {
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.timing-averages dt,
+.timing-averages small {
+  color: var(--muted);
+  font-size: 0.7692rem;
+}
+.timing-averages dd {
+  margin: 6px 0;
+  font-size: 1.3846rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
 .recent-list {
   overflow: hidden;
 }

@@ -92,7 +92,7 @@ final class PoolManagerTests: XCTestCase {
         XCTAssertEqual(try engine.poolPass(config: config, demand: 2).bootsDeferredForLoad.count, 1)
         let rows = try audits(store, "pool_boot_deferred")
         XCTAssertEqual(rows.count, 2, "the set changed")
-        XCTAssertTrue(rows[1].contains("above 16.0 (2.0x 8 cores)"), rows[1])
+        XCTAssertTrue(rows[1].contains("above 24.0 (3.0x 8 cores)"), rows[1])
         harness.clock.advance(by: 1)
         XCTAssertEqual(try engine.poolPass(config: config, demand: 0).bootsDeferredForLoad, [])
         XCTAssertEqual(try audits(store, "pool_boot_resumed"), [], "load is still above the gate")
@@ -119,19 +119,19 @@ final class PoolManagerTests: XCTestCase {
         let resumed = try audits(store, "pool_boot_resumed")
         XCTAssertEqual(resumed.count, 1)
         // Deferred from t=1 to t=6 over 5 passes, though the waiting sim changed at t=4.
-        XCTAssertEqual(resumed, ["load1 back under 16.0: after 5s (5 passes; load1 1.0)"])
+        XCTAssertEqual(resumed, ["load1 back under 24.0: after 5s (5 passes; load1 1.0)"])
         XCTAssertEqual(try audits(store, "pool_boot_deferred").count, 2, "start, then the change")
     }
 
-    func testNoBootWhileLoad1IsAboveTwiceTheCores() throws {
-        let (harness, store, engine) = try setUp(load1: 17)
+    func testNoBootWhileLoad1IsAboveThreeTimesTheCores() throws {
+        let (harness, store, engine) = try setUp(load1: 25)
         let config = SimPoolConfig()
         _ = try engine.poolPass(config: config, demand: 1)
         let report = try engine.poolPass(config: config, demand: 1)
         XCTAssertEqual(report.bootsDeferredForLoad.count, 1)
         XCTAssertEqual(try store.poolSims().first?.phase, .shutdown)
         XCTAssertEqual(try audits(store, "pool_boot_deferred").count, 1)
-        harness.probe.update { $0.load1 = 16 }
+        harness.probe.update { $0.load1 = 24 }
         _ = try engine.poolPass(config: config, demand: 1)
         XCTAssertEqual(try store.poolSims().first?.phase, .settling)
     }
@@ -139,7 +139,7 @@ final class PoolManagerTests: XCTestCase {
     func testThePoolBootGateUsesBootLoadFactor() throws {
         let harness = Harness()
         harness.reliability.cleanupMode = .enforce
-        harness.config.bootLoadFactor = 3
+        harness.config.bootLoadFactor = 2
         harness.probe.update { host in
             host.cpuCount = 8
             host.load1 = 20  // above 2x8, under 3x8
@@ -148,7 +148,10 @@ final class PoolManagerTests: XCTestCase {
         let (engine, _, _) = try harness.start(store: store)
         let config = SimPoolConfig()
         _ = try engine.poolPass(config: config, demand: 1)
-        XCTAssertEqual(try engine.poolPass(config: config, demand: 1).bootsDeferredForLoad, [])
+        XCTAssertEqual(try engine.poolPass(config: config, demand: 1).bootsDeferredForLoad.count, 1)
+        XCTAssertEqual(try store.poolSims().first?.phase, .shutdown)
+        harness.probe.update { $0.load1 = 16 }
+        _ = try engine.poolPass(config: config, demand: 1)
         XCTAssertEqual(try store.poolSims().first?.phase, .settling)
     }
 

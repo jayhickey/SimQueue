@@ -128,7 +128,7 @@ final class HostSizingConfigTests: XCTestCase {
         XCTAssertEqual(
             config.hostSizingSummary(cpuCount: 10, totalMemoryBytes: 32 * ByteSize.gibibyte),
             "simqd: host sizing for 10 cores, 32768 MiB: reserve 3276 MiB, max_running_sims 4, "
-                + "boot gate load1 <= 20.0, default throttle load5 > 30.0 or load1 > 30.0 with load5 > 15.0, "
+                + "boot gate load1 <= 30.0, default throttle load5 > 30.0 or load1 > 30.0 with load5 > 15.0, "
                 + "recovery at load1 <= 20.0; otherwise load5 <= 20.0 after entry triggers clear, "
                 + "pool max_sims 4, settle load5 < 20.0 or load1 <= 20.0 (default recovery)")
     }

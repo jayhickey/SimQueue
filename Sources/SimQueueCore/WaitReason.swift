@@ -91,7 +91,8 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .bootCapacity(let needed, let inProgress, let maximum):
             return "needs \(needed) new boot(s); \(inProgress) boot(s) pending, at most \(maximum) at a time"
         case .loadTooHighForBoot(let load, let limit):
-            return "load1 \(Self.fixed(load)) is above the boot limit \(Self.fixed(limit))"
+            return
+                "simulator boot held: one-minute CPU load \(Self.fixed(load)) exceeds boot limit \(Self.fixed(limit)); rechecks automatically"
         case .insufficientMemory(let available, let needed, let reserve):
             return
                 "needs \(Self.gib(needed)) but only \(Self.gib(available)) available with \(Self.gib(reserve)) reserve"

@@ -385,8 +385,8 @@ extension Engine {
             try store.audit(entry.type, detail: "\(entry.udid) \(entry.detail)", now: now)
         }
         var byUDID = Dictionary(sims.map { ($0.udid, $0) }, uniquingKeysWith: { first, _ in first })
-        // Boot gate: no boot while load1 is above `boot_load_per_core` x the core count (2 by
-        // default, borrowed from manzanas; the scheduler's boot gate uses the same limit), nor
+        // Boot gate: no boot while load1 is above `boot_load_per_core` x the core count (3 by
+        // default; the scheduler's boot gate uses the same limit), nor
         // while another tool's sim is booted (`external_sim_patterns`; never our own).
         let limits = scheduler.config
         var headroom: UInt64 = 0
