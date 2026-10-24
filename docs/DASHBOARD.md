@@ -17,7 +17,7 @@ stack cards without horizontally scrolling tables.
   memory/pressure/swap, state-volume free space relative to the configured floor,
   and categorical thermal state. Missing readings display unavailable. Thermal
   state is not a temperature measurement.
-- Small SVG trend lines labeled **this tab** retain at most 120 fresh samples per
+- Small SVG trend lines retain at most 120 fresh samples per
   metric in memory. Duplicate samples are ignored and missing/disconnected periods
   leave gaps. They start with this tab, not daemon history, and are lost on reload.
 - Running/preparing cards show elapsed time, wait/prep phases, priority and granted
@@ -29,6 +29,15 @@ stack cards without horizontally scrolling tables.
   Pass rate includes successes and failures (including infrastructure, interruption
   and timeout), excludes canceled/expired jobs, and median execution uses only known
   valid start/end durations. Other outcomes remain separately counted.
+  Average queue wait and execution show their individual sample counts from the
+  matching recent completed jobs (up to 100, including rows beyond the initial 12).
+  Queue wait ends at admission and excludes preparation, retries, unstarted jobs
+  and missing or out-of-order phase timestamps. Execution averages known valid
+  start/finish durations for the latest attempt, including unsuccessful outcomes.
+  Missing timings show a dash, and filters update both averages without extra API calls.
+- Pool wait explanations include the current one-minute CPU load and configured boot
+  limit when that gate is holding a new simulator, and pending/max boot counts when
+  the boot slot is occupied. These diagnostics do not change admission or boot thresholds.
 - Search covers command, project, kind, submitter and ID, with project/state filters.
   The activity timeline shows execution overlap for up to 20 latest started jobs.
 - Job details retain exact command argv, directories, commit, submitter, attempts,
