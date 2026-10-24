@@ -70,7 +70,7 @@ extension Engine {
 
     /// Runs the simulator commands for one job (no store access, no lock: an erase can take
     /// minutes). `fresh_sim` erases each sim (shut down, erase, boot). `reset_apps` uninstalls
-    /// each app and resets its privacy permissions, then resets the keychain; if a step fails
+    /// each app and resets its privacy and notification permissions, then resets the keychain; if a step fails
     /// the sim is erased instead and the reason recorded. Only owned, non-template sims are
     /// touched; anything else is refused here, before the backend is called. Stops at the
     /// first sim whose preparation failed (its outcome has `error`).
