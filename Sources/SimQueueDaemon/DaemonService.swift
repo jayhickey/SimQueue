@@ -322,6 +322,15 @@ public final class DaemonService: @unchecked Sendable {
         case .gc(let params):
             // Sizing and removal run outside the lock: a big jobs dir never stalls the scheduler.
             return respond(request) { .gc(try garbageCollect(params)) }
+        case .submitHeld(let params):
+            return respond(request) {
+                let checked = try verifiedGitSHA(params.submission)
+                let id = try OutputHold.canonicalID(params.holdID)
+                return try locked {
+                    guard !shutdownRequested else { throw ProtocolError(.invalidState, "daemon is stopping") }
+                    return .submitHeld(SubmitHeldResponse(holdID: id, submission: try submit(checked, holdID: id)))
+                }
+            }
         case .submit(let params):
             // git runs outside the lock: a slow checkout never stalls the scheduler.
             return respond(request) {
@@ -342,7 +351,30 @@ public final class DaemonService: @unchecked Sendable {
                     }
                 }
                 switch request.params {
-                case .submit: throw ProtocolError(.internalError, "submit is handled above")
+                case .outputHoldCreate(let params):
+                    let hold = try store.createOutputHold(
+                        id: params.id, label: params.label, now: engine.environment.clock.now())
+                    return .outputHold(try outputHoldResult(OutputHoldRef(id: hold.id)))
+                case .outputHoldShow(let params): return .outputHold(try outputHoldResult(params))
+                case .outputHoldList(let params):
+                    let limit = params.limit ?? 100
+                    let holds = try store.outputHolds(afterID: params.afterID, limit: limit)
+                    return .outputHolds(
+                        OutputHoldsResult(holds: holds, nextID: holds.count == limit ? holds.last?.id : nil))
+                case .outputHoldRelease(let params):
+                    // Validate the page before mutating durable release state.
+                    _ = try outputHoldResult(params)
+                    var writers = engine.artifactWritersInFlight
+                    if let real = executor as? ProcessExecutor {
+                        writers.formUnion(real.preparingJobIDs)
+                        writers.formUnion(real.runningJobIDs)
+                    }
+                    let hold = try store.releaseOutputHold(
+                        id: params.id, writersInFlight: writers, now: engine.environment.clock.now())
+                    return .outputHold(
+                        try outputHoldResult(
+                            OutputHoldRef(id: hold.id, afterJobID: params.afterJobID, limit: params.limit)))
+                case .submit, .submitHeld: throw ProtocolError(.internalError, "submit is handled above")
                 case .status: return .status(try status())
                 case .drain:
                     engine.maintenanceDraining = true
@@ -398,6 +430,14 @@ public final class DaemonService: @unchecked Sendable {
             return error(request, Self.map(failure))
         } catch let failure as ProtocolError {
             return error(request, failure)
+        } catch let failure as OutputHoldError {
+            let code: ProtocolErrorCode
+            switch failure {
+            case .invalidArgument: code = .invalidArgument
+            case .notFound: code = .notFound
+            case .conflict, .inUse: code = .invalidState
+            }
+            return error(request, ProtocolError(code, failure.description))
         } catch let failure as JobStoreError {
             return error(request, Self.map(failure))
         } catch {
@@ -926,16 +966,30 @@ public final class DaemonService: @unchecked Sendable {
         return checked
     }
 
-    private func submit(_ params: SubmitParams) throws -> SubmitResponse {
+    private func outputHoldResult(_ params: OutputHoldRef) throws -> OutputHoldResult {
+        guard let hold = try store.outputHold(id: params.id) else { throw OutputHoldError.notFound(params.id) }
+        let limit = params.limit ?? 100
+        let jobs = try store.outputHoldJobs(id: hold.id, afterJobID: params.afterJobID, limit: limit)
+        return OutputHoldResult(hold: hold, jobs: jobs, nextJobID: jobs.count == limit ? jobs.last?.jobID : nil)
+    }
+
+    private func submit(_ params: SubmitParams, holdID: String? = nil) throws -> SubmitResponse {
         let submission = try submissionFor(params)
         let now = engine.environment.clock.now()
-        let result = try store.submit(submission, now: now)
+        let result: SubmitResult
+        if let holdID {
+            result = try store.submitHeld(
+                submission, holdID: holdID, artifactsRoot: artifacts.legacyRoot ?? artifacts.root,
+                keepArtifacts: params.keep == true, now: now)
+        } else {
+            result = try store.submit(submission, now: now)
+        }
         let deduplicated: Bool
         if case .deduplicated = result { deduplicated = true } else { deduplicated = false }
-        // A deduplicated submit with --keep pins the job it returned. The pin is its own
+        // An ordinary deduplicated submit with --keep pins the job it returned. Its pin is a separate
         // write after the submit: a crash between the two leaves the job unpinned (it then
         // just follows normal retention); resubmitting with the same dedupe key pins it.
-        if params.keep == true,
+        if holdID == nil, params.keep == true,
             try store.auditEntries(jobID: result.job.id, type: Engine.artifactKeepAuditType).isEmpty
         {
             try store.audit(

@@ -426,4 +426,37 @@ final class StartPreparationTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: fixture.marker, encoding: .utf8), "1\n")
         XCTAssertEqual(try fixture.store.events(jobID: fixture.job.id).filter { $0 == "running" }.count, 1)
     }
+    func testOutputHoldReleaseWaitsForCanceledPreparationWriter() throws {
+        let daemon = try TestDaemon(realProcesses: true)
+        let gate = Gate(.directories)
+        defer { gate.resume.signal(); daemon.destroy() }
+        try XCTUnwrap(daemon.processExecutor).beforePreparationStage = { gate.pause($0) }
+        let id = UUID().uuidString
+        _ = try result(daemon, .outputHoldCreate(.init(id: id, label: "evidence")))
+        guard
+            case .submitHeld(let submitted) = try result(
+                daemon,
+                .submitHeld(
+                    .init(
+                        holdID: id,
+                        submission: SubmitParams(
+                            project: "prepare", submitter: "test", minSims: 0, command: ["/usr/bin/true"]))))
+        else { return XCTFail() }
+        let job = submitted.submission.job
+        XCTAssertEqual(gate.entered.wait(timeout: .now() + 3), .success)
+        _ = try result(daemon, .cancel(.init(jobID: job.id)))
+        XCTAssertEqual(try daemon.job(job.id).state, .canceled)
+        XCTAssertTrue(try daemon.side.resources(jobID: job.id).isEmpty, "no durable spawn row exists yet")
+        XCTAssertEqual(try daemon.protocolError(.outputHoldRelease(.init(id: id))).code, .invalidState)
+        gate.resume.signal()
+        try eventually("preparation writer discarded") {
+            guard case .logs(let logs) = try self.result(daemon, .logs(.init(jobID: job.id))) else { return false }
+            return logs.jobFinished
+        }
+        guard case .outputHold(let released) = try result(daemon, .outputHoldRelease(.init(id: id))) else {
+            return XCTFail()
+        }
+        XCTAssertNotNil(released.hold.releasedAt)
+    }
+
 }

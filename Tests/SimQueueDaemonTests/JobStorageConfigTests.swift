@@ -9,6 +9,152 @@ import SimQueueStore
 import XCTest
 
 final class JobStorageConfigTests: XCTestCase {
+    private func saveRouting(state: String, root: String, roots: [String]) throws {
+        try JSONSerialization.data(withJSONObject: ["root": root, "roots": roots, "drained": true]).write(
+            to: URL(fileURLWithPath: state + "/job-output.json"))
+    }
+
+    func testInitialRootCannotOverlapLegacyOutput() throws {
+        let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let store = try JobStore(path: ":memory:")
+        for root in [state, state + "/jobs/nested"] {
+            XCTAssertThrowsError(try JobOutputConfiguration.prepare(stateDirectory: state, root: root, store: store))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/job-output.json"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/jobs"))
+        }
+    }
+
+    func testOverlappingNewAndPersistedRootsFailWithoutChangingRoutingHistory() throws {
+        let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let store = try JobStore(path: ":memory:")
+        let outer = state + "/outputs", inner = outer + "/2020-01-01/new-root"
+        let path = URL(fileURLWithPath: state + "/job-output.json")
+        for roots in [[outer], [inner], [outer, inner]] {
+            try saveRouting(state: state, root: roots.last!, roots: roots)
+            let before = try Data(contentsOf: path)
+            let requested = roots.count == 1 ? (roots[0] == outer ? inner : outer) : inner
+            for persist in [false, true] {
+                XCTAssertThrowsError(
+                    try JobOutputConfiguration.prepare(
+                        stateDirectory: state, root: requested, store: store, persist: persist)
+                ) { error in
+                    XCTAssertTrue(String(describing: error).contains("overlap"), "\(error)")
+                }
+                XCTAssertEqual(try Data(contentsOf: path), before)
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outer))
+    }
+
+    func testRootAliasesCannotHidePersistedOverlap() throws {
+        let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let store = try JobStore(path: ":memory:")
+        let outer = state + "/outputs", inner = outer + "/2020-01-01/new-root"
+        // Includes a persisted current root missing from its history array.
+        for alias in [outer + "/", outer + "/.", outer + "/unused/..", outer + "//"] {
+            try saveRouting(state: state, root: alias, roots: [inner])
+            let path = URL(fileURLWithPath: state + "/job-output.json")
+            let before = try Data(contentsOf: path)
+            XCTAssertThrowsError(try JobOutputConfiguration.prepare(stateDirectory: state, root: inner, store: store))
+            XCTAssertEqual(try Data(contentsOf: path), before)
+        }
+    }
+
+    func testPhysicalRootAliasesAreRejectedAndSiblingRootsAreAllowed() throws {
+        let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+        let outer = state + "/outputs", linked = state + "/alias"
+        try FileManager.default.createDirectory(atPath: outer, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        try FileManager.default.createSymbolicLink(atPath: linked, withDestinationPath: outer)
+        let store = try JobStore(path: ":memory:")
+        try saveRouting(state: state, root: outer, roots: [outer])
+        XCTAssertThrowsError(
+            try JobOutputConfiguration.prepare(
+                stateDirectory: state, root: linked + "/2020-01-01/new-root", store: store))
+        #if os(macOS)
+            let values = try URL(fileURLWithPath: state).resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            if values.volumeSupportsCaseSensitiveNames == false {
+                XCTAssertThrowsError(
+                    try JobOutputConfiguration.prepare(
+                        stateDirectory: state, root: state + "/OUTPUTS/new-root", store: store))
+            }
+        #endif
+        try saveRouting(state: state, root: outer, roots: [outer])
+        let sibling = outer + "-sibling"
+        let result = try JobOutputConfiguration.prepare(stateDirectory: state, root: sibling, store: store)
+        XCTAssertEqual(result.root, sibling)
+        XCTAssertEqual(Set(result.roots), [outer, sibling])
+    }
+
+    func testDeepTargetAncestorSymlinkCannotHideNewOrPersistedOverlap() throws {
+        let manager = FileManager.default
+        for suffix in ["live", "missing", "missing/parents/live"] {
+            let state = testScratchRoot() + "/routing-" + UUID().uuidString.prefix(8)
+            let outer = state + "/outputs", anchor = outer + "/2020-01-01/new-root/anchor"
+            let alias = state + "/alias", inner = alias + "/" + suffix
+            try manager.createDirectory(atPath: anchor + "/live", withIntermediateDirectories: true)
+            defer { try? manager.removeItem(atPath: state) }
+            try manager.createSymbolicLink(atPath: alias, withDestinationPath: anchor)
+            let marker = URL(fileURLWithPath: anchor + "/live/keep")
+            let bytes = Data("preserve evidence".utf8)
+            try bytes.write(to: marker)
+            let store = try JobStore(path: ":memory:")
+            let routing = URL(fileURLWithPath: state + "/job-output.json")
+            // Proposed changes in either direction, persisted overlap, and a current
+            // root omitted from history must all fail before rewriting any files.
+            for (current, history, requested) in [
+                (outer, [outer], inner), (inner, [inner], outer),
+                (inner, [outer, inner], inner), (inner, [outer], inner),
+            ] {
+                try saveRouting(state: state, root: current, roots: history)
+                let before = try Data(contentsOf: routing)
+                let entries = try manager.subpathsOfDirectory(atPath: state).sorted()
+                for persist in [false, true] {
+                    XCTAssertThrowsError(
+                        try JobOutputConfiguration.prepare(
+                            stateDirectory: state, root: requested, store: store, persist: persist)
+                    ) { error in
+                        XCTAssertTrue(String(describing: error).contains("overlap"), "\(error)")
+                    }
+                    XCTAssertEqual(try Data(contentsOf: routing), before)
+                    XCTAssertEqual(try manager.subpathsOfDirectory(atPath: state).sorted(), entries)
+                    XCTAssertEqual(try Data(contentsOf: marker), bytes)
+                    XCTAssertEqual(try manager.destinationOfSymbolicLink(atPath: alias), anchor)
+                }
+            }
+        }
+    }
+
+    #if os(macOS)
+        func testTmpAliasOverlapPreservesMissingSuffix() throws {
+            let manager = FileManager.default
+            let state = "/tmp/simqueue-routing-" + UUID().uuidString
+            try manager.createDirectory(atPath: state, withIntermediateDirectories: true)
+            defer { try? manager.removeItem(atPath: state) }
+            let physical = URL(fileURLWithPath: state).resolvingSymlinksInPath().path
+            let outer = physical + "/outputs"
+            try manager.createDirectory(atPath: outer + "/live", withIntermediateDirectories: true)
+            let store = try JobStore(path: ":memory:")
+            try saveRouting(state: state, root: outer, roots: [outer])
+            let routing = URL(fileURLWithPath: state + "/job-output.json")
+            let before = try Data(contentsOf: routing)
+            let entries = try manager.subpathsOfDirectory(atPath: state).sorted()
+            for suffix in ["live", "missing", "missing/parents/live"] {
+                XCTAssertThrowsError(
+                    try JobOutputConfiguration.prepare(
+                        stateDirectory: state, root: state + "/outputs/" + suffix, store: store))
+                XCTAssertEqual(try Data(contentsOf: routing), before)
+                XCTAssertEqual(try manager.subpathsOfDirectory(atPath: state).sorted(), entries)
+            }
+        }
+    #endif
+
     func testConfigurationDefaultsAndValidation() throws {
         XCTAssertNil(DaemonConfig().jobOutputRoot)
         XCTAssertTrue(DaemonConfig().hostTemplates.isEmpty)

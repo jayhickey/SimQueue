@@ -83,6 +83,8 @@ extension Engine {
         var failures: [String] = []
         let fileSystem = environment.fileSystem
         for (path, reason) in reasoned {
+            // Fail closed before entering the filesystem-error reporting branch.
+            guard try stillRemovable(path, now: now) else { continue }
             do {
                 let intent = ActionIntent(
                     target: .path(path), auditType: Self.artifactRemovedAuditType,
@@ -201,17 +203,23 @@ extension Engine {
     }
 
     public func gcPlan(now: Double, inventory: GCInventory, includeStorageAccounting: Bool = false) throws -> GCPlan {
+        // Public engine callers may bypass daemon routing validation. Never interpret
+        // a configured root (or its ancestor) as an unknown removable job directory.
+        let roots = Array(Set(environment.allArtifactsRoots + inventory.roots))
+        let directories = inventory.directories.filter { directory in
+            !Self.containsArtifactRoot(directory.path, roots: roots)
+        }
         let aged = try inventory.roots.flatMap { root in
-            try ageCandidates(directories: inventory.directories.filter { $0.root == root }, now: now)
+            try ageCandidates(directories: directories.filter { $0.root == root }, now: now)
         }
         let budget = reliability.ageRules.artifactRetention.budgetBytes
         var entries: [BudgetEntry] = []
         if budget != nil {
-            entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path))
+            entries = try budgetEntries(directories: directories, already: aged.map(\.path))
         }
         var report = GCPlan(aged: aged, entries: entries, budget: budget)
         guard includeStorageAccounting else { return report }
-        report.storageEntries = try inventory.directories.filter { !$0.jobID.hasPrefix(".") }.enumerated().map {
+        report.storageEntries = try directories.filter { !$0.jobID.hasPrefix(".") }.enumerated().map {
             index, directory in
             guard index < 200 else {
                 return StorageEntry(
@@ -222,7 +230,9 @@ extension Engine {
             let category: String
             if let job {
                 let hasProcesses = try hasOwnedCommandProcesses(job)
-                if !job.state.isTerminal || hasProcesses
+                if try store.hasActiveOutputHold(jobID: job.id) {
+                    category = "Held"
+                } else if !job.state.isTerminal || hasProcesses
                     || artifactWritersInFlight.contains(job.id)
                 {
                     category = "Active / cleanup pending"
@@ -258,11 +268,13 @@ extension Engine {
     /// requeued since the plan. A `DerivedData` path needs its job
     /// and its directory both need `isRemovable`; a directory with no job record goes.
     public func stillRemovable(_ path: String, now: Double? = nil) throws -> Bool {
+        guard !Self.containsArtifactRoot(path, roots: environment.allArtifactsRoots) else { return false }
         let isDerived = path.hasSuffix("/DerivedData")
         let dir = isDerived ? String(path.dropLast("/DerivedData".count)) : path
         guard let id = dir.split(separator: "/").last.map(String.init) else { return false }
         guard !artifactWritersInFlight.contains(id) else { return false }
         guard let job = try store.job(id: id) else { return !isDerived }
+        guard try !store.hasActiveOutputHold(jobID: job.id) else { return false }
         if let now, try isPinned(job) {
             // Pins expire by age, but never by the budget or DerivedData's shorter TTL.
             guard !isDerived, job.state.isTerminal, try !hasOwnedCommandProcesses(job),
@@ -271,6 +283,12 @@ extension Engine {
             return now - (job.finishedAt ?? job.createdAt) >= keep
         }
         return try isRemovable(job)
+    }
+
+    /// Bounded by configured roots and path length; no database or filesystem scan
+    /// under the service lock. Normalize spelling and conservatively veto case aliases.
+    private static func containsArtifactRoot(_ path: String, roots: [String]) -> Bool {
+        roots.contains { JobStorage.isSameOrAncestor(path, of: $0, caseSensitive: false) }
     }
 
     /// Record under the service lock, then keep recovery from settling this live worker's
@@ -337,6 +355,7 @@ extension Engine {
         let retention = reliability.ageRules.artifactRetention
         for directory in directories where !removed.contains(directory.path) {
             guard let job = try store.job(id: directory.jobID), retention.keepSeconds(for: job.state) != nil,
+                try !store.hasActiveOutputHold(jobID: job.id),
                 try !isPinned(job), try !hasOwnedCommandProcesses(job),
                 now - (job.finishedAt ?? job.createdAt) >= retention.derivedDataSeconds
             else { continue }
@@ -375,7 +394,8 @@ extension Engine {
 
     /// Whether retention may remove a whole job directory: the job ended and is not pinned.
     func isRemovable(_ job: Job) throws -> Bool {
-        try job.state.isTerminal && !artifactWritersInFlight.contains(job.id) && !isPinned(job)
+        try job.state.isTerminal && !artifactWritersInFlight.contains(job.id)
+            && !store.hasActiveOutputHold(jobID: job.id) && !isPinned(job)
             && !hasOwnedCommandProcesses(job)
     }
 
@@ -428,7 +448,9 @@ extension Engine {
         var expired: [(endedAt: Double, path: String)] = []
         for directory in directories where !directory.jobID.hasPrefix(".") {
             let job = try store.job(id: directory.jobID)
-            if let job, try hasOwnedCommandProcesses(job) { continue }
+            if let job {
+                if try store.hasActiveOutputHold(jobID: job.id) || hasOwnedCommandProcesses(job) { continue }
+            }
             let pinned = try job.map { try isPinned($0) } ?? false
             guard let keep = retention.keepSeconds(for: job?.state, pinned: pinned) else { continue }
             let endedAt = job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400

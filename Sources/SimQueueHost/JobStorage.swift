@@ -2,8 +2,115 @@
 
 import Foundation
 
+#if canImport(Glibc)
+    import Glibc
+#elseif canImport(Darwin)
+    import Darwin
+#endif
+
 /// Basic availability checks. StorageVolumeGuard adds persistent volume identity checks.
 public enum JobStorage {
+    private struct DirectoryIdentity: Hashable {
+        var device: UInt64
+        var inode: UInt64
+    }
+
+    /// Component comparison only: safe to use while holding the service lock.
+    /// Case-insensitive comparison is a conservative veto on case-sensitive volumes.
+    public static func isSameOrAncestor(_ ancestor: String, of path: String, caseSensitive: Bool = true) -> Bool {
+        guard ancestor.hasPrefix("/"), path.hasPrefix("/") else { return false }
+        let parent = URL(fileURLWithPath: ancestor).standardizedFileURL.pathComponents
+        let child = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard parent.count <= child.count else { return false }
+        return zip(parent, child).allSatisfy {
+            caseSensitive ? $0 == $1 : $0.compare($1, options: .caseInsensitive) == .orderedSame
+        }
+    }
+
+    private struct RootAncestry {
+        var ancestors: [DirectoryIdentity: String]
+        var caseSensitive: Bool
+
+        func contains(_ other: Self) -> Bool {
+            ancestors.contains { identity, suffix in
+                guard let otherSuffix = other.ancestors[identity] else { return false }
+                return JobStorage.isSameOrAncestor(
+                    suffix, of: otherSuffix, caseSensitive: caseSensitive && other.caseSensitive)
+            }
+        }
+    }
+
+    /// Startup-only validation, before routing history is saved or recovery/GC begins.
+    /// Compare existing ancestors without creating missing roots, and respect the
+    /// volume's case semantics. This never scans job directories or changes routing.
+    public static func validateDisjointRoots(_ roots: [String]) throws {
+        let canonical = try roots.map(rootAncestry)
+        for index in roots.indices {
+            for other in roots.indices where other > index {
+                if canonical[index].contains(canonical[other]) || canonical[other].contains(canonical[index]) {
+                    throw Failure(
+                        "job output roots overlap: \(roots[index]) and \(roots[other]); current and historical roots must be disjoint. Restore a non-overlapping routing configuration before restarting; no files or routing history have been changed"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Filesystem boundary defense for callers that bypass daemon configuration.
+    /// Only call outside the service lock: it stats ancestors, never descendants.
+    static func containsConfiguredRoot(_ path: String, roots: [String]) throws -> Bool {
+        let candidate = try rootAncestry(path)
+        return try roots.contains { try candidate.contains(rootAncestry($0)) }
+    }
+
+    private static func rootAncestry(_ root: String) throws -> RootAncestry {
+        guard root.hasPrefix("/"), root != "/", !root.utf8.contains(0),
+            !root.split(separator: "/", omittingEmptySubsequences: false).dropFirst().contains(where: {
+                $0.isEmpty || $0 == "." || $0 == ".."
+            })
+        else {
+            throw Failure(
+                "invalid job output root \(root): use an absolute dedicated path without dot components or trailing/repeated slashes; routing history is unchanged"
+            )
+        }
+        var ancestor = root
+        var suffix: [String] = []
+        var nearest = stat()
+        while stat(ancestor, &nearest) != 0 {
+            guard errno == ENOENT, ancestor != "/" else {
+                throw Failure("cannot verify job output root ancestry: \(ancestor)")
+            }
+            suffix.insert((ancestor as NSString).lastPathComponent, at: 0)
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+        }
+        let existing = URL(fileURLWithPath: ancestor).resolvingSymlinksInPath()
+        #if os(macOS)
+            let values = try existing.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            let caseSensitive = values.volumeSupportsCaseSensitiveNames ?? false
+        #else
+            let caseSensitive = true
+        #endif
+        // Walk physical parents so trusted symlinks cannot skip an enclosing root.
+        // Keep the missing-path suffix accumulated before resolving the existing ancestor.
+        ancestor = existing.path
+        // Trusted ancestors can have symlink, mount or macOS firmlink aliases.
+        // Compare device/inode identities plus the relative suffix at each ancestor.
+        var identities: [DirectoryIdentity: String] = [:]
+        while true {
+            var info = stat()
+            guard stat(ancestor, &info) == 0 else {
+                throw Failure("cannot verify job output root ancestry: \(ancestor)")
+            }
+            let identity = DirectoryIdentity(
+                device: UInt64(truncatingIfNeeded: info.st_dev), inode: UInt64(info.st_ino))
+            if identities[identity] == nil { identities[identity] = "/" + suffix.joined(separator: "/") }
+            guard ancestor != "/" else { break }
+            suffix.insert((ancestor as NSString).lastPathComponent, at: 0)
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+        }
+        return RootAncestry(ancestors: identities, caseSensitive: caseSensitive)
+    }
+
     public static func check(_ root: String) throws {
         let manager = FileManager.default
         // Never create /Volumes/<name> when an external disk is absent. Check the

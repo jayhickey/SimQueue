@@ -80,9 +80,12 @@ struct Run: ParsableCommand {
     @Option(help: "passthrough (default): exit with the command's own status; mapped: simq's stable codes only.")
     var exitCode: ExitCodeMode = .passthrough
     @Option(help: "Write the final job record (JSON, with its artifacts) to this file.") var resultFile: String?
+    @Option(help: "Atomically attach job output to an active output-hold UUID (requires daemon support).")
+    var outputHold: String?
     @Argument(parsing: .postTerminator, help: "The command to run, after --.") var command: [String] = []
 
     func validate() throws {
+        if let outputHold { _ = try validatedOutputHoldID(outputHold) }
         guard !command.isEmpty else { throw ValidationError("simq run needs a command after --") }
         guard memoryMib <= UInt64.max / ByteSize.mebibyte else {
             throw ValidationError("--memory-hint-mib is too large")
@@ -140,10 +143,8 @@ struct Run: ParsableCommand {
         let signals = SignalForwarder(connection: connection)
         signals.install()
         if let signal = signals.received { throw ExitCode(128 + signal) }
-        guard
-            case .submit(let response) = try call(
-                connection, .submit(params), reconnect: true, stopRetrying: { signals.received != nil })
-        else { throw failure(.protocolError) }
+        let response = try submitJob(
+            params, outputHold: outputHold, connection: connection, stopRetrying: { signals.received != nil })
         let jobID = response.job.id
         printError("queued \(jobID)")
         #if DEBUG

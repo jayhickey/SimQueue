@@ -201,6 +201,11 @@ public final class JobStore {
     // MARK: - Submit
 
     public func submit(_ submission: JobSubmission, now: Double) throws -> SubmitResult {
+        try validateSubmission(submission)
+        return try database.immediateTransaction { try submitInTransaction(submission, now: now) }
+    }
+
+    func validateSubmission(_ submission: JobSubmission) throws {
         guard Priority.isValid(submission.priority) else {
             throw JobStoreError.invalidPriority(submission.priority)
         }
@@ -217,55 +222,57 @@ public final class JobStore {
         if let reason = submission.command?.validationError {
             throw JobStoreError.invalidCommand(reason)
         }
-        return try database.immediateTransaction {
-            if let key = submission.dedupeKey,
-                let existing = try fetchOne(
-                    "SELECT * FROM jobs WHERE dedupe_key = ? AND state IN ('queued', 'admitted', 'running') LIMIT 1;",
-                    [.text(key)]
-                )
-            {
-                return .deduplicated(existing)
-            }
-            let queuedCount =
-                try database.query(
-                    """
-                    SELECT COUNT(*) AS n FROM jobs
-                    WHERE project = ? AND submitter = ? AND state = 'queued' AND parent_id IS NULL;
-                    """,
-                    [.text(submission.project), .text(submission.submitter)]
-                ).first?.int("n") ?? 0
-            if maxQueuedPerSubmitterPerProject > 0, queuedCount >= maxQueuedPerSubmitterPerProject {
-                throw JobStoreError.queueFull(
-                    submitter: submission.submitter,
-                    project: submission.project,
-                    limit: maxQueuedPerSubmitterPerProject
-                )
-            }
-            try checkHistoryStoragePressure()
-            try checkTotalCap(adding: 1)
-            let job = try insert(
-                project: submission.project,
-                kind: submission.kind,
-                priority: submission.priority,
-                submitter: submission.submitter,
-                worktree: submission.worktree,
-                gitSHA: submission.gitSHA,
-                dedupeKey: submission.dedupeKey,
-                resources: submission.resources,
-                exclusive: submission.exclusive,
-                retryable: submission.retryable,
-                maxRetries: submission.maxRetries,
-                runTimeoutSeconds: submission.runTimeoutSeconds,
-                queueTimeoutSeconds: submission.queueTimeoutSeconds,
-                parentID: nil,
-                payloadJSON: submission.payloadJSON,
-                command: submission.command,
-                queueTime: now,
-                now: now
+    }
+
+    /// Caller owns an immediate transaction; used by ordinary and protected submission.
+    func submitInTransaction(_ submission: JobSubmission, now: Double) throws -> SubmitResult {
+        if let key = submission.dedupeKey,
+            let existing = try fetchOne(
+                "SELECT * FROM jobs WHERE dedupe_key = ? AND state IN ('queued', 'admitted', 'running') LIMIT 1;",
+                [.text(key)]
             )
-            try event(job.id, "queued", detail: "priority=\(job.priority)", at: now)
-            return .created(job)
+        {
+            return .deduplicated(existing)
         }
+        let queuedCount =
+            try database.query(
+                """
+                SELECT COUNT(*) AS n FROM jobs
+                WHERE project = ? AND submitter = ? AND state = 'queued' AND parent_id IS NULL;
+                """,
+                [.text(submission.project), .text(submission.submitter)]
+            ).first?.int("n") ?? 0
+        if maxQueuedPerSubmitterPerProject > 0, queuedCount >= maxQueuedPerSubmitterPerProject {
+            throw JobStoreError.queueFull(
+                submitter: submission.submitter,
+                project: submission.project,
+                limit: maxQueuedPerSubmitterPerProject
+            )
+        }
+        try checkHistoryStoragePressure()
+        try checkTotalCap(adding: 1)
+        let job = try insert(
+            project: submission.project,
+            kind: submission.kind,
+            priority: submission.priority,
+            submitter: submission.submitter,
+            worktree: submission.worktree,
+            gitSHA: submission.gitSHA,
+            dedupeKey: submission.dedupeKey,
+            resources: submission.resources,
+            exclusive: submission.exclusive,
+            retryable: submission.retryable,
+            maxRetries: submission.maxRetries,
+            runTimeoutSeconds: submission.runTimeoutSeconds,
+            queueTimeoutSeconds: submission.queueTimeoutSeconds,
+            parentID: nil,
+            payloadJSON: submission.payloadJSON,
+            command: submission.command,
+            queueTime: now,
+            now: now
+        )
+        try event(job.id, "queued", detail: "priority=\(job.priority)", at: now)
+        return .created(job)
     }
 
     /// Throws `queueFullTotal` if `adding` more queued rows would go over `maxQueuedTotal`.

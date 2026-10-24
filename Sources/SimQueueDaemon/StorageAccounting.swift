@@ -87,7 +87,7 @@ enum StorageAccounting {
         var groups: [String: ArtifactStorageInfo.Category] = [:]
         for (index, entry) in entries.enumerated() where !eligible.contains(entry.path) {
             let reason =
-                ["Pinned", "Active / cleanup pending"].contains(entry.category)
+                ["Held", "Pinned", "Active / cleanup pending"].contains(entry.category)
                 ? entry.category : "Within retention / not eligible"
             var group = groups[reason] ?? .init(name: reason)
             group.count += 1

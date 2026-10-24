@@ -91,7 +91,7 @@ There is no historical stats/top view, external alert delivery or webhooks. Cloc
 
 A single hourly maintenance worker first makes an online SQLite backup, checks integrity, syncs the file, durably renames it and syncs the directory. Only then may a connection-scoped authorization guard permit pruning in an atomic transaction. Normal audit UPDATE/DELETE remains forbidden. A backup retry deadline is 30 seconds; bounded prune batches have a two-second SQLite instruction deadline. That SQL deadline cannot bound an arbitrarily stalled filesystem/fsync.
 
-A pass scans at most 1,000 job and 1,000 old-health candidates, removes at most 10,000 eligible audits/released pool resources, and uses cursors so protected early rows do not starve later history. Active jobs/resources, pending intents, pins, retained artifacts and their required metadata remain protected. Recent cleanup-accounting events and current anomaly/breaker state also survive retention. A failed copy/prune leaves live history intact; the next exclusively locked pass cleans interrupted partial copies.
+A pass scans at most 1,000 job and 1,000 old-health candidates, removes at most 10,000 eligible audits/released pool resources, and uses cursors so protected early rows do not starve later history. Active jobs/resources, pending intents, active output holds, pins, retained artifacts and their required metadata remain protected. Recent cleanup-accounting events and current anomaly/breaker state also survive retention. A failed copy/prune leaves live history intact; the next exclusively locked pass cleans interrupted partial copies.
 
 Targets and the 256 MiB high-water mark are not hard filesystem quotas. Protected state and recent high churn can exceed them. Free SQLite pages are reused; older databases may retain their allocated file size until an intentionally drained, backed-up `VACUUM`. Archives rotate and are not permanent backups. Job output/artifacts have separate retention and are outside the daemon-log bound. See [installation](INSTALL.md) before exporting, compacting or purging state.
 
@@ -101,9 +101,29 @@ Artifact retention runs on one background worker shared with manual `simq gc` re
 Planning and ownership rechecks use the service lock; recursive sizing and removal run outside
 it so large build directories do not block job supervision. An automatic pass removes at most
 20 candidates, honoring a lower configured cap. It rechecks cleanup mode, breaker state,
-terminal job/process ownership and pins before each removal. In-flight deletion intents stay
+terminal job/process ownership, active output holds and pins before each removal. In-flight deletion intents stay
 protected from recovery until the worker finishes; planned drain and shutdown wait for it.
 
 Use the supplied top-level DerivedData directory for disposable compiler/tool output.
 Configure an artifact size budget and retention periods for the host's workload; retained
 artifacts have separate bounds from the database, daemon logs and history archives.
+
+
+Output holds use schema v15's `output_holds` and `output_hold_jobs` with restrictive
+foreign keys and a reverse job index; existing job rows remain the output registry.
+Protected submission (including its optional legacy `--keep` pin) and release use immediate SQLite transactions under the daemon
+state lock. Attachment rejects job-associated and overlapping path removal intents,
+including interrupted intents. Removal first rechecks live holds, then records its
+existing write-ahead intent under that lock before releasing it for filesystem I/O.
+Release checks all members and durable command/spawn ownership, plus in-memory executor
+and preparation writers. Whichever wins serialization determines the outcome: attachment
+blocks release until the member settles; release rejects subsequent protected submissions.
+
+Age, DerivedData TTL, budget and final pin-expiry rechecks all propagate hold lookup
+errors. History pruning excludes live held jobs even with missing directories; released
+memberships and their hold state must match the durable snapshot exactly in both
+directions before membership/job deletion in the live prune transaction. UUID tombstones
+are retained without reopening. Hold creation uses existing history-pressure controls;
+release and recovery remain writable. There is no new cleaner, path registry, dependency
+scheduler or external workflow policy in this primitive. API names and the initial label,
+page and tombstone limits are reviewable first-version choices.

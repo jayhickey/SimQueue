@@ -49,6 +49,49 @@ final class RootedFileSystemTests: XCTestCase {
         XCTAssertNoThrow(try fs.removeItem(root + "/runs/missing"), "missing is fine")
     }
 
+    func testCannotRecursivelyRemoveAnotherRootThroughAnAncestorOrPhysicalAlias() throws {
+        let inner = root + "/runs/J-1/nested"
+        try files.createDirectory(atPath: inner, withIntermediateDirectories: true)
+        try Data("held evidence".utf8).write(to: URL(fileURLWithPath: inner + "/keep"))
+        let alias = base + "/alias"
+        try files.createSymbolicLink(atPath: alias, withDestinationPath: root + "/runs/J-1")
+        for configuredRoot in [inner, alias + "/nested"] {
+            let guarded = RootedFileSystem(roots: [root, configuredRoot])
+            XCTAssertThrowsError(try guarded.removeItem(root + "/runs/J-1"))
+            XCTAssertThrowsError(try guarded.removeItem(inner))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: inner + "/keep")), Data("held evidence".utf8))
+            try guarded.createDirectory(root + "/runs/J-2")
+            XCTAssertNoThrow(try guarded.removeItem(root + "/runs/J-2"), "disjoint siblings remain removable")
+            // A link to a protected root is safe to unlink, never recursively entered.
+            try files.createSymbolicLink(atPath: root + "/runs/link", withDestinationPath: inner)
+            XCTAssertNoThrow(try guarded.removeItem(root + "/runs/link"))
+        }
+    }
+
+    func testDeepTargetAncestorSymlinkProtectsPhysicalParents() throws {
+        let candidate = root + "/runs/J-1", anchor = candidate + "/anchor"
+        let alias = base + "/alias", inner = alias + "/live"
+        try files.createDirectory(atPath: anchor + "/live", withIntermediateDirectories: true)
+        try files.createSymbolicLink(atPath: alias, withDestinationPath: anchor)
+        let marker = URL(fileURLWithPath: anchor + "/live/keep")
+        let bytes = Data("held evidence".utf8)
+        try bytes.write(to: marker)
+        // Missing final components must retain the same physical ancestry veto.
+        for suffix in ["live", "missing", "missing/parents/live"] {
+            let guarded = RootedFileSystem(roots: [root, alias + "/" + suffix])
+            XCTAssertThrowsError(try guarded.removeItem(candidate))
+            XCTAssertEqual(try Data(contentsOf: marker), bytes)
+            try guarded.createDirectory(root + "/runs/J-2")
+            XCTAssertNoThrow(try guarded.removeItem(root + "/runs/J-2"))
+            XCTAssertFalse(files.fileExists(atPath: root + "/runs/J-2"))
+            let link = root + "/runs/link"
+            try files.createSymbolicLink(atPath: link, withDestinationPath: inner)
+            XCTAssertNoThrow(try guarded.removeItem(link), "only unlink the leaf symlink")
+            XCTAssertFalse(files.fileExists(atPath: link))
+            XCTAssertEqual(try Data(contentsOf: marker), bytes)
+        }
+    }
+
     func testRemovingATreeWithSymlinksRemovesTheLinksNotTheirTargets() throws {
         try files.createSymbolicLink(atPath: root + "/runs/J-1/link-dir", withDestinationPath: outside + "/keep")
         try files.createSymbolicLink(

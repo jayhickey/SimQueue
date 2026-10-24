@@ -279,4 +279,66 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertTrue(try store.anomalies().isEmpty)
     }
 
+    func testOutputHoldWithoutArtifactsSurvivesReopenAndReleaseAfterSnapshotDefersPruning() throws {
+        let id = "01234567-89ab-4cde-8fab-0123456789ab"
+        let store = try JobStore(path: path)
+        try store.createOutputHold(id: id, label: "evidence", now: 0)
+        let held = try store.submitHeld(
+            JobSubmission(project: "test", submitter: "test"), holdID: id, artifactsRoot: artifacts, now: 1
+        ).job
+        _ = try store.cancel(jobID: held.id, now: 2)
+        XCTAssertTrue(try JobStore(path: path).hasActiveOutputHold(jobID: held.id))
+        XCTAssertEqual(try XCTUnwrap(archive()).jobsRemoved, 0)
+        let raced = try XCTUnwrap(
+            JobStore.archiveHistory(
+                path: path, artifactsRoot: artifacts, now: now, keepJobs: 0, keepAudits: 0,
+                beforePrune: { try store.releaseOutputHold(id: id, now: 3) }))
+        XCTAssertEqual(raced.jobsRemoved, 0, "release/membership state differs from the durable snapshot")
+        XCTAssertNotNil(try store.job(id: held.id))
+        let pruned = try XCTUnwrap(archive())
+        XCTAssertEqual(pruned.jobsRemoved, 1)
+        XCTAssertTrue(try store.outputHoldJobs(id: id).isEmpty)
+        XCTAssertNotNil(try store.outputHold(id: id)?.releasedAt, "UUID tombstone survives history pruning")
+        let saved = try Database(path: pruned.archive, readOnly: true)
+        XCTAssertEqual(try saved.query("SELECT COUNT(*) AS n FROM output_hold_jobs;").first?.int("n"), 1)
+        XCTAssertThrowsError(try store.createOutputHold(id: id, label: "evidence", now: now))
+    }
+
+    func testOutputHoldAttachedAndReleasedAfterSnapshotIsNotLost() throws {
+        let store = try JobStore(path: path)
+        let queued = try store.submit(JobSubmission(project: "test", submitter: "test", dedupeKey: "same"), now: 1).job
+        let id = "01234567-89ab-4cde-8fab-0123456789ab"
+        let result = try XCTUnwrap(
+            JobStore.archiveHistory(
+                path: path, artifactsRoot: artifacts, now: now, keepJobs: 0, keepAudits: 0,
+                beforePrune: {
+                    try store.createOutputHold(id: id, label: "evidence", now: 2)
+                    _ = try store.submitHeld(
+                        JobSubmission(project: "test", submitter: "test", dedupeKey: "same"),
+                        holdID: id, artifactsRoot: self.artifacts, now: 3)
+                    _ = try store.cancel(jobID: queued.id, now: 4)
+                    try store.releaseOutputHold(id: id, now: 5)
+                }))
+        XCTAssertEqual(result.jobsRemoved, 0)
+        XCTAssertNotNil(try store.job(id: queued.id))
+        XCTAssertEqual(try store.outputHoldJobs(id: id).count, 1)
+    }
+
+    func testReleasedHoldHistoryUsesTheRegisteredRoundedDayForArtifactExistence() throws {
+        let store = try JobStore(path: path)
+        let id = "01234567-89ab-4cde-8fab-0123456789ab"
+        try store.createOutputHold(id: id, label: "evidence", now: 0)
+        let job = try store.submitHeld(
+            JobSubmission(project: "test", submitter: "test"), holdID: id, artifactsRoot: artifacts,
+            now: 86_399.9999
+        ).job
+        _ = try store.cancel(jobID: job.id, now: 86_400)
+        try store.releaseOutputHold(id: id, now: 86_401)
+        try FileManager.default.createDirectory(
+            atPath: artifacts + "/1970-01-02/" + job.id, withIntermediateDirectories: true)
+        XCTAssertEqual(try XCTUnwrap(archive()).jobsRemoved, 0)
+        XCTAssertNotNil(try store.job(id: job.id))
+        XCTAssertEqual(try store.outputHoldJobs(id: id).count, 1)
+    }
+
 }

@@ -10,6 +10,11 @@ import SimQueueCore
 
 public enum Method: String, Sendable, Codable, CaseIterable {
     case submit
+    case submitHeld = "submit_held"
+    case outputHoldCreate = "output_hold_create"
+    case outputHoldShow = "output_hold_show"
+    case outputHoldList = "output_hold_list"
+    case outputHoldRelease = "output_hold_release"
     case status
     case drain
     case stop
@@ -586,6 +591,11 @@ public struct StopParams: Sendable, Equatable, Codable {
 
 public enum RequestParams: Sendable, Equatable {
     case submit(SubmitParams)
+    case submitHeld(SubmitHeldParams)
+    case outputHoldCreate(OutputHoldCreateParams)
+    case outputHoldShow(OutputHoldRef)
+    case outputHoldList(OutputHoldListParams)
+    case outputHoldRelease(OutputHoldRef)
     case status
     case drain
     case stop(StopParams)
@@ -609,6 +619,11 @@ public enum RequestParams: Sendable, Equatable {
     public var method: Method {
         switch self {
         case .submit: return .submit
+        case .submitHeld: return .submitHeld
+        case .outputHoldCreate: return .outputHoldCreate
+        case .outputHoldShow: return .outputHoldShow
+        case .outputHoldList: return .outputHoldList
+        case .outputHoldRelease: return .outputHoldRelease
         case .stop: return .stop
         case .drain: return .drain
         case .resume: return .resume
@@ -676,6 +691,20 @@ public struct Request: Sendable, Equatable, Codable {
                     debugDescription: "test sharding/build groups were removed in v1; submit independent complete jobs")
             }
             params = .submit(try container.decode(SubmitParams.self, forKey: .params))
+        case .submitHeld:
+            let held = try container.nestedContainer(keyedBy: HeldSubmitKeys.self, forKey: .params)
+            let legacy = try held.nestedContainer(keyedBy: RemovedSubmitKeys.self, forKey: .submission)
+            guard legacy.allKeys.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .params, in: container,
+                    debugDescription: "test sharding/build groups were removed in v1; submit independent complete jobs")
+            }
+            params = .submitHeld(try container.decode(SubmitHeldParams.self, forKey: .params))
+        case .outputHoldCreate:
+            params = .outputHoldCreate(try container.decode(OutputHoldCreateParams.self, forKey: .params))
+        case .outputHoldShow: params = .outputHoldShow(try container.decode(OutputHoldRef.self, forKey: .params))
+        case .outputHoldList: params = .outputHoldList(try container.decode(OutputHoldListParams.self, forKey: .params))
+        case .outputHoldRelease: params = .outputHoldRelease(try container.decode(OutputHoldRef.self, forKey: .params))
         case .stop: params = .stop(try container.decode(StopParams.self, forKey: .params))
         case .drain: params = .drain
         case .resume: params = .resume
@@ -704,6 +733,11 @@ public struct Request: Sendable, Equatable, Codable {
         try container.encode(params.method, forKey: .method)
         switch params {
         case .submit(let value): try container.encode(value, forKey: .params)
+        case .submitHeld(let value): try container.encode(value, forKey: .params)
+        case .outputHoldCreate(let value): try container.encode(value, forKey: .params)
+        case .outputHoldShow(let value): try container.encode(value, forKey: .params)
+        case .outputHoldList(let value): try container.encode(value, forKey: .params)
+        case .outputHoldRelease(let value): try container.encode(value, forKey: .params)
         case .jobs(let value): try container.encode(value, forKey: .params)
         case .explain(let value): try container.encode(value, forKey: .params)
         case .cancel(let value): try container.encode(value, forKey: .params)
@@ -1412,6 +1446,9 @@ public struct LogsResult: Sendable, Equatable, Codable {
 
 public enum ResultPayload: Sendable, Equatable {
     case submit(SubmitResponse)
+    case submitHeld(SubmitHeldResponse)
+    case outputHold(OutputHoldResult)
+    case outputHolds(OutputHoldsResult)
     case status(StatusResult)
     case jobs([JobInfo])
     case job(JobInfo)
@@ -1456,6 +1493,9 @@ public struct Response: Sendable, Equatable, Codable {
 
     private enum ResultKind: String, Codable {
         case submit, status, jobs, job, doctor, logs, lease, template, gc
+        case submitHeld = "submit_held"
+        case outputHold = "output_hold"
+        case outputHolds = "output_holds"
         /// `template` before the rename: read from an older daemon, and sent to a client
         /// that used a legacy `golden_*` method.
         case legacyTemplate = "golden"
@@ -1474,6 +1514,11 @@ public struct Response: Sendable, Equatable, Codable {
         case "result":
             switch try container.decode(ResultKind.self, forKey: .resultKind) {
             case .submit: body = .result(.submit(try container.decode(SubmitResponse.self, forKey: .result)))
+            case .submitHeld:
+                body = .result(.submitHeld(try container.decode(SubmitHeldResponse.self, forKey: .result)))
+            case .outputHold: body = .result(.outputHold(try container.decode(OutputHoldResult.self, forKey: .result)))
+            case .outputHolds:
+                body = .result(.outputHolds(try container.decode(OutputHoldsResult.self, forKey: .result)))
             case .status: body = .result(.status(try container.decode(StatusResult.self, forKey: .result)))
             case .jobs: body = .result(.jobs(try container.decode([JobInfo].self, forKey: .result)))
             case .job: body = .result(.job(try container.decode(JobInfo.self, forKey: .result)))
@@ -1506,6 +1551,15 @@ public struct Response: Sendable, Equatable, Codable {
             switch payload {
             case .submit(let value):
                 try container.encode(ResultKind.submit, forKey: .resultKind)
+                try container.encode(value, forKey: .result)
+            case .submitHeld(let value):
+                try container.encode(ResultKind.submitHeld, forKey: .resultKind)
+                try container.encode(value, forKey: .result)
+            case .outputHold(let value):
+                try container.encode(ResultKind.outputHold, forKey: .resultKind)
+                try container.encode(value, forKey: .result)
+            case .outputHolds(let value):
+                try container.encode(ResultKind.outputHolds, forKey: .resultKind)
                 try container.encode(value, forKey: .result)
             case .status(let value):
                 try container.encode(ResultKind.status, forKey: .resultKind)
@@ -1769,3 +1823,5 @@ public struct AlertInfo: Sendable, Equatable, Codable {
 private enum RemovedSubmitKeys: String, CodingKey {
     case shards, shardRetries = "shard_retries", buildCommand = "build_command", buildTimeout = "build_timeout_seconds"
 }
+
+private enum HeldSubmitKeys: String, CodingKey { case submission }

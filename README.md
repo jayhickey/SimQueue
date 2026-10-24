@@ -188,3 +188,10 @@ select [named host templates](docs/TEMPLATE.md#named-host-templates) from one sh
 The default host memory reserve is 10% of total RAM with a 1 GiB minimum. For example, a 16 GiB Mac keeps about 1.6 GiB of reserve. `host.min_reserve_mib` overrides the minimum; `host.reserve_mib` sets a fixed reserve instead of the percentage. Existing explicit settings are preserved.
 
 Stable releases also update the Homebrew CLI formula and optional app cask through a separate publishing job. Maintainers configure a tap-only credential as described in [releasing](docs/RELEASING.md#automatic-tap-credentials).
+
+
+For output that must survive between build, test, upload and review jobs, see
+[durable output holds](docs/PROOF-JOBS.md#durable-output-holds). Create a client UUID,
+attach it atomically with `submit/run --output-hold UUID`, and explicitly release it
+when the workflow is finished. Holds protect whole job run directories and history;
+they do not change output paths or grant simulator/writer ownership.

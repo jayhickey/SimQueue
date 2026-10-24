@@ -90,3 +90,60 @@ first; active work and pins remain protected. It is a retention target, not a ha
   eligible retention removes it according to `age_rules.artifact_retention_days`. DerivedData has its own shorter retention period.
 - `simctl io ... recordVideo` and `screenshot` need a booted sim, which the lease guarantees.
   Their exact flags vary by Xcode release; check the host tool help. Run simulator operations inside the leased command and target its `SIMQ_UDID`. Warm state may persist from earlier jobs; choose [reset or fresh preparation](TEMPLATE.md) when needed.
+
+## Durable output holds
+
+Use an output hold when generated build products or evidence must survive between
+explicit jobs, an upload, or a review. A hold protects the **whole job run directory**,
+including its top-level DerivedData, from age, DerivedData TTL and budget deletion.
+It also preserves the job's history even when no output directory exists. Normal
+command finalization still cleans disposable `SIMQ_TMPDIR`; put reusable build products
+in DerivedData or other persistent run-directory paths. Holds have no automatic expiry, heartbeat or PID lifetime. They survive cancellation, retries,
+client disconnects and daemon restarts.
+
+```sh
+HOLD=$(uuidgen)
+simq output-hold create --id "$HOLD" --label 'build and evidence' --json
+simq run --sims 0 --output-hold "$HOLD" --result-file build-result.json -- ./build.sh
+# Inspect build-result.json and explicitly pass needed paths to a later consumer.
+simq run --sims 0 --output-hold "$HOLD" -- ./upload-and-verify.sh
+simq output-hold show "$HOLD" --json
+# Release only after upload, review and your workflow's grace period are complete.
+simq output-hold release "$HOLD" --json
+```
+
+Each job still gets its own normal output paths. SimQueue does not route a later job
+to an earlier job's DerivedData, adopt terminal jobs, register arbitrary paths, or
+schedule dependencies. Prefer each job's own paths. Sequential consumers of an
+explicit earlier path must finish before release; the caller must prevent concurrent
+writes. This is a deletion veto, not a simulator lease, file lock, writer guard or
+permission to own another job's output. Application/CI rules for worktrees, sessions,
+PRs, upload verification and grace periods belong in the caller's adapter.
+
+Attach at submission with `submit --output-hold UUID` or `run --output-hold UUID`.
+Only a newly submitted job or an active dedupe match can join. Protected submission
+is atomic and requires explicit daemon support; it fails rather than silently
+submitting an unprotected job to an older daemon. A pending overlapping removal or
+recovery intent rejects attachment. An acknowledgement does not restore previously
+deleted output. Several active holds may protect one deduped job; all must be released
+before the hold veto ends.
+
+Release is permanent and idempotent. It is refused while any member is queued,
+admitted or running, has unresolved command/spawn ownership, or has an executor or
+preparation writer. A released UUID cannot be reused or reopened, even with the same
+label. **Release resumes original age timestamps immediately**: sufficiently old output
+may be deleted by the next cleanup pass. Release does not clear `submit --keep`; its
+separate, age-limited pin continues to apply. Held bytes count toward total budget use
+and may keep storage over its target. Storage reports identify protected output as
+`Held`. Neither holds nor pins are backups.
+
+UUIDs accept either letter case and are stored lowercase. Creation with the same
+active UUID and exact label is idempotent; a different label conflicts. Labels are
+printable, nonempty, without surrounding whitespace, at most 100 characters and
+256 UTF-8 bytes. `output-hold list` includes released tombstones. Use `--limit 1...200`
+(default 100), `list --after-id UUID` or `show UUID --after-job-id JOB` to page through
+results. JSON exposes `next_id` / `next_job_id`; a full page returns a cursor and an
+empty next page ends traversal. New hold creation observes database storage-pressure
+backpressure; release remains available under that pressure. Released membership
+history may be archived with its job; UUID tombstones remain live for this version.
+Unknown managed output directories retain their existing age/budget policy.
