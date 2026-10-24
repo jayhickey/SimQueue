@@ -236,7 +236,8 @@ public final class DaemonServer: @unchecked Sendable {
             return
         }
         switch request.params {
-        case .submit, .cancel, .bump, .drain, .resume, .leaseAcquire, .leaseRelease, .templateBuild, .templateRemove:
+        case .submit, .submitHeld, .outputHoldRelease, .cancel, .bump, .drain, .resume, .leaseAcquire, .leaseRelease,
+            .templateBuild, .templateRemove:
             requestTick()
         default: break
         }

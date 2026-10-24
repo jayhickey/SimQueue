@@ -119,6 +119,18 @@ extension JobStore {
                         """
                         SELECT j.seq, j.id, j.created_at, j.command_json FROM jobs j JOIN history_snapshot.jobs s ON s.id=j.id
                         WHERE j.seq > ? AND j.state NOT IN ('queued','admitted','running') AND s.state NOT IN ('queued','admitted','running')
+                        AND NOT EXISTS(SELECT 1 FROM output_hold_jobs m JOIN output_holds h ON h.id=m.hold_id
+                          WHERE m.job_id=j.id AND h.released_at IS NULL)
+                        AND NOT EXISTS(
+                          SELECT m.hold_id,m.job_id,m.attached_at,h.label,h.created_at,h.released_at
+                          FROM output_hold_jobs m JOIN output_holds h ON h.id=m.hold_id WHERE m.job_id=j.id
+                          EXCEPT SELECT m.hold_id,m.job_id,m.attached_at,h.label,h.created_at,h.released_at
+                          FROM history_snapshot.output_hold_jobs m JOIN history_snapshot.output_holds h ON h.id=m.hold_id WHERE m.job_id=j.id)
+                        AND NOT EXISTS(
+                          SELECT m.hold_id,m.job_id,m.attached_at,h.label,h.created_at,h.released_at
+                          FROM history_snapshot.output_hold_jobs m JOIN history_snapshot.output_holds h ON h.id=m.hold_id WHERE m.job_id=j.id
+                          EXCEPT SELECT m.hold_id,m.job_id,m.attached_at,h.label,h.created_at,h.released_at
+                          FROM output_hold_jobs m JOIN output_holds h ON h.id=m.hold_id WHERE m.job_id=j.id)
                         AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.parent_id=j.id)
                         AND NOT EXISTS(SELECT 1 FROM owned_resources r WHERE r.owner_job_id=j.id AND r.state!='released')
                         AND NOT EXISTS(SELECT 1 FROM action_intents i WHERE i.job_id=j.id OR i.resource_id IN (SELECT id FROM owned_resources WHERE owner_job_id=j.id))
@@ -142,7 +154,8 @@ extension JobStore {
                         }
                         let artifact =
                             (command?.artifactsRoot ?? artifactsRoot) + "/"
-                            + formatter.string(from: Date(timeIntervalSince1970: created)) + "/"
+                            + formatter.string(from: Date(timeIntervalSince1970: (created * 1000).rounded() / 1000))
+                            + "/"
                             + id
                         guard !files.fileExists(atPath: artifact),
                             !pendingPaths.contains(where: {
@@ -153,6 +166,9 @@ extension JobStore {
                         try db.run("DELETE FROM explanations WHERE job_id=?;", [.text(id)])
                         try db.run(
                             "DELETE FROM owned_resources WHERE owner_job_id=? AND state='released';", [.text(id)])
+                        // Released memberships may be pruned only after their exact state
+                        // is durable in this snapshot. Hold UUID tombstones stay live.
+                        try db.run("DELETE FROM output_hold_jobs WHERE job_id=?;", [.text(id)])
                         try db.run("DELETE FROM jobs WHERE id=?;", [.text(id)])
                         jobsRemoved += db.changes
                     }

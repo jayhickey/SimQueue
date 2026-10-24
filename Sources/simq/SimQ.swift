@@ -32,7 +32,8 @@ struct SimQ: ParsableCommand {
             """,
         version: SimQueueVersion.current,
         subcommands: [
-            Submit.self, Run.self, Status.self, Jobs.self, Explain.self, Logs.self, Cancel.self, Bump.self, Wait.self,
+            Submit.self, Run.self, OutputHoldCommand.self, Status.self, Jobs.self, Explain.self, Logs.self, Cancel.self,
+            Bump.self, Wait.self,
             Doctor.self,
             OwnedUDIDs.self, Lease.self, Project.self, Template.self, LegacyGolden.self, MCP.self,
             Dashboard.self, Init.self, Uninstall.self, Drain.self, Resume.self, GC.self, AgentGuide.self, Docs.self,
@@ -378,12 +379,15 @@ struct Submit: ParsableCommand {
         help: "Pin the job's artifacts: kept 90 days (artifact_retention_days.kept), never removed for the size budget."
     )
     var keep = false
+    @Option(help: "Atomically attach job output to an active output-hold UUID (requires daemon support).")
+    var outputHold: String?
     @Argument(parsing: .postTerminator, help: "The command to run, after --.") var command: [String] = []
 
     /// `--env` pairs as a dictionary (later pairs win).
     func environmentPairs() throws -> [String: String] { try selectedEnvironment(environment, names: environmentFrom) }
 
     func validate() throws {
+        if let outputHold { _ = try validatedOutputHoldID(outputHold) }
         guard memoryMib <= UInt64.max / ByteSize.mebibyte,
             memoryPerSimMib <= UInt64.max / ByteSize.mebibyte
         else { throw ValidationError("memory hints are too large") }
@@ -442,9 +446,7 @@ struct Submit: ParsableCommand {
             freshSim: freshSim ? true : nil,
             keep: keep ? true : nil
         )
-        guard case .submit(let response) = try call(connection, .submit(params), reconnect: true) else {
-            throw failure(.protocolError)
-        }
+        let response = try submitJob(params, outputHold: outputHold, connection: connection)
         guard wait else {
             if connection.json {
                 try printJSON(response)

@@ -83,6 +83,8 @@ extension Engine {
         var failures: [String] = []
         let fileSystem = environment.fileSystem
         for (path, reason) in reasoned {
+            // Fail closed before entering the filesystem-error reporting branch.
+            guard try stillRemovable(path, now: now) else { continue }
             do {
                 let intent = ActionIntent(
                     target: .path(path), auditType: Self.artifactRemovedAuditType,
@@ -222,7 +224,9 @@ extension Engine {
             let category: String
             if let job {
                 let hasProcesses = try hasOwnedCommandProcesses(job)
-                if !job.state.isTerminal || hasProcesses
+                if try store.hasActiveOutputHold(jobID: job.id) {
+                    category = "Held"
+                } else if !job.state.isTerminal || hasProcesses
                     || artifactWritersInFlight.contains(job.id)
                 {
                     category = "Active / cleanup pending"
@@ -263,6 +267,7 @@ extension Engine {
         guard let id = dir.split(separator: "/").last.map(String.init) else { return false }
         guard !artifactWritersInFlight.contains(id) else { return false }
         guard let job = try store.job(id: id) else { return !isDerived }
+        guard try !store.hasActiveOutputHold(jobID: job.id) else { return false }
         if let now, try isPinned(job) {
             // Pins expire by age, but never by the budget or DerivedData's shorter TTL.
             guard !isDerived, job.state.isTerminal, try !hasOwnedCommandProcesses(job),
@@ -337,6 +342,7 @@ extension Engine {
         let retention = reliability.ageRules.artifactRetention
         for directory in directories where !removed.contains(directory.path) {
             guard let job = try store.job(id: directory.jobID), retention.keepSeconds(for: job.state) != nil,
+                try !store.hasActiveOutputHold(jobID: job.id),
                 try !isPinned(job), try !hasOwnedCommandProcesses(job),
                 now - (job.finishedAt ?? job.createdAt) >= retention.derivedDataSeconds
             else { continue }
@@ -375,7 +381,8 @@ extension Engine {
 
     /// Whether retention may remove a whole job directory: the job ended and is not pinned.
     func isRemovable(_ job: Job) throws -> Bool {
-        try job.state.isTerminal && !artifactWritersInFlight.contains(job.id) && !isPinned(job)
+        try job.state.isTerminal && !artifactWritersInFlight.contains(job.id)
+            && !store.hasActiveOutputHold(jobID: job.id) && !isPinned(job)
             && !hasOwnedCommandProcesses(job)
     }
 
@@ -428,7 +435,9 @@ extension Engine {
         var expired: [(endedAt: Double, path: String)] = []
         for directory in directories where !directory.jobID.hasPrefix(".") {
             let job = try store.job(id: directory.jobID)
-            if let job, try hasOwnedCommandProcesses(job) { continue }
+            if let job {
+                if try store.hasActiveOutputHold(jobID: job.id) || hasOwnedCommandProcesses(job) { continue }
+            }
             let pinned = try job.map { try isPinned($0) } ?? false
             guard let keep = retention.keepSeconds(for: job?.state, pinned: pinned) else { continue }
             let endedAt = job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400

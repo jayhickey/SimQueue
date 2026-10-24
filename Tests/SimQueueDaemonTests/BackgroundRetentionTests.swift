@@ -440,4 +440,96 @@ final class BackgroundRetentionTests: XCTestCase {
         daemon.service.waitForBackgroundWork()
         XCTAssertTrue(directories.allSatisfy { !fs.fileExists($0) })
     }
+    func testOutputHoldAttachesWhileGCSizingIsBlockedAndApplyRechecksIt() throws {
+        let fs = BlockingFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let params = SubmitParams(
+            project: "retention", submitter: "test", dedupeKey: "output-hold", minSims: 0,
+            payloadJSON: #"{"fake":{"run_seconds":60}}"#)
+        let job = try daemon.submit(params).job
+        let path = JobArtifacts(root: daemon.paths.jobsRoot).directory(
+            jobID: job.id, createdAt: try XCTUnwrap(daemon.side.job(id: job.id)).createdAt)
+        try fs.createDirectory(path + "/DerivedData")
+        fs.base.sizes[path] = 100
+        fs.block(.size, path: path)
+        _ = try daemon.result(.gc(GCParams(apply: true, background: true)))
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        let id = UUID().uuidString
+        _ = try daemon.result(.outputHoldCreate(.init(id: id, label: "evidence")))
+        guard case .submitHeld(let held) = try daemon.result(.submitHeld(.init(holdID: id, submission: params))) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(held.submission.job.id, job.id)
+        _ = try daemon.result(.cancel(.init(jobID: job.id)))
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertTrue(fs.fileExists(path + "/DerivedData"))
+        XCTAssertFalse(fs.base.removed.contains(path))
+        XCTAssertTrue(try daemon.side.hasActiveOutputHold(jobID: job.id))
+    }
+
+    func testOutputHoldRejectsAnInflightRemovalBeforeAcknowledgement() throws {
+        let fs = BlockingFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        // A whole date/root removal can overlap a newly submitted run even without
+        // carrying its job id. Use a durable recovery intent, as on interrupted GC.
+        let root = daemon.paths.jobsRoot
+        _ = try daemon.side.recordActionIntent(
+            ActionIntent(target: .path(root), auditType: "artifact_removed", detail: "pending worker"),
+            now: Date().timeIntervalSince1970)
+        let id = UUID().uuidString
+        _ = try daemon.result(.outputHoldCreate(.init(id: id, label: "evidence")))
+        let before = try daemon.side.allJobs().count
+        let failure = try daemon.protocolError(
+            .submitHeld(
+                .init(
+                    holdID: id, submission: SubmitParams(project: "retention", submitter: "test", minSims: 0))))
+        XCTAssertEqual(failure.code, .invalidState)
+        XCTAssertEqual(try daemon.side.allJobs().count, before)
+    }
+
+    func testOutputHoldCannotAttachAcrossAnAlreadyRunningDiskRemoval() throws {
+        let fs = BlockingFileSystem()
+        var settings = config()
+        settings.watchdog.fullIntervalSeconds = 3600
+        settings.watchdog.lightIntervalSeconds = 3600
+        let daemon = try TestDaemon(config: settings, fileSystemOverride: fs)
+        defer { fs.resume.signal(); daemon.destroy() }
+        _ = try daemon.service.tick()
+        daemon.service.waitForBackgroundWork()
+        let params = SubmitParams(project: "retention", submitter: "test", dedupeKey: "removal", minSims: 0)
+        let job = try daemon.submit(params).job
+        _ = try daemon.wait(job.id)
+        let path = JobArtifacts(root: daemon.paths.jobsRoot).directory(for: try XCTUnwrap(daemon.side.job(id: job.id)))
+        try fs.createDirectory(path)
+        fs.base.sizes[path] = 100
+        fs.block(.remove, path: path)
+        _ = try daemon.result(.gc(GCParams(apply: true, background: true)))
+        XCTAssertEqual(fs.entered.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(try daemon.side.pendingActionIntents().contains { $0.target == .path(path) })
+        // Deliberately inject an active fixture after planning. Normal terminal jobs
+        // cannot be adopted; even such interrupted state must not bypass the intent.
+        _ = try daemon.result(.drain)
+        try daemon.side.database.run("UPDATE jobs SET state='queued' WHERE id=?;", [.text(job.id)])
+        let id = UUID().uuidString
+        _ = try daemon.result(.outputHoldCreate(.init(id: id, label: "evidence")))
+        XCTAssertEqual(try daemon.protocolError(.submitHeld(.init(holdID: id, submission: params))).code, .invalidState)
+        XCTAssertFalse(try daemon.side.hasActiveOutputHold(jobID: job.id))
+        fs.resume.signal()
+        daemon.service.waitForBackgroundWork()
+        XCTAssertFalse(fs.fileExists(path), "refused attachment never claims to resurrect removed bytes")
+    }
+
 }

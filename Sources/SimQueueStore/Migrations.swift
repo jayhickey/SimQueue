@@ -331,5 +331,23 @@ public enum SchemaMigrations {
                     WHEN simqueue_archive_allows(OLD.seq, OLD.at) != 1
                     BEGIN SELECT RAISE(ABORT, 'audit_log is append-only; verified archival required'); END;
                 """),
+        // v15: durable, explicitly released protection of job-owned output.
+        Migration(
+            version: 15,
+            sql: """
+                CREATE TABLE output_holds (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    label TEXT NOT NULL CHECK(length(CAST(label AS BLOB)) BETWEEN 1 AND 256),
+                    created_at REAL NOT NULL CHECK(created_at >= 0),
+                    released_at REAL CHECK(released_at >= created_at)
+                );
+                CREATE TABLE output_hold_jobs (
+                    hold_id TEXT NOT NULL REFERENCES output_holds(id) ON DELETE RESTRICT,
+                    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE RESTRICT,
+                    attached_at REAL NOT NULL CHECK(attached_at >= 0),
+                    PRIMARY KEY(hold_id,job_id)
+                );
+                CREATE INDEX output_hold_jobs_job_idx ON output_hold_jobs(job_id,hold_id);
+                """),
     ]
 }

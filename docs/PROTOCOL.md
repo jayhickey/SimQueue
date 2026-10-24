@@ -36,6 +36,7 @@ simq wait J-0001
 | `simq doctor --json`, `owned-udids` | Current diagnostics and ownership, including offline doctor |
 | `simq drain`, `resume` | Planned drain/resume; drain timeout leaves the gate set |
 | `simq template build <label> [--slim]`, `list`, `rm` | Host template candidates; creation does not select one |
+| `simq output-hold create/show/list/release` | Durable explicit protection of job output; [lifecycle and limits](PROOF-JOBS.md#durable-output-holds) |
 | `simq gc [--apply]` | Inspect/apply artifact retention; application requires cleanup enforcement |
 | `simq lease acquire`, `renew`, `release` | Explicit manual leases with holder liveness/identity checks |
 | `simq mcp` | Optional local MCP interface over the same socket |
@@ -126,7 +127,7 @@ State defaults to `~/Library/Application Support/SimQueue`; `--state-dir` or `SI
 
 Transport is newline-delimited JSON over an owner-only Unix socket. One request per connection; `wait` may stream changes then a final result. Requests carry `schema_version`, `id`, `method`, `params`. Responses carry the same id and either `result_kind`/`result` or a structured error. Newer unsupported schemas are refused. Removed legacy group-submission fields are rejected rather than silently submitting a different job.
 
-Methods: `submit`, `status`, `jobs`, `explain`, `cancel`, `wait`, `logs`, `doctor`, `drain`, `resume`, `gc`, `lease_acquire`, `lease_renew`, `lease_release`, `template_build`, `template_list`, `template_rm`. Submit fields include project/submitter, integer priority, label, command argv, environment/cwd, memory bytes, simulator count, timeout/retry/exclusive options, checkout assertion, reset/fresh options, dedupe and artifact keep. No test orchestration is supported. Commands and argument help expose the current complete surface.
+Methods: `submit`, `submit_held`, `output_hold_create`, `output_hold_show`, `output_hold_list`, `output_hold_release`, `status`, `jobs`, `explain`, `cancel`, `wait`, `logs`, `doctor`, `drain`, `resume`, `gc`, `lease_acquire`, `lease_renew`, `lease_release`, `template_build`, `template_list`, `template_rm`. Submit fields include project/submitter, integer priority, label, command argv, environment/cwd, memory bytes, simulator count, timeout/retry/exclusive options, checkout assertion, reset/fresh options, dedupe and artifact keep. No test orchestration is supported. Commands and argument help expose the current complete surface.
 
 A terminal result can carry `cleanup_pending: true` while owned processes remain; `wait` and `run` wait for verified cleanup before returning completion. If cleanup cannot be verified, `cleanup_blocked: true` returns an infrastructure failure with doctor guidance while capacity remains held. Job results include state, result class, command exit code, attempt, timestamps, wait reasons, simulator/template identities and artifact paths. Secret environment values are not echoed into job info. `owned_udids` in doctor JSON is a stable contract for external cleanup tools. Offline doctor is read-only and refuses an incompatible database schema.
 
@@ -194,3 +195,27 @@ actual `offset`, `next_offset`, `at_end`, and `job_finished`. Clients must check
 for that field before treating a response from an older daemon as a tail. Polling
 new windows naturally handles truncation; stop following only when both
 `job_finished` and `at_end` are true.
+
+
+### Output hold methods
+
+`output_hold_create {id, label}` creates an active client UUID or returns the identical
+active UUID/label. `output_hold_show {id, after_job_id?, limit?}` returns `result_kind:
+"output_hold"`, with `{hold: {id,label,created_at,released_at?}, jobs:
+[{job_id,attached_at}], next_job_id?}`. Create and release use the same result shape.
+Hold timestamps use RFC 3339 UTC, as other protocol timestamps do. `output_hold_list {after_id?,limit?}`
+returns `result_kind: "output_holds"` with `{holds:[...],next_id?}`. Pages default to
+100 rows and reject limits outside 1...200; cursors use lowercase UUID/job-id order.
+`output_hold_release {id}` permanently releases a quiescent hold. Show/release also
+accept the membership page fields; release checks every member regardless of page.
+
+`submit_held {hold_id, submission:<ordinary submit params>}` validates an active hold,
+creates or actively deduplicates the job, and commits membership and audit in one
+immediate transaction before scheduler observation. A result is explicitly
+`result_kind: "submit_held"` with `{hold_id:<canonical UUID>, submission:<ordinary
+submit result>}`. Clients must require that acknowledgement and matching hold ID;
+they must never retry as ordinary `submit` when support is missing. Ordinary `submit`
+and its encoding are unchanged. Invalid IDs/labels/pages yield `invalid_argument`,
+unknown holds `not_found`, released/conflicting identities, busy release or overlapping
+removal/recovery intents `invalid_state`. Database lookup failures are errors and never
+permission to delete. See [output hold semantics](PROOF-JOBS.md#durable-output-holds).
