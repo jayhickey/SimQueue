@@ -23,6 +23,16 @@ old job evidence paths remain valid. Keep previous output volumes available unti
 retention has removed their data. Do not edit the internal `job-output.json` routing
 history or manually move job directories.
 
+Current and historical output roots must be disjoint: distinct roots may not alias
+or contain each other, including case aliases on case-insensitive volumes.
+Startup validates the entire recorded history even if the current root is unchanged.
+Malformed persisted paths (dot components or trailing/repeated slashes) are refused,
+not silently rewritten. Invalid routing stops startup before recovery or retention;
+the error identifies the roots requiring an explicit configuration recovery. No
+history entries are dropped and no output is moved or deleted automatically. GC
+also vetoes configured roots and their ancestors, with a physical filesystem boundary
+check protecting callers that bypass startup validation.
+
 `simq status` and `simq doctor` show the internal state path, output root,
 availability/writability and free bytes. Unavailable storage holds new admission.
 A configured `/Volumes/<name>/...` path requires that mount to use a separate

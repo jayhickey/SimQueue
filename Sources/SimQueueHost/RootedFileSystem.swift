@@ -109,6 +109,12 @@ public struct RootedFileSystem: FileSystem {
 
     public func removeItem(_ path: String) throws {
         try check(path, allowRoot: false)
+        // Checking only the first containing root permits deletion of another root
+        // through its ancestor. Protect every configured root, including physical
+        // aliases in trusted ancestors. Links themselves are still only unlinked.
+        if Self.isRealDirectory(path), try JobStorage.containsConfiguredRoot(path, roots: roots) {
+            throw PathSafetyError.outsideRoots(path)
+        }
         try Self.removeTree(path)
     }
 

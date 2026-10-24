@@ -23,6 +23,10 @@ public struct JobOutputConfiguration: Codable {
             old = nil
         }
         let previous = old?.root ?? legacy
+        // Validate persisted history even when the requested root has not changed.
+        // Include the recorded current root if an older file omitted it from roots.
+        let roots = Array(Set((old?.roots ?? [legacy]) + [previous, root])).sorted()
+        try JobStorage.validateDisjointRoots(roots)
         if previous != root {
             guard old?.drained == true || old == nil,
                 try store.activeJobs().isEmpty,
@@ -35,7 +39,7 @@ public struct JobOutputConfiguration: Codable {
                 )
             }
         }
-        let value = Self(root: root, roots: Array(Set((old?.roots ?? [legacy]) + [root])).sorted(), drained: false)
+        let value = Self(root: root, roots: roots, drained: false)
         if persist { try value.save(stateDirectory: stateDirectory) }
         return value
     }

@@ -203,17 +203,23 @@ extension Engine {
     }
 
     public func gcPlan(now: Double, inventory: GCInventory, includeStorageAccounting: Bool = false) throws -> GCPlan {
+        // Public engine callers may bypass daemon routing validation. Never interpret
+        // a configured root (or its ancestor) as an unknown removable job directory.
+        let roots = Array(Set(environment.allArtifactsRoots + inventory.roots))
+        let directories = inventory.directories.filter { directory in
+            !Self.containsArtifactRoot(directory.path, roots: roots)
+        }
         let aged = try inventory.roots.flatMap { root in
-            try ageCandidates(directories: inventory.directories.filter { $0.root == root }, now: now)
+            try ageCandidates(directories: directories.filter { $0.root == root }, now: now)
         }
         let budget = reliability.ageRules.artifactRetention.budgetBytes
         var entries: [BudgetEntry] = []
         if budget != nil {
-            entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path))
+            entries = try budgetEntries(directories: directories, already: aged.map(\.path))
         }
         var report = GCPlan(aged: aged, entries: entries, budget: budget)
         guard includeStorageAccounting else { return report }
-        report.storageEntries = try inventory.directories.filter { !$0.jobID.hasPrefix(".") }.enumerated().map {
+        report.storageEntries = try directories.filter { !$0.jobID.hasPrefix(".") }.enumerated().map {
             index, directory in
             guard index < 200 else {
                 return StorageEntry(
@@ -262,6 +268,7 @@ extension Engine {
     /// requeued since the plan. A `DerivedData` path needs its job
     /// and its directory both need `isRemovable`; a directory with no job record goes.
     public func stillRemovable(_ path: String, now: Double? = nil) throws -> Bool {
+        guard !Self.containsArtifactRoot(path, roots: environment.allArtifactsRoots) else { return false }
         let isDerived = path.hasSuffix("/DerivedData")
         let dir = isDerived ? String(path.dropLast("/DerivedData".count)) : path
         guard let id = dir.split(separator: "/").last.map(String.init) else { return false }
@@ -276,6 +283,12 @@ extension Engine {
             return now - (job.finishedAt ?? job.createdAt) >= keep
         }
         return try isRemovable(job)
+    }
+
+    /// Bounded by configured roots and path length; no database or filesystem scan
+    /// under the service lock. Normalize spelling and conservatively veto case aliases.
+    private static func containsArtifactRoot(_ path: String, roots: [String]) -> Bool {
+        roots.contains { JobStorage.isSameOrAncestor(path, of: $0, caseSensitive: false) }
     }
 
     /// Record under the service lock, then keep recovery from settling this live worker's

@@ -49,6 +49,25 @@ final class RootedFileSystemTests: XCTestCase {
         XCTAssertNoThrow(try fs.removeItem(root + "/runs/missing"), "missing is fine")
     }
 
+    func testCannotRecursivelyRemoveAnotherRootThroughAnAncestorOrPhysicalAlias() throws {
+        let inner = root + "/runs/J-1/nested"
+        try files.createDirectory(atPath: inner, withIntermediateDirectories: true)
+        try Data("held evidence".utf8).write(to: URL(fileURLWithPath: inner + "/keep"))
+        let alias = base + "/alias"
+        try files.createSymbolicLink(atPath: alias, withDestinationPath: root + "/runs/J-1")
+        for configuredRoot in [inner, alias + "/nested"] {
+            let guarded = RootedFileSystem(roots: [root, configuredRoot])
+            XCTAssertThrowsError(try guarded.removeItem(root + "/runs/J-1"))
+            XCTAssertThrowsError(try guarded.removeItem(inner))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: inner + "/keep")), Data("held evidence".utf8))
+            try guarded.createDirectory(root + "/runs/J-2")
+            XCTAssertNoThrow(try guarded.removeItem(root + "/runs/J-2"), "disjoint siblings remain removable")
+            // A link to a protected root is safe to unlink, never recursively entered.
+            try files.createSymbolicLink(atPath: root + "/runs/link", withDestinationPath: inner)
+            XCTAssertNoThrow(try guarded.removeItem(root + "/runs/link"))
+        }
+    }
+
     func testRemovingATreeWithSymlinksRemovesTheLinksNotTheirTargets() throws {
         try files.createSymbolicLink(atPath: root + "/runs/J-1/link-dir", withDestinationPath: outside + "/keep")
         try files.createSymbolicLink(
