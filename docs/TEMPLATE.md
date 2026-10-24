@@ -101,7 +101,7 @@ Use `simq run --sims 1 -- <command>` and pass the daemon-provided `SIMQ_UDID` to
 | Option | Preparation before the command |
 | --- | --- |
 | No reset flag | Use the simulator as the previous job left it. |
-| `--reset-app com.example.app` | Uninstall the app, reset its privacy permissions and reset the keychain. Repeat for more apps; a failed reset falls back to erasing. |
+| `--reset-app com.example.app` | Uninstall the app, reset its privacy and notification permissions and reset the keychain. Repeat for more apps; a failed reset falls back to erasing. |
 | `--fresh-sim` | Erase before the command; slower, with a cleaner starting state. |
 
 Preparation retains the job's lease. This is trusted execution as the daemon's user, not security isolation between projects. Keep concurrent source checkouts and output directories separate.

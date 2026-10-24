@@ -80,6 +80,53 @@ final class RealBackendFakeToolTests: XCTestCase {
         XCTAssertThrowsError(try backend.uninstallApp(udid: Self.owned, bundleID: "com.example.app"))
     }
 
+    /// `simctl privacy` has no notifications service and uninstalling keeps the app's
+    /// notification settings, so a granted permission carried into the next job. The app's
+    /// BulletinBoard entry is dropped (others kept) and the daemons holding it restarted.
+    func testPrivacyResetAlsoResetsTheAppsNotificationSettings() throws {
+        let (harness, backend) = try setUp()
+        let data = harness.root.appendingPathComponent("sim-data", isDirectory: true)
+        let file = data.appendingPathComponent(SimctlBackend.notificationSettingsPath)
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let settings: [String: Any] = [
+            "sectionInfo": ["com.example.app": Data([1]), "com.apple.MobileSMS": Data([2])],
+            "sectionInfoVersionNumber": 3,
+        ]
+        try PropertyListSerialization.data(fromPropertyList: settings, format: .binary, options: 0).write(to: file)
+        let listing = Self.listing(ownedState: "Booted").replacingOccurrences(
+            of: #""name": "simq-pool-1-42","#, with: #""dataPath": "\#(data.path)", "name": "simq-pool-1-42","#)
+        try harness.respond("xcrun-list", out: listing)
+
+        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        let stop = "xcrun simctl spawn \(Self.owned) launchctl stop"
+        XCTAssertEqual(
+            try harness.loggedCalls().filter { !$0.hasPrefix("xcrun simctl list") },
+            [
+                "xcrun simctl privacy \(Self.owned) reset all com.example.app",
+                "\(stop) com.apple.usernotificationsd", "\(stop) com.apple.usernotificationsd",
+                "\(stop) com.apple.SpringBoard",
+            ])
+        let left = try XCTUnwrap(SimctlBackend.notificationSettings(at: file))
+        XCTAssertEqual(Array(left.keys), ["com.apple.MobileSMS"], "only that app's entry")
+
+        // No entry left (or never asked): no restart.
+        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        XCTAssertEqual(try harness.loggedCalls().filter { $0.contains("launchctl") }.count, 3)
+        // No settings file, or no data path listed: just the privacy reset.
+        try FileManager.default.removeItem(at: file)
+        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        try harness.respond("xcrun-list", out: Self.listing(ownedState: "Booted"))
+        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        XCTAssertEqual(try harness.loggedCalls().filter { $0.contains("launchctl") }.count, 3)
+
+        // A failed SpringBoard restart fails the step (so prep falls back to an erase).
+        try PropertyListSerialization.data(fromPropertyList: settings, format: .binary, options: 0).write(to: file)
+        try harness.respond("xcrun-list", out: listing)
+        try harness.respond("xcrun-spawn", err: "launchctl failed", status: 1)
+        XCTAssertThrowsError(try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app"))
+    }
+
     func testSimctlClonesAndConfirmsWithoutRequiringSimslim() throws {
         let (harness, backend) = try setUp()
         try harness.respond("simslim---version", out: "simslim 0.4.1\n")

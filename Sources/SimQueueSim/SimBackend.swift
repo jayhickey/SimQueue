@@ -33,7 +33,7 @@ public protocol SimBackend: Sendable {
     func eraseDevice(udid: String) throws
     /// Uninstalls an app from a booted owned sim. Per-job `reset_apps`.
     func uninstallApp(udid: String, bundleID: String) throws
-    /// Resets every privacy permission an app has on a booted owned sim.
+    /// Resets every privacy permission an app has on a booted owned sim, notifications included.
     func resetAppPrivacy(udid: String, bundleID: String) throws
     /// Resets a booted owned sim's keychain.
     func resetKeychain(udid: String) throws
