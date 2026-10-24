@@ -53,13 +53,13 @@ test('pool wait details include the measured boot gate and fit a phone', async (
       {
         code: 'load_too_high_for_boot',
         summary:
-          'simulator boot held: one-minute CPU load 31.5 exceeds boot limit 20.0; rechecks automatically',
+          'simulator boot held: one-minute CPU load 31.5 exceeds boot limit 30.0; rechecks automatically',
       },
     ];
   });
   await ready(page);
   await page.setViewportSize({ width: 320, height: 900 });
-  await expect(page.locator('.wait-reason').first()).toContainText('31.5 exceeds boot limit 20.0');
+  await expect(page.locator('.wait-reason').first()).toContainText('31.5 exceeds boot limit 30.0');
   await noOverflow(page);
 });
 test('average timings show sample sizes, follow filters and fit a phone', async ({

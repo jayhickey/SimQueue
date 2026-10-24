@@ -5,8 +5,8 @@
 /// start (`apply(cpuCount:totalMemoryBytes:to:pool:)`), before the scheduler and pool read
 /// their configs. Every derived value can be set outright: an explicit setting always wins.
 ///
-/// The per-core defaults reproduce the old fixed numbers on the 10-core Mac mini they were
-/// tuned on (throttle 30/30/15/20, settle and boot gate 20). Simulator ceilings below
+/// On a 10-core host the defaults give admission throttle 30/30/15/20, settle 20,
+/// and a simulator boot limit of 30 (3x cores). Simulator ceilings below
 /// scale with RAM; automatic pool capacity can fill the running-simulator ceiling.
 public struct HostSizing: Sendable, Equatable {
     /// Throttle admissions when load5 is above this x cores (`throttle_load5_per_core`).
@@ -49,7 +49,7 @@ public struct HostSizing: Sendable, Equatable {
     public init(
         throttleLoad5PerCore: Double = 3.0, throttleLoad1PerCore: Double = 3.0,
         throttleLoad5WithLoad1PerCore: Double = 1.5, throttleClearLoad5PerCore: Double = 2.0,
-        bootLoadPerCore: Double = 2.0, settleLoad5PerCore: Double = 2.0,
+        bootLoadPerCore: Double = 3.0, settleLoad5PerCore: Double = 2.0,
         reservePercent: Double = 10, minReserveBytes: UInt64 = ByteSize.gibibyte,
         reserveBytes: UInt64? = nil, simBootCostBytes: UInt64? = nil,
         ramPerRunningSimBytes: UInt64 = 8 * ByteSize.gibibyte, maxRunningSims: Int? = nil,

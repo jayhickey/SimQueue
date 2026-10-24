@@ -4,6 +4,13 @@ import SimQueueCore
 import XCTest
 
 final class HostSizingTests: XCTestCase {
+    func testDefaultBootFactorIsThreeAndExplicitOverridesRemainEffective() {
+        XCTAssertEqual(SchedulerConfig().bootLoadFactor, 3)
+        XCTAssertEqual(HostSizing().bootLoadPerCore, 3)
+        let (scheduler, _) = applied(HostSizing(bootLoadPerCore: 2), cores: 10, gib: 32)
+        XCTAssertEqual(scheduler.bootLoadLimit(cpuCount: 10), 20)
+    }
+
     private func applied(
         _ sizing: HostSizing = HostSizing(), cores: Int, gib: UInt64, pool: SimPoolConfig? = SimPoolConfig()
     ) -> (SchedulerConfig, SimPoolConfig?) {
@@ -18,7 +25,7 @@ final class HostSizingTests: XCTestCase {
         let old = SchedulerConfig()
         XCTAssertEqual(scheduler.loadThrottle, old.loadThrottle, "30/30/15/20")
         XCTAssertEqual(scheduler.maxRunningSims, old.maxRunningSims)
-        XCTAssertEqual(scheduler.bootLoadLimit(cpuCount: 10), 20)
+        XCTAssertEqual(scheduler.bootLoadLimit(cpuCount: 10), 30)
         XCTAssertEqual(pool?.maxSims, scheduler.maxRunningSims)
         XCTAssertEqual(pool?.settle.loadBelow, SettleConfig().loadBelow)
         XCTAssertEqual(pool?.settle.load1RecoveryBelow, scheduler.loadThrottle.clearBelowLoad5)
@@ -31,7 +38,7 @@ final class HostSizingTests: XCTestCase {
         XCTAssertEqual(scheduler.loadThrottle.load1Above, 72)
         XCTAssertEqual(scheduler.loadThrottle.load5WithLoad1Above, 36)
         XCTAssertEqual(scheduler.loadThrottle.clearBelowLoad5, 48)
-        XCTAssertEqual(scheduler.bootLoadLimit(cpuCount: 24), 48)
+        XCTAssertEqual(scheduler.bootLoadLimit(cpuCount: 24), 72)
         XCTAssertEqual(scheduler.maxRunningSims, 16)
         XCTAssertEqual(scheduler.reserveBytes, UInt64(Double(128 * ByteSize.gibibyte) * 0.1))
         XCTAssertEqual(pool?.maxSims, 16)
