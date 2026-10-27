@@ -98,7 +98,8 @@ final class RealBackendFakeToolTests: XCTestCase {
             of: #""name": "simq-pool-1-42","#, with: #""dataPath": "\#(data.path)", "name": "simq-pool-1-42","#)
         try harness.respond("xcrun-list", out: listing)
 
-        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        let reset = try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        XCTAssertEqual(reset, NotificationResetRecord(bundleID: "com.example.app", found: true, removed: true))
         let stop = "xcrun simctl spawn \(Self.owned) launchctl stop"
         XCTAssertEqual(
             try harness.loggedCalls().filter { !$0.hasPrefix("xcrun simctl list") },
@@ -111,14 +112,28 @@ final class RealBackendFakeToolTests: XCTestCase {
         XCTAssertEqual(Array(left.keys), ["com.apple.MobileSMS"], "only that app's entry")
 
         // No entry left (or never asked): no restart.
-        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        let notFound = NotificationResetRecord(bundleID: "com.example.app", found: false, removed: false)
+        XCTAssertEqual(try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app"), notFound)
         XCTAssertEqual(try harness.loggedCalls().filter { $0.contains("launchctl") }.count, 3)
-        // No settings file, or no data path listed: just the privacy reset.
+        // No settings file, or no data path listed (not checked): just the privacy reset.
         try FileManager.default.removeItem(at: file)
-        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        XCTAssertEqual(try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app"), notFound)
         try harness.respond("xcrun-list", out: Self.listing(ownedState: "Booted"))
-        try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app")
+        XCTAssertEqual(
+            try backend.resetAppPrivacy(udid: Self.owned, bundleID: "com.example.app"),
+            NotificationResetRecord(bundleID: "com.example.app", found: nil, removed: false))
         XCTAssertEqual(try harness.loggedCalls().filter { $0.contains("launchctl") }.count, 3)
+
+        // What the job's sim_prep event records.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let outcome = SimPrepOutcome(
+            udid: Self.owned, appsReset: ["com.example.app"], keychainReset: true,
+            notificationReset: [reset].compactMap { $0 })
+        let json = String(decoding: try encoder.encode(outcome), as: UTF8.self)
+        print("sim_prep detail: \(json)")
+        XCTAssertTrue(
+            json.contains(#""notification_reset":[{"bundle_id":"com.example.app","found":true,"removed":true}]"#), json)
 
         // A failed SpringBoard restart fails the step (so prep falls back to an erase).
         try PropertyListSerialization.data(fromPropertyList: settings, format: .binary, options: 0).write(to: file)

@@ -34,7 +34,9 @@ public protocol SimBackend: Sendable {
     /// Uninstalls an app from a booted owned sim. Per-job `reset_apps`.
     func uninstallApp(udid: String, bundleID: String) throws
     /// Resets every privacy permission an app has on a booted owned sim, notifications included.
-    func resetAppPrivacy(udid: String, bundleID: String) throws
+    /// Returns what the notification settings reset found, or nil if the backend doesn't check.
+    @discardableResult
+    func resetAppPrivacy(udid: String, bundleID: String) throws -> NotificationResetRecord?
     /// Resets a booted owned sim's keychain.
     func resetKeychain(udid: String) throws
     /// Where pool clones come from, for a backend that clones a template (nil otherwise).
@@ -146,7 +148,7 @@ extension SimBackend {
     public func uninstallApp(udid: String, bundleID: String) throws {
         throw SimBackendError.unsupported("uninstall apps")
     }
-    public func resetAppPrivacy(udid: String, bundleID: String) throws {
+    public func resetAppPrivacy(udid: String, bundleID: String) throws -> NotificationResetRecord? {
         throw SimBackendError.unsupported("reset app privacy")
     }
     public func resetKeychain(udid: String) throws { throw SimBackendError.unsupported("reset keychains") }
@@ -348,8 +350,9 @@ public final class FakeSimBackend: SimBackend, @unchecked Sendable {
         try appStep("uninstall", udid: udid, bundleID: bundleID)
     }
 
-    public func resetAppPrivacy(udid: String, bundleID: String) throws {
+    public func resetAppPrivacy(udid: String, bundleID: String) throws -> NotificationResetRecord? {
         try appStep("privacy", udid: udid, bundleID: bundleID)
+        return nil
     }
 
     public func resetKeychain(udid: String) throws {

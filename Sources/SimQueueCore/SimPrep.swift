@@ -20,12 +20,37 @@ public enum SimPrep {
     }
 }
 
+/// What the notification part of one app's privacy reset found, so a permission that still
+/// carried into a job can be traced (`sim_prep.notification_reset`).
+public struct NotificationResetRecord: Sendable, Codable, Equatable {
+    public var bundleID: String
+    /// The app had an entry in the sim's notification settings. Nil: not checked (the sim's
+    /// data path wasn't listed).
+    public var found: Bool?
+    /// The entry was gone when the reset finished (false when there was none to remove).
+    public var removed: Bool
+
+    public init(bundleID: String, found: Bool?, removed: Bool) {
+        self.bundleID = bundleID
+        self.found = found
+        self.removed = removed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case found, removed
+        case bundleID = "bundle_id"
+    }
+}
+
 /// What preparation did to one leased sim, recorded in the job result (`sim_prep`).
 public struct SimPrepOutcome: Sendable, Codable, Equatable {
     public var udid: String
     /// Apps reset in place (uninstalled, privacy reset); empty after a fallback erase.
     public var appsReset: [String]
     public var keychainReset: Bool
+    /// Per reset app, what the notification settings reset found and removed (kept after a
+    /// fallback erase, as a record of what ran). Nil when the backend doesn't report it.
+    public var notificationReset: [NotificationResetRecord]?
     /// The sim was erased (and booted again) before the command ran.
     public var erased: Bool
     /// Why an app reset fell back to an erase: the failing step's error. Nil when it didn't.
@@ -36,7 +61,7 @@ public struct SimPrepOutcome: Sendable, Codable, Equatable {
 
     public init(
         udid: String, appsReset: [String] = [], keychainReset: Bool = false, erased: Bool = false,
-        fallbackReason: String? = nil, error: String? = nil
+        fallbackReason: String? = nil, error: String? = nil, notificationReset: [NotificationResetRecord]? = nil
     ) {
         self.udid = udid
         self.appsReset = appsReset
@@ -44,6 +69,7 @@ public struct SimPrepOutcome: Sendable, Codable, Equatable {
         self.erased = erased
         self.fallbackReason = fallbackReason
         self.error = error
+        self.notificationReset = notificationReset
     }
 
     enum CodingKeys: String, CodingKey {
@@ -51,5 +77,6 @@ public struct SimPrepOutcome: Sendable, Codable, Equatable {
         case appsReset = "apps_reset"
         case keychainReset = "keychain_reset"
         case fallbackReason = "fallback_reason"
+        case notificationReset = "notification_reset"
     }
 }

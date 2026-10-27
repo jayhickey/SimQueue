@@ -93,7 +93,9 @@ extension Engine {
                     do {
                         for app in work.resetApps {
                             try sims.uninstallApp(udid: target.udid, bundleID: app)
-                            try sims.resetAppPrivacy(udid: target.udid, bundleID: app)
+                            if let record = try sims.resetAppPrivacy(udid: target.udid, bundleID: app) {
+                                outcome.notificationReset = (outcome.notificationReset ?? []) + [record]
+                            }
                             outcome.appsReset.append(app)
                         }
                         try sims.resetKeychain(udid: target.udid)
