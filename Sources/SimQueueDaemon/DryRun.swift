@@ -85,7 +85,7 @@ public final class DryRunSimBackend: SimBackend, @unchecked Sendable {
     public func shutdownDevice(udid: String) throws { throw skip("shut down sim \(udid)") }
     public func eraseDevice(udid: String) throws { throw skip("erase sim \(udid)") }
     public func uninstallApp(udid: String, bundleID: String) throws { throw skip("uninstall \(bundleID) from \(udid)") }
-    public func resetAppPrivacy(udid: String, bundleID: String) throws {
+    public func resetAppPrivacy(udid: String, bundleID: String) throws -> NotificationResetRecord? {
         throw skip("reset privacy of \(bundleID) on \(udid)")
     }
     public func resetKeychain(udid: String) throws { throw skip("reset keychain of \(udid)") }

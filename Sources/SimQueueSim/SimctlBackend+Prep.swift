@@ -23,28 +23,36 @@ extension SimctlBackend {
 
     /// `simctl privacy reset all` doesn't cover notifications, and uninstalling keeps them, so
     /// the app's notification settings are reset too (`resetNotificationSettings`).
-    public func resetAppPrivacy(udid: String, bundleID: String) throws {
+    @discardableResult
+    public func resetAppPrivacy(udid: String, bundleID: String) throws -> NotificationResetRecord? {
         let dataPath = try requireOwnedForPrep(udid, bundleID: bundleID)
         _ = try runner.check(
             "xcrun", ["simctl", "privacy", udid, "reset", "all", bundleID], timeoutSeconds: Self.appResetTimeoutSeconds)
-        guard let dataPath else { return }
-        try resetNotificationSettings(udid: udid, dataPath: dataPath, bundleID: bundleID)
+        guard let dataPath else { return NotificationResetRecord(bundleID: bundleID, found: nil, removed: false) }
+        return try resetNotificationSettings(udid: udid, dataPath: dataPath, bundleID: bundleID)
     }
 
     /// Drops the app's entry from the sim's BulletinBoard settings so its next request
     /// prompts again (as `notDetermined`). No entry (it never asked): nothing to do. The
     /// settings live in usernotificationsd and SpringBoard, so it stops usernotificationsd
     /// first (it's launched on demand and may not be running), edits the file, then stops
-    /// both so they reload it; launchd relaunches SpringBoard.
-    func resetNotificationSettings(udid: String, dataPath: String, bundleID: String) throws {
+    /// both so they reload it; launchd relaunches SpringBoard. Returns whether the entry was
+    /// there and whether it was gone afterwards (read back once SpringBoard was stopped).
+    func resetNotificationSettings(udid: String, dataPath: String, bundleID: String) throws
+        -> NotificationResetRecord
+    {
         let file = URL(fileURLWithPath: dataPath).appendingPathComponent(Self.notificationSettingsPath)
-        guard try Self.notificationSettings(at: file)?[bundleID] != nil else { return }
+        guard try Self.notificationSettings(at: file)?[bundleID] != nil else {
+            return NotificationResetRecord(bundleID: bundleID, found: false, removed: false)
+        }
         let stop = ["simctl", "spawn", udid, "launchctl", "stop"]
         let usernotificationsd = stop + ["com.apple.usernotificationsd"]
         _ = try runner.run("xcrun", usernotificationsd, timeoutSeconds: Self.appResetTimeoutSeconds)
         try Self.removeNotificationSettings(bundleID: bundleID, at: file)
         _ = try runner.run("xcrun", usernotificationsd, timeoutSeconds: Self.appResetTimeoutSeconds)
         _ = try runner.check("xcrun", stop + ["com.apple.SpringBoard"], timeoutSeconds: Self.appResetTimeoutSeconds)
+        let left = try Self.notificationSettings(at: file)?[bundleID]
+        return NotificationResetRecord(bundleID: bundleID, found: true, removed: left == nil)
     }
 
     /// Per-app notification settings, relative to a sim's data path (iOS 11 and later).
