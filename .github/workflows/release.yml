@@ -122,7 +122,7 @@ jobs:
           name: simqueue-${{ steps.version.outputs.version }}-unsigned-macos-arm64
           path: ${{ env.SIMQ_CI_ROOT }}/dist/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   notarize:
     name: Developer ID signing and notarization
@@ -198,7 +198,7 @@ jobs:
           name: simqueue-${{ needs.build.outputs.version }}-macos-arm64
           path: ${{ runner.temp }}/notarized/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   publish:
     name: Publish tagged release
