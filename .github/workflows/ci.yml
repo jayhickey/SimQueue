@@ -103,7 +103,7 @@ jobs:
           name: sparkle-feed-probe-macos-arm64
           path: ${{ runner.temp }}/feed-probe-macos-arm64.tar.gz
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
       - name: Full tests without simulator access
         timeout-minutes: 15
         run: |
@@ -155,4 +155,4 @@ jobs:
           name: macos-arm64-tests
           path: ${{ runner.temp }}/simqueue-tests.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
