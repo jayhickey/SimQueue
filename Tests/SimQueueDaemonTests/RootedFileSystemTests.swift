@@ -42,11 +42,31 @@ final class RootedFileSystemTests: XCTestCase {
         try fs.createDirectory(root + "/runs/J-2/a/b")
         XCTAssertEqual(try fs.children(of: root + "/runs"), [root + "/runs/J-1", root + "/runs/J-2"])
         try Data("12345".utf8).write(to: URL(fileURLWithPath: root + "/runs/J-2/a/b/f"))
-        XCTAssertEqual(fs.sizeOfItem(root + "/runs/J-2"), 5)
+        XCTAssertEqual(fs.sizeOfItem(root + "/runs/J-2"), try onDisk(root + "/runs/J-2/a/b/f"))
         try fs.removeItem(root + "/runs/J-2")
         XCTAssertFalse(fs.fileExists(root + "/runs/J-2"))
         XCTAssertEqual(try fs.children(of: root + "/runs"), [root + "/runs/J-1"])
         XCTAssertNoThrow(try fs.removeItem(root + "/runs/missing"), "missing is fine")
+    }
+
+    /// The budget counts what files use on disk: a sparse file (like Xcode's compilation
+    /// cache) counts its allocated blocks, not its logical size.
+    func testSizeCountsAllocatedBytesNotSparseLogicalSize() throws {
+        let path = root + "/runs/J-1/sparse"
+        XCTAssertTrue(files.createFile(atPath: path, contents: Data("x".utf8)))
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try handle.truncate(atOffset: 1 << 30)
+        try handle.close()
+        XCTAssertEqual(try files.attributesOfItem(atPath: path)[.size] as? UInt64, 1 << 30)
+        let size = try XCTUnwrap(fs.sizeOfItem(root + "/runs/J-1"))
+        XCTAssertEqual(size, try onDisk(path))
+        XCTAssertLessThan(size, 1 << 20, "a 1 GiB sparse file counts only its few allocated blocks")
+    }
+
+    private func onDisk(_ path: String) throws -> UInt64 {
+        var info = stat()
+        XCTAssertEqual(lstat(path, &info), 0)
+        return UInt64(info.st_blocks) * 512
     }
 
     func testRemovingATreeWithSymlinksRemovesTheLinksNotTheirTargets() throws {

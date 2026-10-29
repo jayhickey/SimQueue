@@ -85,7 +85,9 @@ Host configuration can change these values and set `age_rules.artifact_budget_gi
 retained job output by size. Over the budget, eligible terminal output goes oldest first:
 successful jobs before any others. Failed, cancelled, interrupted, or timed-out job output is
 never removed by the budget until 24 hours after its job ended, even if that keeps the jobs
-directory over budget; its age-based retention still applies. Active work and pins remain
+directory over budget; its age-based retention still applies. The budget counts the space files
+use on disk (allocated blocks, as `du` reports), not their logical size, so sparse files count
+only what they use. Active work and pins remain
 protected. It is a retention target, not a hard disk quota.
  Retention deletion requires cleanup enforcement; report-only mode only shows candidates. Inspect `simq gc` before applying `simq gc --apply`. Copy evidence you need to keep elsewhere before its retention period expires. Pins are retention controls, not permanent backups.
 
