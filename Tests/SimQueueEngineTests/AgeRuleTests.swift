@@ -207,7 +207,8 @@ final class AgeRuleTests: XCTestCase {
             try harness.fileSystem.createDirectory("\(day)/\(job.id)")
             harness.fileSystem.sizes["\(day)/\(job.id)"] = size
         }
-        // 20 used, budget 10: 20 -> 16 -> 12 -> 8.
+        // Past the failed-results floor, so the failure is fair game. 20 used, budget 10: 20 -> 16 -> 12 -> 8.
+        harness.clock.advance(by: ArtifactRetention.failedBudgetFloorSeconds)
         let dry = try engine.garbageCollect(apply: false, now: harness.clock.now())
         XCTAssertEqual(
             dry.candidates.map(\.path), ["\(day)/\(passedOld.id)", "\(day)/\(passedNew.id)", "\(day)/\(failedOld.id)"],
@@ -222,6 +223,39 @@ final class AgeRuleTests: XCTestCase {
         XCTAssertTrue(harness.fileSystem.fileExists("\(day)/\(running.id)"))
         XCTAssertEqual(
             try store.auditEntries().filter { $0.type == Engine.artifactRemovedAuditType }.count, applied.removed.count)
+    }
+
+    /// The budget never removes a failed, canceled or timed-out job's results until a day
+    /// after it ended, even if that leaves the jobs directory over budget.
+    func testTheSizeBudgetKeepsFailuresForADay() throws {
+        var reliability = ReliabilityConfig(cleanupMode: .enforce)
+        reliability.ageRules.artifactRetention.budgetBytes = 1
+        reliability.ageRules.artifactRetention.maxRemovalsPerPass = 100
+        let harness = Harness(reliability: reliability)
+        let root = "/fake/jobs"
+        harness.artifactsRoot = root
+        let store = try makeStore()
+        let (engine, _, _) = try harness.start(store: store)
+        var jobs: [Job] = []
+        for result in [ResultClass.commandFailure, .canceled, .runTimeout, .success] {
+            let job = try harness.submit(store, resources: ResourceRequest(minSims: 0))
+            XCTAssertEqual(try engine.tick().admitted, [job.id])
+            _ = try store.finish(jobID: job.id, result: result, now: harness.clock.now())
+            jobs.append(job)
+        }
+        let day = "\(root)/2027-01-15"
+        for job in jobs {
+            try harness.fileSystem.createDirectory("\(day)/\(job.id)")
+            harness.fileSystem.sizes["\(day)/\(job.id)"] = 4
+        }
+        harness.clock.advance(by: ArtifactRetention.failedBudgetFloorSeconds - 1)
+        XCTAssertEqual(
+            try engine.garbageCollect(apply: true, now: harness.clock.now()).removed, ["\(day)/\(jobs[3].id)"],
+            "only the success goes; the failures stay over budget")
+        harness.clock.advance(by: 1)
+        XCTAssertEqual(
+            Set(try engine.garbageCollect(apply: true, now: harness.clock.now()).removed),
+            Set(jobs.prefix(3).map { "\(day)/\($0.id)" }), "a day after they ended, the budget may take them")
     }
 
     func testArtifactRetentionHoldsTerminalJobsUntilOwnedProcessCleanupIsVerified() throws {

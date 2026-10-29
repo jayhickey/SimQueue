@@ -287,7 +287,9 @@ configuration changes during a normal drained daemon restart, preserving running
 work. These settings persist in the configuration file. Result bundles follow their
 parent run's policy, so failed-run evidence lasts longer than successful output in
 this example. The artifact budget excludes simulator/template data and protects
-active work and pinned runs; it is a cleanup target rather than a hard quota.
+active work, pinned runs, and output of runs that did not succeed for 24 hours after
+they end; it removes successful output first, oldest first, and is a cleanup target
+rather than a hard quota.
 Admission automatically resumes on a subsequent tick once free space is readable
 and above the threshold on all required volumes. It never cancels running jobs to
 recover space. The dashboard reports the effective policy and the actual hold.

@@ -55,13 +55,17 @@ public struct ArtifactRetention: Sendable, Equatable, Codable {
     /// before the rest of its directory (build products are large and rarely needed later).
     public var derivedDataSeconds: Double
     /// Total size budget for the jobs directory. Past it, ended jobs' directories are removed
-    /// oldest first (passes before failures, never `--keep` jobs) until it fits. Nil: none.
+    /// oldest first (passes before failures, never `--keep` jobs, never a failure younger than
+    /// `failedBudgetFloorSeconds`) until it fits. Nil: none.
     public var budgetBytes: UInt64?
     /// How long a `--keep` job's directory stays (it's also exempt from the budget). Nil:
     /// `defaultKeptSeconds`.
     public var keptSeconds: Double?
 
     public static let defaultKeptSeconds: Double = 90 * 86_400
+    /// The size budget never removes a job that didn't succeed until this long after it ended,
+    /// so a red run's results survive a full budget (age retention still applies).
+    public static let failedBudgetFloorSeconds: Double = 86_400
     public var keptRetentionSeconds: Double { keptSeconds ?? Self.defaultKeptSeconds }
 
     public init(
