@@ -231,8 +231,8 @@ The report separates DerivedData and top-level `.xcresult` bundles from the rest
 of each run so they are not counted twice, distinguishes successful/other/active/pinned/untracked managed artifacts,
 and lists up to 100 eligible cleanup targets. Additional accounting samples at
 most 200 run directories; unreadable or unmeasured sizes remain explicitly unknown.
-Sizes are logical file bytes, so APFS cloning/compression can make actual free-space
-changes differ. Managed simulator and template data sizes come from `simctl` device inventory,
+Sizes are on-disk (allocated) bytes, so sparse files such as Xcode's compilation cache
+count only what they use, though APFS clones can still make actual free-space changes differ. Managed simulator and template data sizes come from `simctl` device inventory,
 matched only to live ownership ledger IDs. Missing size readings remain unknown;
 shared simulator runtimes and global Xcode caches are excluded. Simulator data is
 visibility-only here: artifact cleanup never deletes a simulator or template.
@@ -248,11 +248,11 @@ or unhealthy volume.
 
 The storage card shows the last completed cleanup even before an inventory review.
 The report is a single small `last-cleanup.json` file on the state volume, retained
-across restarts. It reports confirmed removed targets and their measured logical
+across restarts. It reports confirmed removed targets and their measured on-disk
 bytes, separately counts unknown removed sizes, and lists deferred/protected
 candidates, failures (at most 100 details), and unavailable roots. Failed removals
 are never counted as reclaimed bytes. Shared APFS blocks, compression, and
-concurrent writes mean logical bytes removed are not a measured free-space gain.
+concurrent writes mean bytes removed are not a measured free-space gain.
 Read-only reviews do not reset the last cleanup result.
 
 The review also groups protected/retained run data by active work or pending

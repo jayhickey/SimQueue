@@ -141,8 +141,9 @@ public struct RootedFileSystem: FileSystem {
         }
     }
 
-    /// Bytes in regular files under `path`, counting a symlink as nothing and never
-    /// entering one. Nil if `path` is unsafe or missing.
+    /// On-disk (allocated) bytes of regular files under `path`, counting a symlink as nothing
+    /// and never entering one, so a sparse file counts only what it uses. Nil if `path` is
+    /// unsafe or missing.
     public func sizeOfItem(_ path: String) -> UInt64? {
         guard (try? check(path, allowRoot: true)) != nil, Self.lstatMode(path) != nil else { return nil }
         return Self.treeSize(path)
@@ -153,7 +154,7 @@ public struct RootedFileSystem: FileSystem {
         guard lstat(path, &info) == 0 else { return 0 }
         switch info.st_mode & S_IFMT {
         case S_IFREG:
-            return UInt64(max(0, info.st_size))
+            return UInt64(max(0, info.st_blocks)) * 512  // st_blocks: 512-byte units, as `du` counts
         case S_IFDIR:
             let names = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
             return names.reduce(0) { $0 + treeSize(path + "/" + $1) }

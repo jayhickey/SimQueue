@@ -12,7 +12,7 @@ public protocol FileSystem: Sendable {
     func removeItem(_ path: String) throws
     /// Atomically remove an empty directory only. Unsupported implementations keep it.
     func removeEmptyDirectory(_ path: String) throws -> Bool
-    /// Total bytes under `path` (a file or a directory tree); nil if unknown.
+    /// Total on-disk bytes under `path` (a file or a directory tree); nil if unknown.
     func sizeOfItem(_ path: String) -> UInt64?
 }
 
