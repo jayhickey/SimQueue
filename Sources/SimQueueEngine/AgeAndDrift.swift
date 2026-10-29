@@ -207,7 +207,7 @@ extension Engine {
         let budget = reliability.ageRules.artifactRetention.budgetBytes
         var entries: [BudgetEntry] = []
         if budget != nil {
-            entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path))
+            entries = try budgetEntries(directories: inventory.directories, already: aged.map(\.path), now: now)
         }
         var report = GCPlan(aged: aged, entries: entries, budget: budget)
         guard includeStorageAccounting else { return report }
@@ -359,15 +359,22 @@ extension Engine {
     }
 
     /// Store lookups only; paths came from the unlocked filesystem inventory.
-    private func budgetEntries(directories: [GCInventory.Directory], already: [String]) throws -> [BudgetEntry] {
+    /// A job that didn't succeed stays out of the budget's reach for `failedBudgetFloorSeconds`.
+    private func budgetEntries(
+        directories: [GCInventory.Directory], already: [String], now: Double
+    ) throws -> [BudgetEntry] {
         let removed = Set(already)
         var entries: [BudgetEntry] = []
         for directory in directories where !directory.jobID.hasPrefix(".") && !removed.contains(directory.path) {
             let job = try store.job(id: directory.jobID)
+            let endedAt = job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400
+            let recentFailure =
+                job.map { $0.state != .succeeded && now - endedAt < ArtifactRetention.failedBudgetFloorSeconds }
+                ?? false
             entries.append(
                 BudgetEntry(
-                    path: directory.path, removable: try job.map(isRemovable) ?? true, failed: job?.state != .succeeded,
-                    endedAt: job.map { $0.finishedAt ?? $0.createdAt } ?? directory.dayStart + 86_400,
+                    path: directory.path, removable: try !recentFailure && (job.map(isRemovable) ?? true),
+                    failed: job?.state != .succeeded, endedAt: endedAt,
                     derivedAlreadyRemoved: removed.contains(directory.path + "/DerivedData")))
         }
         return entries
@@ -384,7 +391,8 @@ extension Engine {
     }
 
     /// The budget's picks: removable directories, passes before failures, oldest first,
-    /// until the total fits. The total counts every directory, pinned and running ones
+    /// until the total fits (failures under a day old aren't removable, see `budgetEntries`).
+    /// The total counts every directory, pinned and running ones
     /// too, so pins can keep the jobs directory over budget. Sizes come from `size` (a
     /// disk walk), so callers may run this without the service lock.
     static func overBudget(
