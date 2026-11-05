@@ -65,3 +65,5 @@ are reserved. The CLI's `--env-from NAME` is a caller-side convenience rather th
 daemon request to copy arbitrary client or daemon secrets.
 
 For manual leases, keep a stable holder name for acquisition and release. Acquisition can return `state: pending` when its wait expires; check for `state: granted` and a UDID before using a simulator. The MCP server's process owns the lease; once it exits, holder-liveness checks can reclaim the simulator. Use ordinary submitted jobs when you want SimQueue to supervise the command and its simulator together. Neither a manual lease nor a queued job provides a pristine simulator or security isolation; see [reuse](TEMPLATE.md#reuse-and-readiness).
+
+Physical iOS device jobs use `simq_submit` with `device` (configured UDID or label) and zero simulator counts. `simq_devices` lists configured health and leases. `device_artifact` accepts `bundle` and a relative container `path`; output stays local under the job artifact directory. See [physical devices](PHYSICAL_DEVICES.md) for health states and privacy.

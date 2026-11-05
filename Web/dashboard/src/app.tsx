@@ -876,7 +876,7 @@ function Runner({ snapshot }: { snapshot?: Snapshot }) {
             {s.devices.map((info) => (
               <p key={info.device.udid}>
                 <strong>{info.device.name}</strong> · {human(info.health.state)}
-                {info.jobID && <> · Leased by {info.jobID}</>}
+                {info.job_id && <> · Leased by {info.job_id}</>}
                 {info.health.thermal && <> · Thermal: {info.health.thermal}</>}
                 <br />
                 <span class="muted">

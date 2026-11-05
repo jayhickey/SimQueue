@@ -194,3 +194,7 @@ actual `offset`, `next_offset`, `at_end`, and `job_finished`. Clients must check
 for that field before treating a response from an older daemon as a tail. Polling
 new windows naturally handles truncation; stop following only when both
 `job_finished` and `at_end` are true.
+
+### Physical devices
+
+Submit optionally accepts `device` (exact configured UDID or label) and `device_artifact` (`bundle`, `path`). Physical requests require a command and zero simulator counts and reject simulator preparation/templates. Job replies add optional `device` and `physical_udid`; status adds optional `devices` entries containing `device`, `health` and `job_id` (current exclusive lease holder). Health has `state`, `detail` and optional `thermal`. The `simq devices` and MCP `simq_devices` clients read this status capability. See [physical devices](PHYSICAL_DEVICES.md) for the config, states, commands and local artifact privacy rules.

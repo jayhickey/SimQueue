@@ -29,26 +29,41 @@ public struct Devicectl: Sendable {
             let details = try json(["device", "info", "details", "--device", udid])
             let device = details["device"] as? [String: Any] ?? details
             let properties = device["properties"] as? [String: Any] ?? [:]
-            let connection = device["connectionProperties"] as? [String: Any] ?? properties
-            let features = device["deviceProperties"] as? [String: Any] ?? properties
+            let connection =
+                device["connectionProperties"] as? [String: Any]
+                ?? properties["connection"] as? [String: Any] ?? [:]
+            let features =
+                device["deviceProperties"] as? [String: Any]
+                ?? properties["state"] as? [String: Any] ?? [:]
+            let mode = features["developerModeStatus"]
+            let enabled = (mode as? [String: Any])?["enabled"] as? [String: Any]
+            let modeEnabled = (mode as? String == "enabled") || enabled != nil
             let thermal = features["thermalState"] as? String
             guard connection["pairingState"] as? String == "paired" else {
                 return DeviceHealth(
                     state: "device_unpaired", detail: "devicectl did not confirm pairing", thermal: thermal)
             }
-            guard let mode = features["developerModeStatus"] as? String, mode == "enabled" else {
+            guard modeEnabled else {
                 return DeviceHealth(
                     state: "developer_mode_disabled", detail: "devicectl did not confirm Developer Mode",
                     thermal: thermal)
             }
             // Details may return cached properties even when connection failed.
-            guard connection["tunnelState"] as? String == "connected" else {
+            guard (connection["tunnelState"] ?? connection["state"]) as? String == "connected" else {
                 return DeviceHealth(
                     state: "device_unavailable", detail: "devicectl did not confirm a connected tunnel",
                     thermal: thermal)
             }
             let lock = try json(["device", "info", "lockState", "--device", udid])
-            guard let locked = lock["isLocked"] as? Bool else {
+            // CoreDevice's LockStateProtocol uses these fields on current Xcode.
+            // Older adapters can expose isLocked directly. An unlocked-since-boot
+            // flag alone does not establish the device's current lock state.
+            let required = lock["isPasscodeRequired"] as? Bool
+            let unlocked = lock["hasBeenUnlockedSinceBoot"] as? Bool
+            let locked =
+                lock["isLocked"] as? Bool
+                ?? required.map { $0 || unlocked != true }
+            guard let locked else {
                 return DeviceHealth(
                     state: "device_unavailable", detail: "devicectl lock state unavailable; unlock cannot be verified",
                     thermal: thermal)

@@ -214,6 +214,9 @@ public final class JobStore {
         where !(value > 0) || !value.isFinite {
             throw JobStoreError.invalidTimeout(value)
         }
+        if submission.command?.device != nil, submission.resources.needsSims {
+            throw JobStoreError.invalidCommand("physical jobs cannot request simulators")
+        }
         if let reason = submission.command?.validationError {
             throw JobStoreError.invalidCommand(reason)
         }

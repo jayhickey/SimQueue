@@ -550,7 +550,10 @@ public struct DaemonConfig: Sendable, Equatable {
             config.devices.allSatisfy({
                 !$0.udid.isEmpty && !$0.name.isEmpty && $0.udid.count <= 200
                     && $0.udid.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
-                    && $0.labels.allSatisfy({ !$0.isEmpty && $0.count <= 200 && !$0.contains(where: \.isWhitespace) })
+                    && $0.labels.allSatisfy({
+                        !$0.isEmpty && $0.count <= 200 && !$0.contains(where: \.isWhitespace)
+                            && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                    })
             })
         else { throw LoadError.invalid("devices need unique UDIDs, names and nonempty labels without whitespace") }
         config.hostTemplates = file.hostTemplates ?? [:]

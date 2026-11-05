@@ -120,6 +120,7 @@ Waiting clients reconnect after a short service interruption. An abruptly interr
 | Run jobs from GitHub Actions | [CI integration](docs/ACTIONS.md) |
 | Look up flags, configuration, exit codes, and recovery | [CLI and protocol reference](docs/PROTOCOL.md) |
 | Keep screenshots, videos, and result bundles | [Job artifacts](docs/PROOF-JOBS.md) |
+| Schedule physical iOS devices, inspect health, and pull local artifacts | [Physical devices](docs/PHYSICAL_DEVICES.md) |
 | Connect an MCP client | [MCP integration](docs/MCP.md) |
 | Understand scheduling, storage, and ownership | [Architecture](docs/ARCHITECTURE.md) |
 | Build and publish a release | [Release process](docs/RELEASING.md) |
@@ -188,3 +189,5 @@ select [named host templates](docs/TEMPLATE.md#named-host-templates) from one sh
 The default host memory reserve is 10% of total RAM with a 1 GiB minimum. For example, a 16 GiB Mac keeps about 1.6 GiB of reserve. `host.min_reserve_mib` overrides the minimum; `host.reserve_mib` sets a fixed reserve instead of the percentage. Existing explicit settings are preserved.
 
 Stable releases also update the Homebrew CLI formula and optional app cask through a separate publishing job. Maintainers configure a tap-only credential as described in [releasing](docs/RELEASING.md#automatic-tap-credentials).
+
+Physical iOS devices can be configured separately from the simulator pool and leased exclusively with `simq run --device <udid-or-label>`. Use `simq devices` for health and leases; see [physical device configuration and examples](docs/PHYSICAL_DEVICES.md). No device request preserves simulator behavior. Personal-phone artifacts stay local and must never be committed to git.

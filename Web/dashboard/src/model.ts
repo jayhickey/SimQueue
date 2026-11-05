@@ -95,7 +95,7 @@ export interface Status {
   devices?: {
     device: { udid: string; name: string; labels: string[]; enabled: boolean };
     health: { state: string; detail: string; thermal?: string };
-    jobID?: string;
+    job_id?: string;
   }[];
   lastCleanup?: CleanupSummary;
   running: number;

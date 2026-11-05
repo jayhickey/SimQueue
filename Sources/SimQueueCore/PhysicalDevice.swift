@@ -37,6 +37,10 @@ public struct PhysicalDeviceInfo: Sendable, Equatable, Codable {
     public var device: PhysicalDevice
     public var health: DeviceHealth
     public var jobID: String?
+    enum CodingKeys: String, CodingKey {
+        case device, health
+        case jobID = "job_id"
+    }
     public init(device: PhysicalDevice, health: DeviceHealth, jobID: String? = nil) {
         self.device = device; self.health = health; self.jobID = jobID
     }
@@ -71,9 +75,10 @@ extension JobCommand {
         {
             let separator = args.firstIndex(of: "--") ?? args.count
             var options = Array(args[..<separator])
-            while let index = options.firstIndex(of: "--device"), index + 1 < options.count {
+            while let index = options.firstIndex(where: { $0 == "--device" || $0 == "-d" }), index + 1 < options.count {
                 options.removeSubrange(index...index + 1)
             }
+            options.removeAll { $0.hasPrefix("--device=") || $0.hasPrefix("-d=") }
             options += ["--device", udid]
             if args[3] == "process", !options.contains("--terminate-existing") {
                 options.append("--terminate-existing")
@@ -90,13 +95,18 @@ extension JobCommand {
             "--source", artifact.path, "--destination",
         ].map(Self.shellQuote).joined(separator: " ")
         let script = """
+            rm -f "$SIMQ_RUN_DIR/.device-artifact-failed" "$SIMQ_RUN_DIR/.device-command-exit"
             \(command)
             status=$?
+            printf '%s' "$status" > "$SIMQ_RUN_DIR/.device-command-exit"
             \(copy) "$SIMQ_RUN_DIR/device-artifacts"
             copied=$?
             if [ "$copied" -ne 0 ]; then
               echo '=== simq: device artifact copy failed' >&2
-              if [ "$status" -eq 0 ]; then exit 74; fi
+              if [ "$status" -eq 0 ]; then
+                : > "$SIMQ_RUN_DIR/.device-artifact-failed"
+                exit 74
+              fi
             fi
             exit "$status"
             """

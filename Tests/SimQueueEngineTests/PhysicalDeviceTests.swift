@@ -117,4 +117,46 @@ final class PhysicalDeviceTests: XCTestCase {
         XCTAssertTrue(try engine.tick().admitted.isEmpty)
         XCTAssertTrue(try store.physicalLeases().isEmpty)
     }
+    func testRunningCrashRecoveryReclaimsOnlyAfterOldGroupStops() throws {
+        let h = Harness()
+        let store = try JobStore(path: ":memory:")
+        let (engine, _, _) = try h.start(store: store)
+        configure(engine)
+        let job = try submit(store)
+        _ = try engine.tick()
+        let pgid: Int32 = 4242
+        h.processes.spawn(pgid)
+        _ = try store.markRunning(jobID: job.id, pid: pgid, epoch: engine.epoch, now: h.clock.now())
+        _ = try store.acquireResource(
+            kind: .processGroup, externalID: String(pgid), owner: .job(job.id),
+            epoch: engine.epoch, identity: h.processes.processIdentity(pgid), now: h.clock.now())
+        let next = try submit(store)
+        let (restarted, _, _) = try h.start(store: store)
+        configure(restarted)
+        XCTAssertEqual(try store.job(id: job.id)?.state, .interrupted)
+        XCTAssertEqual(try restarted.tick().admitted, [next.id])
+        XCTAssertEqual(try store.physicalLeases()[phone.udid], next.id)
+        XCTAssertTrue(h.sims.deletedUDIDs.isEmpty)
+    }
+
+    func testLiveUnverifiableGroupKeepsPhoneAcrossCancel() throws {
+        let h = Harness()
+        let store = try JobStore(path: ":memory:")
+        let (engine, _, _) = try h.start(store: store)
+        configure(engine)
+        let job = try submit(store)
+        _ = try engine.tick()
+        let pgid: Int32 = 4242
+        h.processes.spawn(pgid)
+        _ = try store.acquireResource(
+            kind: .processGroup, externalID: String(pgid), owner: .job(job.id),
+            epoch: engine.epoch, identity: nil, now: h.clock.now())
+        _ = try store.cancel(jobID: job.id, now: h.clock.now())
+        let next = try submit(store)
+        XCTAssertTrue(try engine.tick().admitted.isEmpty)
+        XCTAssertEqual(try store.physicalLeases()[phone.udid], job.id)
+        h.processes.exit(pgid)
+        XCTAssertEqual(try engine.tick().admitted, [next.id])
+    }
+
 }

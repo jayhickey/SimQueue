@@ -490,6 +490,8 @@ public final class Engine {
             // backend inventory cannot change admission of simulator-free work.
             availablePool = PoolSnapshot()
         }
+        try store.releasePhysicalLeases(holdingJobIDs: cleanupOwners.union(artifactWritersInFlight), now: now)
+        let devices = try physicalDeviceInfos(refreshReady: queued.contains { $0.command?.device != nil })
         // Legacy backend inventory can be slow too. Refresh both the resource sample
         // and admission timestamp rather than authorizing work from the caller's old
         // sample; jobs whose queue deadline passed during that wait cannot be admitted.
@@ -507,7 +509,6 @@ public final class Engine {
         let drainPolicy = scheduler.config.drain
         let failures = try store.allInfraFailureTimes(since: now - drainPolicy.windowSeconds)
         let drain = drainPolicy.status(failureTimes: failures, clearedAt: control.drainClearedAt, now: now)
-        try store.releasePhysicalLeases(holdingJobIDs: cleanupOwners.union(artifactWritersInFlight), now: now)
         var input = SchedulerInput(
             now: now,
             queued: queued,
@@ -526,7 +527,7 @@ public final class Engine {
             defaultHostTemplate: defaultHostTemplate,
             templateCapacityKeys: try templateCapacityKeys()
         )
-        input.physicalDevices = try physicalDeviceInfos(refreshReady: queued.contains { $0.command?.device != nil })
+        input.physicalDevices = devices
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
             try store.setLoadThrottled(plan.loadThrottled, detail: "load1=\(host.load1) load5=\(host.load5)", now: now)

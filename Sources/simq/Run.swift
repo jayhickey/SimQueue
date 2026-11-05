@@ -17,7 +17,7 @@ import SimQueueProtocol
 /// submit, wait, logs and cancel; the daemon still runs and supervises the command.
 struct Run: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Run a command holding a simulator; exit with the command's status.",
+        abstract: "Run a command holding a simulator or physical device; exit with its status.",
         discussion: """
             Queues the command (default --sims 1), waits for it to start, then streams its
             output to stdout until it ends. The daemon runs it in its own process group in the
@@ -28,6 +28,10 @@ struct Run: ParsableCommand {
             go to stderr. The sim is a warm, booted pool sim as the last job left it; --reset-app
             BUNDLE_ID (repeatable) resets those apps and the keychain first, falling back to an
             erase if a reset step fails, and --fresh-sim erases it first.
+            --device UDID_OR_LABEL leases one configured physical iOS device and implies zero
+            simulators. Direct xcodebuild commands receive the physical destination; direct
+            xcrun devicectl install/launch/processes commands receive the leased device.
+            Scripts can use SIMQ_DEVICE_UDID; simulator reset/fresh/template flags are rejected.
             Exit status (--exit-code passthrough, the default): the command's own exit status
             when it ran and ended on its own. Otherwise simq's codes: 3 run timeout, 4 infra
             failure, 5 canceled, 6 queue timeout. A command can exit 3...6 itself, so to tell

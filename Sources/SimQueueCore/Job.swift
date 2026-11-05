@@ -173,7 +173,8 @@ public struct JobCommand: Sendable, Codable, Equatable {
             return "cwd must be an absolute path"
         }
         if let device {
-            guard !device.isEmpty, device.count <= 200, !device.contains(where: { $0.isWhitespace || $0.isNewline })
+            guard !device.isEmpty, device.count <= 200, !device.contains(where: { $0.isWhitespace || $0.isNewline }),
+                !device.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
             else {
                 return "device must be a UDID or label without whitespace (max 200 characters)"
             }

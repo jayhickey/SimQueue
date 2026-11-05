@@ -80,6 +80,7 @@ public final class DaemonService: @unchecked Sendable {
     public init(
         engine: Engine, config: DaemonConfig, info: DaemonInfo, executor: (any JobExecutor)?,
         artifacts: JobArtifacts? = nil,
+        deviceHealth: ((String) -> DeviceHealth)? = nil,
         log: @escaping @Sendable (String) -> Void = {
             FileHandle.standardError.write(Data(("simqd: " + $0 + "\n").utf8))
         }
@@ -88,7 +89,14 @@ public final class DaemonService: @unchecked Sendable {
         self.engine = engine
         self.config = config
         engine.physicalDevices = config.devices
-        engine.deviceHealth = { Devicectl().health(udid: $0) }
+        engine.deviceHealth =
+            deviceHealth ?? { udid in
+                guard info.backend != "fake" else {
+                    return DeviceHealth(
+                        state: "device_unavailable", detail: "physical device probes disabled with fake backend")
+                }
+                return Devicectl().health(udid: udid)
+            }
         engine.pool = config.pool
         engine.hostTemplates = config.hostTemplates
         engine.defaultHostTemplate = config.defaultHostTemplate
@@ -846,6 +854,9 @@ public final class DaemonService: @unchecked Sendable {
         guard params.minSims >= 0, (params.maxSims ?? params.minSims) >= params.minSims else {
             throw ProtocolError(.invalidArgument, "sims must be >= 0 and max_sims >= min_sims")
         }
+        if params.deviceArtifact != nil, params.device == nil || params.command?.isEmpty != false {
+            throw ProtocolError(.invalidArgument, "device_artifact needs a physical device command")
+        }
         var command: JobCommand?
         if let argv = params.command, !argv.isEmpty {
             command = JobCommand(
@@ -1144,7 +1155,10 @@ public final class DaemonService: @unchecked Sendable {
             let groups = try store.liveResources(kinds: [.processGroup])
             let sims = try store.poolSims()
             let intents = try store.pendingActionIntents()
-            drainComplete = groups.isEmpty && intents.isEmpty && !sims.contains { $0.phase == .leased }
+            let physicalLeases = try store.physicalLeases()
+            drainComplete =
+                groups.isEmpty && intents.isEmpty && physicalLeases.isEmpty
+                && !sims.contains { $0.phase == .leased }
         }
         if drainComplete, info.statePath != ":memory:" {
             try JobOutputConfiguration.markDrained(
