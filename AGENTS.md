@@ -6,7 +6,8 @@ Read `simq agent-guide` for the installed version before submitting managed work
 ## Coding environment
 
 - All coding (app/repo/site implementation, PRs, AGENTS.md and other doc/code changes in this repository) goes through T3 Code.
-- Do not implement via Grok Bot box coding.
+- Bots are orchestration only; T3 is the execution harness for coding and designs.
+- Do not implement via Grok Bot box coding or do heavy design or code in Grok Bot — hand it to T3.
 - Do not use Cursor Cloud Agents unless Jay explicitly names CloudAgent.
 - The Mac mini is for builds, installs, CI, and device ops.
 - Settle T3 threads when the work is done; unsettle or reopen freely if revisiting.
