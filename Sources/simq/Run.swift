@@ -45,6 +45,9 @@ struct Run: ParsableCommand {
     @Option(help: "Free-form label for status and logs (no behavior).") var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
     @Option(help: "Named host template (from host_templates).") var template: String?
+    @Option(help: "Physical device UDID or configured label (implies zero simulators).") var device: String?
+    @Option(help: "App bundle id for --device-artifact-path.") var deviceArtifactBundle: String?
+    @Option(help: "Relative app data container path to copy after the run.") var deviceArtifactPath: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "Simulators to hold (default 1; 0 runs without one).") var sims = 1
     @Flag(help: "Take the exclusive slot: exclusive jobs run one at a time.") var exclusive = false
@@ -115,14 +118,14 @@ struct Run: ParsableCommand {
                 name = priority
             }
         }
-        let params = SubmitParams(
+        var params = SubmitParams(
             project: project ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent,
             kind: kind,
             template: template,
             priority: numeric,
             priorityName: name,
             submitter: submitter ?? ProcessInfo.processInfo.environment["USER"] ?? "unknown",
-            minSims: sims,
+            minSims: device == nil ? sims : 0,
             memoryBytes: memoryMib * ByteSize.mebibyte,
             exclusive: exclusive ? true : nil,
             retryable: retryable || retries != nil ? true : nil,
@@ -135,6 +138,13 @@ struct Run: ParsableCommand {
             resetApps: resetApps.isEmpty ? nil : resetApps,
             freshSim: freshSim ? true : nil
         )
+        guard (deviceArtifactBundle == nil) == (deviceArtifactPath == nil) else {
+            throw ValidationError("--device-artifact-bundle and --device-artifact-path must be supplied together")
+        }
+        params.device = device
+        if let bundle = deviceArtifactBundle, let path = deviceArtifactPath {
+            params.deviceArtifact = DeviceArtifact(bundle: bundle, path: path)
+        }
         // Handlers go in before the submit, so a signal at any point after it cancels the
         // job instead of leaving it queued with nobody waiting (#41).
         let signals = SignalForwarder(connection: connection)

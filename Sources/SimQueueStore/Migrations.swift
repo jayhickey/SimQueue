@@ -331,5 +331,14 @@ public enum SchemaMigrations {
                     WHEN simqueue_archive_allows(OLD.seq, OLD.at) != 1
                     BEGIN SELECT RAISE(ABORT, 'audit_log is append-only; verified archival required'); END;
                 """),
+        Migration(
+            version: 15,
+            sql: """
+                CREATE TABLE physical_leases (
+                    udid TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+                    epoch INTEGER NOT NULL
+                );
+                """),
     ]
 }

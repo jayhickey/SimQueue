@@ -32,6 +32,7 @@ public struct DaemonConfig: Sendable, Equatable {
     /// Optional absolute directory containing dated job output directories.
     public var jobOutputRoot: String?
     /// Host template labels mapped to existing template simulator identifiers.
+    public var devices: [PhysicalDevice] = []
     public var hostTemplates: [String: String] = [:]
     public var defaultHostTemplate: String?
     public var priorityAliases = PriorityAliases()
@@ -263,6 +264,7 @@ public struct DaemonConfig: Sendable, Equatable {
 
     struct File: Decodable {
         var jobOutputRoot: String?
+        var devices: [PhysicalDevice]?
         var hostTemplates: [String: String]?
         var defaultHostTemplate: String?
         var priorityAliases: [String: Int]?
@@ -440,6 +442,7 @@ public struct DaemonConfig: Sendable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case jobOutputRoot = "job_output_root"
+            case devices
             case hostTemplates = "host_templates"
             case defaultHostTemplate = "default_host_template"
             case priorityAliases = "priority_aliases"
@@ -542,6 +545,14 @@ public struct DaemonConfig: Sendable, Equatable {
             }
             config.jobOutputRoot = normalized
         }
+        config.devices = file.devices ?? []
+        guard Set(config.devices.map(\.udid)).count == config.devices.count,
+            config.devices.allSatisfy({
+                !$0.udid.isEmpty && !$0.name.isEmpty && $0.udid.count <= 200
+                    && $0.udid.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+                    && $0.labels.allSatisfy({ !$0.isEmpty && $0.count <= 200 && !$0.contains(where: \.isWhitespace) })
+            })
+        else { throw LoadError.invalid("devices need unique UDIDs, names and nonempty labels without whitespace") }
         config.hostTemplates = file.hostTemplates ?? [:]
         for (name, source) in config.hostTemplates {
             guard ProjectSettings.isValidName(name), !source.isEmpty, !source.utf8.contains(0) else {

@@ -30,6 +30,13 @@ enum MCPTools {
                 name: "simq_submit", description: "Queue a job. Returns its id and queue position.",
                 properties: [
                     "project": string("Project name."),
+                    "device": string("Physical device UDID or configured label; requires min_sims/max_sims 0."),
+                    "device_artifact": [
+                        "type": "object",
+                        "properties": [
+                            "bundle": string("App bundle id."), "path": string("Relative app data container path."),
+                        ], "required": ["bundle", "path"],
+                    ],
                     "command": ["type": "array", "items": ["type": "string"], "description": "argv to run."],
                     "kind": string("Free-form label."),
                     "priority": integer("0...100, higher first (default 50)."),
@@ -59,6 +66,9 @@ enum MCPTools {
                     "fresh_sim": boolean("Erase each leased sim before the command. Needs min_sims >= 1."),
                 ],
                 required: ["project"]),
+            MCPTool(
+                name: "simq_devices", description: "Configured physical devices with live health and exclusive leases.",
+                properties: [:], required: []),
             MCPTool(name: "simq_status", description: "Queue and host summary.", properties: [:], required: []),
             MCPTool(
                 name: "simq_jobs", description: "List jobs.",

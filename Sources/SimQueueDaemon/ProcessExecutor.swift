@@ -312,7 +312,7 @@ public final class ProcessExecutor: JobExecutor {
             }
             guard
                 let executable = ProcessSpawner.resolveExecutable(
-                    command.argv[0], path: work.environment["PATH"], cwd: command.cwd)
+                    command.executionArgv[0], path: work.environment["PATH"], cwd: command.cwd)
             else {
                 return preparationFailure(.commandFailure, "command not found: \(command.argv[0])", exitCode: 127)
             }
@@ -423,6 +423,11 @@ public final class ProcessExecutor: JobExecutor {
         if !poolUDIDs.isEmpty { environment["SIMQ_SIM_UDIDS"] = poolUDIDs.joined(separator: ",") }
         // The first leased sim, for the common one-sim case (`simq run`).
         if let first = poolUDIDs.first { environment["SIMQ_UDID"] = first }
+        if let udid = command.physicalUDID {
+            environment["SIMQ_UDID"] = udid
+            environment["SIMQ_DEVICE_UDID"] = udid
+            environment["SIMQ_RESOURCE_TYPE"] = "physical"
+        }
         environment["SIMQ_RUN_DIR"] = directory
         // Suggested xcodebuild paths inside the job's own directory, so concurrent jobs
         // never share them. Paths only: nothing is created.
@@ -451,7 +456,8 @@ public final class ProcessExecutor: JobExecutor {
         let pid: Int32
         do {
             pid = try ProcessSpawner.spawn(
-                executable: prepared.executable, argv: command.argv, environment: environment, cwd: command.cwd,
+                executable: prepared.executable, argv: command.executionArgv, environment: environment,
+                cwd: command.cwd,
                 outputDescriptor: prepared.descriptor)
         } catch {
             try? store.markResourceReleased(id: intent.id, reason: "never started", now: now)
@@ -536,7 +542,10 @@ public final class ProcessExecutor: JobExecutor {
             // SimQueue's doing, and the timeout path records `timed_out` once the whole
             // group is gone. Only note the command's status here.
             if job.state == .running, job.termSentAt == nil {
-                let result: ResultClass = exit == .exited(0) ? .success : .commandFailure
+                let result: ResultClass =
+                    exit == .exited(0)
+                    ? .success
+                    : exit == .exited(74) && job.command?.deviceArtifact != nil ? .artifactFailure : .commandFailure
                 _ = try store.finish(
                     jobID: jobID, result: result, message: result == .success ? nil : "command \(exit.description)",
                     commandExitCode: exit.shellStatus, now: now)

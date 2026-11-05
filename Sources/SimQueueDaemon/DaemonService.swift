@@ -87,6 +87,8 @@ public final class DaemonService: @unchecked Sendable {
         self.log = log
         self.engine = engine
         self.config = config
+        engine.physicalDevices = config.devices
+        engine.deviceHealth = { Devicectl().health(udid: $0) }
         engine.pool = config.pool
         engine.hostTemplates = config.hostTemplates
         engine.defaultHostTemplate = config.defaultHostTemplate
@@ -853,6 +855,20 @@ public final class DaemonService: @unchecked Sendable {
         } else if params.environment?.isEmpty == false || params.cwd != nil {
             throw ProtocolError(.invalidArgument, "environment and cwd need a command")
         }
+        command?.device = params.device
+        command?.deviceArtifact = params.deviceArtifact
+        if let request = params.device {
+            guard command != nil, params.minSims == 0, (params.maxSims ?? 0) == 0,
+                params.template == nil, params.freshSim != true, params.resetApps?.isEmpty != false
+            else {
+                throw ProtocolError(
+                    .invalidArgument,
+                    "physical jobs require a command and zero simulators, without template/reset/fresh")
+            }
+            guard config.devices.contains(where: { $0.matches(request) }) else {
+                throw ProtocolError(.invalidArgument, "no enabled configured physical device matches \(request)")
+            }
+        }
         if let template = params.template ?? (params.minSims > 0 ? config.defaultHostTemplate : nil) {
             guard config.hostTemplates[template] != nil else {
                 throw ProtocolError(.invalidArgument, "unknown host template \(template)")
@@ -1134,7 +1150,7 @@ public final class DaemonService: @unchecked Sendable {
             try JobOutputConfiguration.markDrained(
                 true, stateDirectory: (info.statePath as NSString).deletingLastPathComponent)
         }
-        return StatusResult(
+        var result = StatusResult(
             daemon: info,
             queued: try store.queuedJobs().count,
             admitted: active.filter { $0.state == .admitted }.count,
@@ -1159,6 +1175,8 @@ public final class DaemonService: @unchecked Sendable {
             storage: storageDiagnostics(), host: lastTick?.host, artifactStorage: artifactStorage,
             storageReviewRunning: artifactCleanupRunning, lastCleanup: lastCleanup
         )
+        result.devices = try engine.physicalDeviceInfos()
+        return result
     }
 
     private func jobs(_ params: JobsParams) throws -> [JobInfo] {

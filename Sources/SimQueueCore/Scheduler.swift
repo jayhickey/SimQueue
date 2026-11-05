@@ -21,6 +21,7 @@ public struct SchedulerInput: Sendable {
     public var readySimsByTemplate: [String: Int]?
     public var storageFailure: String?
     public var cleanupJobIDs: Set<String>
+    public var physicalDevices: [PhysicalDeviceInfo] = []
 
     public init(
         now: Double,
@@ -67,6 +68,7 @@ public struct Admission: Sendable, Equatable, Codable {
     public var fromParked: Int
     public var newBoots: Int
     /// Memory the pass charged for this admission.
+    public var physicalUDID: String?
     public var chargedMemoryBytes: UInt64
 
     public init(
@@ -179,6 +181,7 @@ public struct Scheduler: Sendable {
         var reservedFor: String?
         var warmupHint = 0
         let global = globalWaitReasons(input)
+        var deviceHolders = Set(input.physicalDevices.filter { $0.jobID != nil }.map { $0.device.udid })
 
         for (index, job) in ordered.enumerated() {
             let score = config.priority.effectiveScore(of: job, now: input.now)
@@ -195,6 +198,22 @@ public struct Scheduler: Sendable {
             if input.cleanupJobIDs.contains(job.id) {
                 wait([.cleanupPending(jobID: job.id)])
                 continue
+            }
+            var physicalUDID: String?
+            if let request = job.command?.device {
+                let candidates = input.physicalDevices.filter { $0.device.matches(request) }
+                if let available = candidates.first(where: {
+                    $0.health.ready && !deviceHolders.contains($0.device.udid)
+                }) {
+                    physicalUDID = available.device.udid
+                } else {
+                    let health = candidates.first(where: { !$0.health.ready })?.health
+                    let code = candidates.isEmpty ? "device_unavailable" : health?.state ?? "device_busy"
+                    wait([
+                        .device(state: code, detail: health?.detail ?? "no available configured device for \(request)")
+                    ])
+                    continue
+                }
             }
             let minimumMemory = job.resources.memoryCost(
                 sims: job.resources.minSims, minimum: config.minimumJobMemoryBytes)
@@ -246,6 +265,10 @@ public struct Scheduler: Sendable {
                         chargedMemoryBytes: allocation.memory
                     )
                 )
+                if let physicalUDID {
+                    admissions[admissions.count - 1].physicalUDID = physicalUDID
+                    deviceHolders.insert(physicalUDID)
+                }
             case .failure(let failure):
                 wait(failure.reasons)
                 if reservedFor == nil, !failure.reasons.allSatisfy(\.isSelfLimited) {

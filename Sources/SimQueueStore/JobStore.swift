@@ -475,8 +475,11 @@ public final class JobStore {
 
     /// Atomically moves a queued job to `admitted` and issues it a fresh fencing token.
     /// Returns nil if the job is no longer queued or `epoch` isn't the current daemon epoch.
-    public func claim(jobID: String, grantedSims: Int, epoch: Int64, now: Double) throws -> Int64? {
+    public func claim(jobID: String, grantedSims: Int, epoch: Int64, now: Double, physicalUDID: String? = nil) throws
+        -> Int64?
+    {
         try database.immediateTransaction {
+            if let physicalUDID, try physicalLeases()[physicalUDID] != nil { return nil }
             try database.run(
                 """
                 UPDATE jobs SET state = 'admitted', admitted_at = ?, granted_sims = ?, owner_epoch = ?
@@ -496,6 +499,18 @@ public final class JobStore {
                 throw JobStoreError.corruptRow("fence_counter missing")
             }
             try database.run("UPDATE jobs SET fence_token = ? WHERE id = ?;", [.integer(token), .text(jobID)])
+            if let physicalUDID {
+                guard var command = try job(id: jobID)?.command, command.device != nil, grantedSims == 0 else {
+                    throw JobStoreError.invalidCommand(
+                        "physical admission requires a device request and zero simulators")
+                }
+                command.physicalUDID = physicalUDID
+                let json = String(decoding: try Self.commandEncoder.encode(command), as: UTF8.self)
+                try database.run("UPDATE jobs SET command_json = ? WHERE id = ?;", [.text(json), .text(jobID)])
+                try database.run(
+                    "INSERT INTO physical_leases(udid, job_id, epoch) VALUES(?, ?, ?);",
+                    [.text(physicalUDID), .text(jobID), .integer(epoch)])
+            }
             try event(jobID, "admitted", detail: "sims=\(grantedSims) fence=\(token)", at: now)
             return token
         }

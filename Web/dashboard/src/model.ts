@@ -5,6 +5,8 @@ export interface Reason {
   summary: string;
 }
 export interface Job {
+  device?: string;
+  physical_udid?: string;
   id: string;
   project: string;
   kind?: string;
@@ -90,6 +92,11 @@ export interface CleanupSummary {
   unavailableRoots: string[];
 }
 export interface Status {
+  devices?: {
+    device: { udid: string; name: string; labels: string[]; enabled: boolean };
+    health: { state: string; detail: string; thermal?: string };
+    jobID?: string;
+  }[];
   lastCleanup?: CleanupSummary;
   running: number;
   admitted: number;

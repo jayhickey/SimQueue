@@ -121,6 +121,11 @@ public struct JobCommand: Sendable, Codable, Equatable {
     public var template: String?
     /// Daemon-assigned output root; nil on legacy jobs.
     public var artifactsRoot: String?
+    /// Configured UDID or label. Physical jobs never request simulator capacity.
+    public var device: String?
+    /// Durable assignment for this attempt, set atomically with admission.
+    public var physicalUDID: String?
+    public var deviceArtifact: DeviceArtifact?
 
     /// Whether the job asks for any sim preparation.
     public var wantsSimPrep: Bool { freshSim == true || !(resetApps ?? []).isEmpty }
@@ -166,6 +171,20 @@ public struct JobCommand: Sendable, Codable, Equatable {
         }
         if let cwd, !cwd.hasPrefix("/") {
             return "cwd must be an absolute path"
+        }
+        if let device {
+            guard !device.isEmpty, device.count <= 200, !device.contains(where: { $0.isWhitespace || $0.isNewline })
+            else {
+                return "device must be a UDID or label without whitespace (max 200 characters)"
+            }
+            if wantsSimPrep || template != nil {
+                return "physical devices cannot use simulator preparation or templates"
+            }
+        }
+        if let artifact = deviceArtifact {
+            guard device != nil, SimPrep.isValidBundleID(artifact.bundle), artifact.isValid else {
+                return "device artifact needs a device, bundle id and relative container path without .."
+            }
         }
         if let apps = resetApps {
             guard apps.count <= SimPrep.maxResetApps else {
