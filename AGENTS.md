@@ -3,6 +3,14 @@
 Read `simq agent-guide` for the installed version before submitting managed work.
 `simq docs` locates full offline documentation; optional skills are installed explicitly.
 
+## Coding environment
+
+- All coding (app/repo/site implementation, PRs, AGENTS.md and other doc/code changes in this repository) goes through T3 Code.
+- Do not implement via Grok Bot box coding.
+- Do not use Cursor Cloud Agents unless Jay explicitly names CloudAgent.
+- The Mac mini is for builds, installs, CI, and device ops.
+- Settle T3 threads when the work is done; unsettle or reopen freely if revisiting.
+
 1. Follow the user's explicit task scope and repository instructions. Use the configured
    author identity; never invent a maintainer identity or approve on someone else's behalf.
 2. Keep changes focused and generic. Project names are caller-supplied labels. A normal
