@@ -345,6 +345,8 @@ public struct ProtocolError: Error, Sendable, Equatable, Codable {
 // MARK: - Request parameters
 
 public struct SubmitParams: Sendable, Equatable, Codable {
+    public var device: String?
+    public var deviceArtifact: DeviceArtifact?
     public var project: String
     /// Free-form label (status, logs, metrics only). Nil or empty: no label.
     public var kind: String?
@@ -443,7 +445,8 @@ public struct SubmitParams: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case project, kind, template, submitter, worktree
+        case project, kind, template, submitter, worktree, device
+        case deviceArtifact = "device_artifact"
         case priority, exclusive, retryable
         case command, environment, cwd
         case maxRetries = "max_retries"
@@ -739,6 +742,8 @@ public struct WaitReasonInfo: Sendable, Equatable, Codable {
 }
 
 public struct JobInfo: Sendable, Equatable, Codable {
+    public var device: String?
+    public var physicalUDID: String?
     public var id: String
     public var template: String?
     public var project: String
@@ -823,6 +828,8 @@ public struct JobInfo: Sendable, Equatable, Codable {
         exclusive = job.exclusive
         retryable = job.retryable
         maxRetries = job.maxRetries
+        device = job.command?.device
+        physicalUDID = job.command?.physicalUDID
         template = job.command?.template
         submitter = job.submitter
         state = job.state
@@ -865,7 +872,8 @@ public struct JobInfo: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, project, kind, template, submitter, state, attempt, message, position
+        case id, project, kind, template, submitter, state, attempt, message, position, device
+        case physicalUDID = "physical_udid"
         case priority, exclusive, retryable
         case command, cwd
         case cleanupPending = "cleanup_pending"
@@ -1074,6 +1082,7 @@ public struct ArtifactStorageInfo: Sendable, Equatable, Codable {
 }
 
 public struct StatusResult: Sendable, Equatable, Codable {
+    public var devices: [PhysicalDeviceInfo]?
     public var host: HostSnapshot?
     public var artifactStorage: ArtifactStorageInfo?
     public var lastCleanup: CleanupSummary?
@@ -1130,6 +1139,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case devices
         case daemon, queued, admitted, running, paused, draining, health, storage, host, artifactStorage,
             storageReviewRunning, lastCleanup
         case drainComplete = "drain_complete"
@@ -1144,6 +1154,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        devices = try container.decodeIfPresent([PhysicalDeviceInfo].self, forKey: .devices)
         lastCleanup = try container.decodeIfPresent(CleanupSummary.self, forKey: .lastCleanup)
         host = try container.decodeIfPresent(HostSnapshot.self, forKey: .host)
         artifactStorage = try container.decodeIfPresent(ArtifactStorageInfo.self, forKey: .artifactStorage)
@@ -1167,6 +1178,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(devices, forKey: .devices)
         try container.encodeIfPresent(lastCleanup, forKey: .lastCleanup)
         try container.encodeIfPresent(host, forKey: .host)
         try container.encodeIfPresent(artifactStorage, forKey: .artifactStorage)

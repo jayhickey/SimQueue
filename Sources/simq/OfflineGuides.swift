@@ -35,7 +35,8 @@ struct AgentGuide: ParsableCommand {
             -maximum-concurrent-test-simulator-destinations 1 \\
             -derivedDataPath "$SIMQ_DERIVED_DATA" -resultBundlePath "$SIMQ_RESULT_BUNDLE"
         Expand these variables in the queued script/shell, not the submitting shell.
-        SIMQ_UDID is the exact first leased simulator; SIMQ_SIM_UDIDS lists the job's leases.
+        SIMQ_UDID is the exact first leased simulator; SIMQ_SIM_UDIDS lists simulator leases.
+        For physical jobs, SIMQ_UDID and SIMQ_DEVICE_UDID identify the one leased phone.
         SIMQ_JOB_ID, SIMQ_ATTEMPT, SIMQ_PROJECT, SIMQ_KIND and SIMQ_SIMS identify the job.
         SIMQ_RUN_DIR holds logs/artifacts. SIMQ_DERIVED_DATA and SIMQ_RESULT_BUNDLE are
         suggested per-job output paths; the command must write its results there.
@@ -75,6 +76,18 @@ struct AgentGuide: ParsableCommand {
         SIMQ_RECONNECT_SECONDS) and keep waiting on the same job; they do not
         preserve arbitrary running commands. Started work is not replayed unless --retryable
         or --retries N permits it within the retry budget. Retries do not undo side effects.
+
+        Physical iOS devices
+        Configure devices explicitly, then use simq devices for health and exclusive leases.
+        simq run --device <udid-or-label> -- <command> leases one physical device and zero sims.
+        Direct xcodebuild commands receive -destination id=<leased UDID>; provisioning flags pass through.
+        Direct xcrun devicectl install/launch/processes commands receive the leased device;
+        launch adds --terminate-existing. Scripts must use SIMQ_UDID themselves.
+        Locked/unavailable devices wait with health reasons and a 30-second probe backoff.
+        No pairing, erase, clone, slim or UI automation runs on physical devices.
+        --device-artifact-bundle and --device-artifact-path copy app data into local job artifacts.
+        Personal phone artifacts can contain private media: keep them local, never commit them.
+        See docs/PHYSICAL_DEVICES.md for configuration, lifecycle and artifact limitations.
 
         Warm state and maintenance
         The pool uses explicitly configured host templates; --template selects a named template. Warm simulators retain

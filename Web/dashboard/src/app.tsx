@@ -452,7 +452,11 @@ function JobCard({
         </span>
         <span>{job.id}</span>
         <span>P{job.priority}</span>
-        {!queued && <span>{job.granted_sims ?? '—'} sims</span>}
+        {job.device ? (
+          <span>Physical · {job.physical_udid || job.device}</span>
+        ) : (
+          !queued && <span>{job.granted_sims ?? '—'} sims</span>
+        )}
       </div>
       {queued && (
         <p class="wait-reason">
@@ -866,6 +870,22 @@ function Runner({ snapshot }: { snapshot?: Snapshot }) {
           <dt>Output volume free</dt>
           <dd>{bytes(s?.storage?.free_bytes)}</dd>
         </dl>
+        {!!s?.devices?.length && (
+          <div>
+            <h3>Physical devices</h3>
+            {s.devices.map((info) => (
+              <p key={info.device.udid}>
+                <strong>{info.device.name}</strong> · {human(info.health.state)}
+                {info.job_id && <> · Leased by {info.job_id}</>}
+                {info.health.thermal && <> · Thermal: {info.health.thermal}</>}
+                <br />
+                <span class="muted">
+                  {info.health.detail} · {info.device.labels.join(', ')}
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
         {s?.template_hint && (
           <details>
             <summary>Runner configuration</summary>

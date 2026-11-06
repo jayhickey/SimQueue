@@ -169,6 +169,29 @@ public final class Engine {
     public var hostTemplates: [String: String] = [:]
     public var defaultHostTemplate: String?
     public var admissionStorageFailure: String?
+    public var physicalDevices: [PhysicalDevice] = []
+    public var deviceHealth: (String) -> DeviceHealth = { _ in
+        DeviceHealth(state: "device_unavailable", detail: "device backend not configured")
+    }
+    private var deviceHealthCache: [String: (Double, DeviceHealth)] = [:]
+    public func physicalDeviceInfos(refreshReady: Bool = false) throws -> [PhysicalDeviceInfo] {
+        let now = environment.clock.now()
+        let leases = try store.physicalLeases()
+        return physicalDevices.map { device in
+            let health: DeviceHealth
+            if !device.enabled {
+                health = DeviceHealth(state: "device_unavailable", detail: "disabled in config")
+            } else if let cached = deviceHealthCache[device.udid], now < cached.0 + 30,
+                !(refreshReady && cached.1.ready && leases[device.udid] == nil)
+            {
+                health = cached.1
+            } else {
+                health = deviceHealth(device.udid)
+                deviceHealthCache[device.udid] = (now, health)
+            }
+            return PhysicalDeviceInfo(device: device, health: health, jobID: leases[device.udid])
+        }
+    }
     public var pool: SimPoolConfig?
     /// Planned restart gate. In memory so a fresh daemon resumes the queued work.
     public var maintenanceDraining = false
@@ -467,6 +490,8 @@ public final class Engine {
             // backend inventory cannot change admission of simulator-free work.
             availablePool = PoolSnapshot()
         }
+        try store.releasePhysicalLeases(holdingJobIDs: cleanupOwners.union(artifactWritersInFlight), now: now)
+        let devices = try physicalDeviceInfos(refreshReady: queued.contains { $0.command?.device != nil })
         // Legacy backend inventory can be slow too. Refresh both the resource sample
         // and admission timestamp rather than authorizing work from the caller's old
         // sample; jobs whose queue deadline passed during that wait cannot be admitted.
@@ -484,7 +509,7 @@ public final class Engine {
         let drainPolicy = scheduler.config.drain
         let failures = try store.allInfraFailureTimes(since: now - drainPolicy.windowSeconds)
         let drain = drainPolicy.status(failureTimes: failures, clearedAt: control.drainClearedAt, now: now)
-        let input = SchedulerInput(
+        var input = SchedulerInput(
             now: now,
             queued: queued,
             active: active,
@@ -502,6 +527,7 @@ public final class Engine {
             defaultHostTemplate: defaultHostTemplate,
             templateCapacityKeys: try templateCapacityKeys()
         )
+        input.physicalDevices = devices
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
             try store.setLoadThrottled(plan.loadThrottled, detail: "load1=\(host.load1) load5=\(host.load5)", now: now)
@@ -514,7 +540,9 @@ public final class Engine {
             #if DEBUG
                 admissionAttemptRecorded(admission.jobID)
             #endif
-            if try store.claim(jobID: admission.jobID, grantedSims: admission.grantedSims, epoch: epoch, now: now)
+            if try store.claim(
+                jobID: admission.jobID, grantedSims: admission.grantedSims, epoch: epoch, now: now,
+                physicalUDID: admission.physicalUDID)
                 != nil
             {
                 admitted.append(admission.jobID)

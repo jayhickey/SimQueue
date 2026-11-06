@@ -29,7 +29,9 @@ final class TestDaemon: @unchecked Sendable {
     private(set) var processExecutor: ProcessExecutor?
 
     init(
-        config: DaemonConfig = DaemonConfig(), stateDir: String? = nil, realProcesses: Bool = false,
+        config: DaemonConfig = DaemonConfig(),
+        deviceHealth: @escaping (String) -> DeviceHealth = { _ in DeviceHealth(state: "device_unavailable") },
+        stateDir: String? = nil, realProcesses: Bool = false,
         processTable: (any ProcessTable)? = nil,
         simsOverride: (any SimBackend)? = nil, processesOverride: (any ProcessTable)? = nil,
         executorOverride: (any JobExecutor)? = nil, tickIntervalOverride: Double? = nil,
@@ -79,7 +81,7 @@ final class TestDaemon: @unchecked Sendable {
         }
         service = DaemonService(
             engine: engine, config: config, info: info, executor: executor,
-            artifacts: JobArtifacts(root: paths.jobsRoot), log: { _ in })
+            artifacts: JobArtifacts(root: paths.jobsRoot), deviceHealth: deviceHealth, log: { _ in })
         server = try DaemonServer(service: service, socketPath: paths.socketPath)
         server.waitPollSeconds = 0.01
         side = try JobStore(path: paths.databasePath)

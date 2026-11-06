@@ -51,7 +51,8 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(
             Set(tools.compactMap { $0["name"] as? String }),
             [
-                "simq_submit", "simq_status", "simq_jobs", "simq_explain", "simq_cancel", "simq_wait", "simq_logs",
+                "simq_submit", "simq_devices", "simq_status", "simq_jobs", "simq_explain", "simq_cancel", "simq_wait",
+                "simq_logs",
                 "simq_lease_acquire", "simq_lease_release", "simq_doctor",
             ])
         XCTAssertTrue(tools.allSatisfy { ($0["inputSchema"] as? [String: Any])?["type"] as? String == "object" })

@@ -80,6 +80,7 @@ public final class DaemonService: @unchecked Sendable {
     public init(
         engine: Engine, config: DaemonConfig, info: DaemonInfo, executor: (any JobExecutor)?,
         artifacts: JobArtifacts? = nil,
+        deviceHealth: ((String) -> DeviceHealth)? = nil,
         log: @escaping @Sendable (String) -> Void = {
             FileHandle.standardError.write(Data(("simqd: " + $0 + "\n").utf8))
         }
@@ -87,6 +88,15 @@ public final class DaemonService: @unchecked Sendable {
         self.log = log
         self.engine = engine
         self.config = config
+        engine.physicalDevices = config.devices
+        engine.deviceHealth =
+            deviceHealth ?? { udid in
+                guard info.backend != "fake" else {
+                    return DeviceHealth(
+                        state: "device_unavailable", detail: "physical device probes disabled with fake backend")
+                }
+                return Devicectl().health(udid: udid)
+            }
         engine.pool = config.pool
         engine.hostTemplates = config.hostTemplates
         engine.defaultHostTemplate = config.defaultHostTemplate
@@ -844,6 +854,9 @@ public final class DaemonService: @unchecked Sendable {
         guard params.minSims >= 0, (params.maxSims ?? params.minSims) >= params.minSims else {
             throw ProtocolError(.invalidArgument, "sims must be >= 0 and max_sims >= min_sims")
         }
+        if params.deviceArtifact != nil, params.device == nil || params.command?.isEmpty != false {
+            throw ProtocolError(.invalidArgument, "device_artifact needs a physical device command")
+        }
         var command: JobCommand?
         if let argv = params.command, !argv.isEmpty {
             command = JobCommand(
@@ -852,6 +865,20 @@ public final class DaemonService: @unchecked Sendable {
                 freshSim: params.freshSim == true ? true : nil)
         } else if params.environment?.isEmpty == false || params.cwd != nil {
             throw ProtocolError(.invalidArgument, "environment and cwd need a command")
+        }
+        command?.device = params.device
+        command?.deviceArtifact = params.deviceArtifact
+        if let request = params.device {
+            guard command != nil, params.minSims == 0, (params.maxSims ?? 0) == 0,
+                params.template == nil, params.freshSim != true, params.resetApps?.isEmpty != false
+            else {
+                throw ProtocolError(
+                    .invalidArgument,
+                    "physical jobs require a command and zero simulators, without template/reset/fresh")
+            }
+            guard config.devices.contains(where: { $0.matches(request) }) else {
+                throw ProtocolError(.invalidArgument, "no enabled configured physical device matches \(request)")
+            }
         }
         if let template = params.template ?? (params.minSims > 0 ? config.defaultHostTemplate : nil) {
             guard config.hostTemplates[template] != nil else {
@@ -1128,13 +1155,16 @@ public final class DaemonService: @unchecked Sendable {
             let groups = try store.liveResources(kinds: [.processGroup])
             let sims = try store.poolSims()
             let intents = try store.pendingActionIntents()
-            drainComplete = groups.isEmpty && intents.isEmpty && !sims.contains { $0.phase == .leased }
+            let physicalLeases = try store.physicalLeases()
+            drainComplete =
+                groups.isEmpty && intents.isEmpty && physicalLeases.isEmpty
+                && !sims.contains { $0.phase == .leased }
         }
         if drainComplete, info.statePath != ":memory:" {
             try JobOutputConfiguration.markDrained(
                 true, stateDirectory: (info.statePath as NSString).deletingLastPathComponent)
         }
-        return StatusResult(
+        var result = StatusResult(
             daemon: info,
             queued: try store.queuedJobs().count,
             admitted: active.filter { $0.state == .admitted }.count,
@@ -1159,6 +1189,8 @@ public final class DaemonService: @unchecked Sendable {
             storage: storageDiagnostics(), host: lastTick?.host, artifactStorage: artifactStorage,
             storageReviewRunning: artifactCleanupRunning, lastCleanup: lastCleanup
         )
+        result.devices = try engine.physicalDeviceInfos()
+        return result
     }
 
     private func jobs(_ params: JobsParams) throws -> [JobInfo] {

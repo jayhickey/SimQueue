@@ -1,5 +1,6 @@
 {
   "backend": "simctl",
+  "devices": [],
   "autostart": {"timeout_seconds": 30},
   "cleanup_mode": "report-only",
   "simctl": {"template": "REPLACE-WITH-EXPLICIT-TEMPLATE-UDID"},

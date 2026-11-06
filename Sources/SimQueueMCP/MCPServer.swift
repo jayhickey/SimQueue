@@ -128,6 +128,11 @@ public final class MCPServer {
             if filled["submitter"] == nil { filled["submitter"] = defaultSubmitter }
             for key in ["min_sims", "memory_bytes", "memory_bytes_per_sim"] where filled[key] == nil { filled[key] = 0 }
             return try render(try send(.submit(decode(SubmitParams.self, filled))))
+        case "simq_devices":
+            guard case .status(let status) = try send(.status), let devices = status.devices else {
+                throw ToolError(message: "daemon does not support physical devices")
+            }
+            return String(decoding: try JSONEncoder().encode(devices), as: UTF8.self)
         case "simq_status": return try render(try send(.status))
         case "simq_jobs": return try render(try send(.jobs(decode(JobsParams.self, arguments))))
         case "simq_explain": return try render(try send(.explain(decode(JobRef.self, arguments))))

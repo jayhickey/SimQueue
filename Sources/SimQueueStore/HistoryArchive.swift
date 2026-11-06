@@ -120,6 +120,7 @@ extension JobStore {
                         SELECT j.seq, j.id, j.created_at, j.command_json FROM jobs j JOIN history_snapshot.jobs s ON s.id=j.id
                         WHERE j.seq > ? AND j.state NOT IN ('queued','admitted','running') AND s.state NOT IN ('queued','admitted','running')
                         AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.parent_id=j.id)
+                        AND NOT EXISTS(SELECT 1 FROM physical_leases p WHERE p.job_id=j.id)
                         AND NOT EXISTS(SELECT 1 FROM owned_resources r WHERE r.owner_job_id=j.id AND r.state!='released')
                         AND NOT EXISTS(SELECT 1 FROM action_intents i WHERE i.job_id=j.id OR i.resource_id IN (SELECT id FROM owned_resources WHERE owner_job_id=j.id))
                         AND NOT EXISTS(SELECT 1 FROM audit_log a WHERE a.job_id=j.id AND (a.type='artifact_keep' OR a.seq > ?))

@@ -17,7 +17,7 @@ import SimQueueProtocol
 /// submit, wait, logs and cancel; the daemon still runs and supervises the command.
 struct Run: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Run a command holding a simulator; exit with the command's status.",
+        abstract: "Run a command holding a simulator or physical device; exit with its status.",
         discussion: """
             Queues the command (default --sims 1), waits for it to start, then streams its
             output to stdout until it ends. The daemon runs it in its own process group in the
@@ -28,6 +28,10 @@ struct Run: ParsableCommand {
             go to stderr. The sim is a warm, booted pool sim as the last job left it; --reset-app
             BUNDLE_ID (repeatable) resets those apps and the keychain first, falling back to an
             erase if a reset step fails, and --fresh-sim erases it first.
+            --device UDID_OR_LABEL leases one configured physical iOS device and implies zero
+            simulators. Direct xcodebuild commands receive the physical destination; direct
+            xcrun devicectl install/launch/processes commands receive the leased device.
+            Scripts can use SIMQ_DEVICE_UDID; simulator reset/fresh/template flags are rejected.
             Exit status (--exit-code passthrough, the default): the command's own exit status
             when it ran and ended on its own. Otherwise simq's codes: 3 run timeout, 4 infra
             failure, 5 canceled, 6 queue timeout. A command can exit 3...6 itself, so to tell
@@ -45,6 +49,9 @@ struct Run: ParsableCommand {
     @Option(help: "Free-form label for status and logs (no behavior).") var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
     @Option(help: "Named host template (from host_templates).") var template: String?
+    @Option(help: "Physical device UDID or configured label (implies zero simulators).") var device: String?
+    @Option(help: "App bundle id for --device-artifact-path.") var deviceArtifactBundle: String?
+    @Option(help: "Relative app data container path to copy after the run.") var deviceArtifactPath: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "Simulators to hold (default 1; 0 runs without one).") var sims = 1
     @Flag(help: "Take the exclusive slot: exclusive jobs run one at a time.") var exclusive = false
@@ -115,14 +122,14 @@ struct Run: ParsableCommand {
                 name = priority
             }
         }
-        let params = SubmitParams(
+        var params = SubmitParams(
             project: project ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent,
             kind: kind,
             template: template,
             priority: numeric,
             priorityName: name,
             submitter: submitter ?? ProcessInfo.processInfo.environment["USER"] ?? "unknown",
-            minSims: sims,
+            minSims: device == nil ? sims : 0,
             memoryBytes: memoryMib * ByteSize.mebibyte,
             exclusive: exclusive ? true : nil,
             retryable: retryable || retries != nil ? true : nil,
@@ -135,6 +142,13 @@ struct Run: ParsableCommand {
             resetApps: resetApps.isEmpty ? nil : resetApps,
             freshSim: freshSim ? true : nil
         )
+        guard (deviceArtifactBundle == nil) == (deviceArtifactPath == nil) else {
+            throw ValidationError("--device-artifact-bundle and --device-artifact-path must be supplied together")
+        }
+        params.device = device
+        if let bundle = deviceArtifactBundle, let path = deviceArtifactPath {
+            params.deviceArtifact = DeviceArtifact(bundle: bundle, path: path)
+        }
         // Handlers go in before the submit, so a signal at any point after it cancels the
         // job instead of leaving it queued with nobody waiting (#41).
         let signals = SignalForwarder(connection: connection)

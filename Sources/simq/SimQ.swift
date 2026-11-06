@@ -32,7 +32,8 @@ struct SimQ: ParsableCommand {
             """,
         version: SimQueueVersion.current,
         subcommands: [
-            Submit.self, Run.self, Status.self, Jobs.self, Explain.self, Logs.self, Cancel.self, Bump.self, Wait.self,
+            Submit.self, Run.self, Devices.self, Status.self, Jobs.self, Explain.self, Logs.self, Cancel.self,
+            Bump.self, Wait.self,
             Doctor.self,
             OwnedUDIDs.self, Lease.self, Project.self, Template.self, LegacyGolden.self, MCP.self,
             Dashboard.self, Init.self, Uninstall.self, Drain.self, Resume.self, GC.self, AgentGuide.self, Docs.self,
@@ -331,6 +332,9 @@ struct Submit: ParsableCommand {
     var kind: String?
     @Option(help: "Priority 0...100, or a configured alias.") var priority: String?
     @Option(help: "Named host template (from host_templates).") var template: String?
+    @Option(help: "Physical device UDID or configured label (implies zero simulators).") var device: String?
+    @Option(help: "App bundle id for --device-artifact-path.") var deviceArtifactBundle: String?
+    @Option(help: "Relative app data container path to copy after the run.") var deviceArtifactPath: String?
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "While a job with this key is queued or running, return it instead of queuing another.")
     var dedupeKey: String?
@@ -415,7 +419,7 @@ struct Submit: ParsableCommand {
                 name = priority
             }
         }
-        let params = SubmitParams(
+        var params = SubmitParams(
             project: project ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent,
             kind: kind,
             template: template,
@@ -425,7 +429,7 @@ struct Submit: ParsableCommand {
             worktree: worktree,
             gitSHA: gitSha,
             dedupeKey: dedupeKey,
-            minSims: sims,
+            minSims: device == nil ? sims : 0,
             maxSims: maxSims,
             memoryBytes: memoryMib * ByteSize.mebibyte,
             memoryBytesPerSim: memoryPerSimMib * ByteSize.mebibyte,
@@ -442,6 +446,13 @@ struct Submit: ParsableCommand {
             freshSim: freshSim ? true : nil,
             keep: keep ? true : nil
         )
+        guard (deviceArtifactBundle == nil) == (deviceArtifactPath == nil) else {
+            throw ValidationError("--device-artifact-bundle and --device-artifact-path must be supplied together")
+        }
+        params.device = device
+        if let bundle = deviceArtifactBundle, let path = deviceArtifactPath {
+            params.deviceArtifact = DeviceArtifact(bundle: bundle, path: path)
+        }
         guard case .submit(let response) = try call(connection, .submit(params), reconnect: true) else {
             throw failure(.protocolError)
         }
@@ -527,6 +538,7 @@ struct Status: ParsableCommand {
             if let free = storage.freeBytes { print("job output free bytes: \(free)") }
         }
         if let hint = status.templateHint { print("template: \(hint)") }
+        for device in status.devices ?? [] { printDevice(device) }
         var flags: [String] = []
         if status.paused { flags.append("paused") }
         if status.draining { flags.append("draining") }
