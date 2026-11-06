@@ -119,6 +119,11 @@ final class PhysicalDeviceBackendTests: XCTestCase {
             XCTAssertEqual(info.state, .failed)
             XCTAssertEqual(info.commandExitCode, 7)
             XCTAssertTrue(info.message?.contains("device locked") == true, info.message ?? "")
+            // Completion can precede the next scheduler pass that releases the lease.
+            let deadline = Date().addingTimeInterval(5)
+            while try !daemon.side.physicalLeases().isEmpty, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
             XCTAssertTrue(try daemon.side.physicalLeases().isEmpty)
             let devices = try daemon.result(.status)
             guard case .status(let status) = devices else { return XCTFail("expected status") }
