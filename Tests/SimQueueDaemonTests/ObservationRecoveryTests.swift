@@ -116,10 +116,10 @@ final class ObservationRecoveryTests: XCTestCase {
         defer { try? handle.close() }
         process.standardOutput = handle
         process.standardError = handle
-        let started = Date()
+        let started = ProcessInfo.processInfo.systemUptime
         try process.run()
-        let limit = started.addingTimeInterval(8)
-        while process.isRunning, Date() < limit { Thread.sleep(forTimeInterval: 0.01) }
+        let limit = started + 8
+        while process.isRunning, ProcessInfo.processInfo.systemUptime < limit { Thread.sleep(forTimeInterval: 0.01) }
         if process.isRunning {
             // Kill only this test-owned child if an implementation regression loops;
             // never leave a failed recovery test blocking the entire test process.
@@ -128,7 +128,10 @@ final class ObservationRecoveryTests: XCTestCase {
         }
         process.waitUntilExit()
         let data = try Data(contentsOf: output)
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self), Date().timeIntervalSince(started))
+        return (
+            process.terminationStatus, String(decoding: data, as: UTF8.self),
+            ProcessInfo.processInfo.systemUptime - started
+        )
     }
 
     private static func job(_ state: JobState) -> JobInfo {
@@ -295,7 +298,10 @@ final class ObservationRecoveryTests: XCTestCase {
                 ["wait", "J-0001", "--wait-timeout", "0.5s"], state: path, recovery: 2)
             XCTAssertEqual(code, 7, text)
             XCTAssertGreaterThanOrEqual(elapsed, 0.45)
-            XCTAssertLessThan(elapsed, 1.5, "original wait deadline wins over recovery and partial bytes: \(text)")
+            // Exit 7 (rather than recovery exhaustion's 69) proves which deadline
+            // won. Elapsed time includes process launch/reaping and CI scheduling;
+            // keep only a generous runaway guard, shared with the recovery test.
+            XCTAssertLessThan(elapsed, 2.5, "wait deadline must bound recovery and partial bytes: \(text)")
             XCTAssertGreaterThanOrEqual(server.requests.count, 2)
             server.stop()
         }

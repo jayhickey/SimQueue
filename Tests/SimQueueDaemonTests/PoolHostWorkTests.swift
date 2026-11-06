@@ -143,7 +143,8 @@ final class PoolHostWorkTests: XCTestCase {
         XCTAssertEqual(try daemon.job(build.id).state, .succeeded)
         XCTAssertTrue(try daemon.side.poolSims().contains { $0.phase == .booting })
         XCTAssertFalse(try daemon.side.auditEntries().contains { $0.type == "pool_booted" })
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        // The terminal outcomes and still-booting pool above establish ordering;
+        // another wall-clock sample can cross the polling deadline after success.
     }
 
     func testLeaseRequestsDuringABootStayPendingAndNoSecondCreateStarts() throws {

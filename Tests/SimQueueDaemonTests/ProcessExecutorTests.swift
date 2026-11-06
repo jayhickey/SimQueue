@@ -2,11 +2,12 @@
 
 import Foundation
 import SimQueueCore
-import SimQueueDaemon
 import SimQueueHost
 import SimQueueProtocol
 import SimQueueStore
 import XCTest
+
+@testable import SimQueueDaemon
 
 /// The process executor end to end: a real daemon on a real socket running small `sh`
 /// commands in their own process groups. No simulators, no Xcode tools, nothing outside
@@ -338,16 +339,33 @@ final class ProcessExecutorTests: XCTestCase {
         FileManager.default.createFile(atPath: daemon.paths.jobsRoot + "/" + day, contents: Data())
         var params = command("echo ok")
         params.retryable = true
-        // A retry can be re-admitted on the next 20 ms tick, before the test removes the
-        // file, so allow a few: the point is that an artifact failure is retried.
-        params.maxRetries = 3
+        params.maxRetries = 1
+        // Repair at the next preparation boundary, not after polling from the test
+        // thread: three failures can trigger the default infra drain before we run
+        // again, leaving the job queued even after the blocker is removed.
+        let repair = ArtifactRepair(path: daemon.paths.jobsRoot + "/" + day)
+        try XCTUnwrap(daemon.processExecutor).beforePreparationStage = { repair.prepare($0) }
         let id = try daemon.submit(params).job.id
-        try eventually("first attempt failed and was requeued") { try daemon.job(id).attempt >= 1 }
-        try FileManager.default.removeItem(atPath: daemon.paths.jobsRoot + "/" + day)
         let job = try daemon.wait(id)
         XCTAssertEqual(job.state, .succeeded)
-        XCTAssertGreaterThanOrEqual(job.attempt, 1)
+        XCTAssertEqual(job.attempt, 1, "exactly one artifact failure, then a successful retry")
         XCTAssertTrue(try daemon.side.events(jobID: id).contains("infra_retry"))
+    }
+}
+
+/// The preparation lane owns this handoff; no test-thread polling races the retry.
+private final class ArtifactRepair: @unchecked Sendable {
+    private let path: String
+    private var attempts = 0
+
+    init(path: String) { self.path = path }
+
+    func prepare(_ stage: ProcessExecutor.PreparationStage) {
+        guard stage == .directories else { return }
+        attempts += 1
+        if attempts == 2 {
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 }
 
