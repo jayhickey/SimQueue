@@ -45,6 +45,7 @@ public final class ProcessExecutor: JobExecutor {
     public var requiresCommand: Bool { true }
     public var drainsProcessGroups: Bool { true }
     public var heldJobIDs: Set<String> = []
+    var deviceLocked: (String) -> Void = { _ in }
     public var storageCheck: @Sendable (String) throws -> Void = JobStorage.check
 
     public let artifacts: JobArtifacts
@@ -557,18 +558,36 @@ public final class ProcessExecutor: JobExecutor {
                         && FileManager.default.fileExists(
                             atPath: artifacts.directory(for: job) + "/.device-artifact-failed")
                         ? .artifactFailure : .commandFailure
+                // Inspect only a bounded log tail for failed physical commands. Exit code
+                // 7 alone is not proof of a lock (it is also a normal command status).
+                let locked =
+                    job.command?.physicalUDID != nil && commandStatus != 0
+                    && Self.reportsDeviceLocked(JobReport.tail(of: logPath, lines: Int.max - 1) ?? "")
+                if locked, let udid = job.command?.physicalUDID { deviceLocked(udid) }
                 _ = try store.finish(
                     jobID: jobID, result: result,
-                    message: result == .success
-                        ? nil
-                        : result == .artifactFailure
-                            ? "device artifact copy failed (command exit \(commandStatus))"
-                            : "command \(exit.description)",
+                    message: locked
+                        ? "device locked during job; unlock the device and retry"
+                        : result == .success
+                            ? nil
+                            : result == .artifactFailure
+                                ? "device artifact copy failed (command exit \(commandStatus))"
+                                : "command \(exit.description)",
                     commandExitCode: commandStatus, now: now)
             } else {
                 try store.recordCommandExit(jobID: jobID, code: commandStatus, now: now)
             }
             try writeSummary(jobID: jobID, store: store)
+        }
+    }
+
+    private static func reportsDeviceLocked(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.split(separator: "\n").contains { line in
+            line.contains("device is locked") || line.contains("device locked")
+                || line.contains("deviceislocked")
+                || ((line.contains("coredevice") || line.contains("devicectl"))
+                    && line.range(of: #"\blocked\b"#, options: .regularExpression) != nil)
         }
     }
 

@@ -63,15 +63,13 @@ public struct Devicectl: Sendable {
             let locked =
                 lock["isLocked"] as? Bool
                 ?? required.map { $0 || unlocked != true }
-            guard let locked else {
-                return DeviceHealth(
-                    state: "device_unavailable", detail: "devicectl lock state unavailable; unlock cannot be verified",
-                    thermal: thermal)
-            }
             return DeviceHealth(
-                state: locked ? "device_locked" : "ready",
-                detail: locked
-                    ? "unlock the device before leasing" : "connected, paired, Developer Mode enabled, unlocked",
+                state: locked == true ? "device_locked" : "ready",
+                detail: locked == true
+                    ? "unlock the device before leasing"
+                    : locked == false
+                        ? "connected, paired, Developer Mode enabled, unlocked"
+                        : "connected, paired, Developer Mode enabled; lock state unavailable",
                 thermal: thermal)
         } catch {
             let detail = String(describing: error)
