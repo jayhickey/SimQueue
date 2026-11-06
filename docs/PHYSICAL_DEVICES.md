@@ -50,18 +50,18 @@ Simulator flags (`--fresh-sim`, `--reset-app`, `--template`) are rejected for ph
 
 ## Health and waiting states
 
-Health uses bounded, read-only devicectl `device info details` and `device info lockState` probes. Admission requires affirmative pairing, Developer Mode, connected tunnel and unlocked status. Details can be cached by devicectl, so connection status is checked explicitly. Unknown/missing health fields block admission conservatively. Thermal state is recorded when present, not inferred when absent.
+Health uses bounded, read-only devicectl `device info details` and `device info lockState` probes. Admission requires affirmative pairing, Developer Mode and a connected tunnel. An explicitly locked device blocks admission; unavailable, missing or unknown lock state permits admission after the other checks pass. Details can be cached by devicectl, so connection status is checked explicitly. Unknown/missing pairing, Developer Mode or connection fields still block admission. Thermal state is recorded when present, not inferred when absent.
 
 | Code | Meaning |
 | --- | --- |
-| `ready` | Connected, paired, Developer Mode enabled, unlocked |
+| `ready` | Connected, paired, Developer Mode enabled; unlocked or lock state unavailable |
 | `device_busy` | All matching healthy phones are leased (`waiting:device_busy`) |
 | `device_locked` | Unlock the phone (`waiting:device_locked`) |
 | `device_unavailable` | Offline, disabled, tool error or unverifiable health (`blocked:device_unavailable`) |
 | `device_unpaired` | Pairing is absent or not confirmed |
 | `developer_mode_disabled` | Developer Mode is disabled or not confirmed |
 
-Failures retain tool errors and back off for 30 seconds; there is no immediate retry loop. Status observations may reuse a sample for up to 30 seconds. Ready, unleased devices are probed again when a queued device job is considered. Operator fixes are picked up after the backoff. Health errors leave jobs queued, subject to their normal queue deadline; they do not turn a locked phone into a generic command failure.
+Failures retain tool errors and back off for 30 seconds; there is no immediate retry loop. Status observations may reuse a sample for up to 30 seconds. Ready, unleased devices are probed again when a queued device job is considered. Operator fixes are picked up after the backoff. Health errors leave jobs queued, subject to their normal queue deadline. A real locked error during a failed install, launch or test command fails that job with an unlock-and-retry message, releases its lease after normal process cleanup, and records `device_locked` health for the probe backoff.
 
 `simq status --json`, job `device`/`physical_udid` fields, and the dashboard show physical jobs and exclusive leases. MCP adds `simq_devices`; `simq_submit` takes `device` and optional `device_artifact: {"bundle": "example.app", "path": "Library/Caches/EncoderANEBenchmark"}`. Existing MCP status/jobs/explain/wait/cancel tools retain parity through the same daemon.
 

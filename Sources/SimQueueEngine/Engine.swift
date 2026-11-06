@@ -174,6 +174,12 @@ public final class Engine {
         DeviceHealth(state: "device_unavailable", detail: "device backend not configured")
     }
     private var deviceHealthCache: [String: (Double, DeviceHealth)] = [:]
+    public func recordPhysicalDeviceLocked(udid: String) {
+        deviceHealthCache[udid] = (
+            environment.clock.now(),
+            DeviceHealth(state: "device_locked", detail: "device locked during job; unlock the device and retry")
+        )
+    }
     public func physicalDeviceInfos(refreshReady: Bool = false) throws -> [PhysicalDeviceInfo] {
         let now = environment.clock.now()
         let leases = try store.physicalLeases()

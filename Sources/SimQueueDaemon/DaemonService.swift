@@ -118,6 +118,9 @@ public final class DaemonService: @unchecked Sendable {
                 .flatMap { try? JSONDecoder().decode(CleanupSummary.self, from: $0) }
         }
         (executor as? ProcessExecutor)?.asynchronousPreparation = true
+        (executor as? ProcessExecutor)?.deviceLocked = { [weak engine] udid in
+            engine?.recordPhysicalDeviceLocked(udid: udid)
+        }
         self.eventLog = EventLog(
             path: ((info.statePath as NSString).deletingLastPathComponent as NSString)
                 .appendingPathComponent("events.jsonl"))

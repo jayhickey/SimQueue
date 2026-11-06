@@ -61,6 +61,22 @@ final class PhysicalDeviceTests: XCTestCase {
         }
     }
 
+    func testRuntimeLockOverridesReadyHealthUntilBackoffThenReprobes() throws {
+        let h = Harness()
+        let store = try JobStore(path: ":memory:")
+        let (engine, _, _) = try h.start(store: store)
+        configure(engine)
+        XCTAssertEqual(try engine.physicalDeviceInfos().first?.health.state, "ready")
+        engine.recordPhysicalDeviceLocked(udid: phone.udid)
+        let job = try submit(store)
+        XCTAssertTrue(try engine.tick().admitted.isEmpty)
+        XCTAssertEqual(try engine.physicalDeviceInfos().first?.health.state, "device_locked")
+        XCTAssertEqual(try store.explanation(jobID: job.id)?.reasons.first?.code, "device_locked")
+        h.clock.advance(by: 31)
+        XCTAssertEqual(try engine.tick().admitted, [job.id])
+        XCTAssertEqual(try engine.physicalDeviceInfos().first?.health.state, "ready")
+    }
+
     func testRestartReleasesOrphanLeaseAndRequeuesUnstartedJob() throws {
         let h = Harness()
         let store = try JobStore(path: ":memory:")
