@@ -715,7 +715,10 @@ extension Engine {
             if let last = bootDeferral {
                 let summary = "after \(Int(now - last.since))s (\(last.passes) passes; load1 \(host.load1))"
                 if scheduler.config.bootWaitReason(host: host, now: now) == nil {
-                    try store.audit("pool_boot_resumed", detail: "boot CPU/load gate recovered: " + summary, now: now)
+                    let recovery =
+                        CPUAdmission.utilization(host, now: now) == nil
+                        ? "load1 back under \(limit): " : "boot CPU gate recovered: "
+                    try store.audit("pool_boot_resumed", detail: recovery + summary, now: now)
                 } else {
                     try store.audit(
                         "pool_boot_deferral_ended", detail: "no sim waits for a boot, load still high: " + summary,
