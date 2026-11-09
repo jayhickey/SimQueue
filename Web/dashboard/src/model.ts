@@ -46,6 +46,7 @@ export interface Job {
 export interface Host {
   sampledAt?: number;
   cpuUsagePercent?: number;
+  cpuSustainedPercent?: number;
   cpuCount?: number;
   load1?: number;
   load5?: number;

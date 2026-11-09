@@ -329,7 +329,9 @@ extension Engine {
         }
         var allSignals = signals
         for sim in sims where sim.phase == .settling && allSignals[sim.udid] == nil {
-            allSignals[sim.udid] = SettleSignals(load5: host.load5, load1: host.load1)
+            allSignals[sim.udid] = SettleSignals(
+                load5: host.load5, load1: host.load1,
+                cpuSustainedPercent: CPUAdmission.utilization(host, now: now))
         }
         let input = SimPoolInput(
             sims: sims, demand: demand, signals: allSignals, unleasedUsers: unleasedUsers, now: now,
@@ -394,7 +396,7 @@ extension Engine {
         var resourcesOK = false
         func updateResourceGates() {
             headroom = host.availableMemoryBytes - min(host.availableMemoryBytes, limits.reserveBytes)
-            loadOK = host.load1 <= limits.bootLoadLimit(cpuCount: host.cpuCount)
+            loadOK = limits.bootWaitReason(host: host, now: now) == nil
             resourcesOK =
                 host.memoryPressure < limits.pressureStop
                 && host.availableMemoryBytes >= limits.reserveBytes
@@ -705,12 +707,15 @@ extension Engine {
     func auditBootDeferral(_ deferred: [String], host: HostSnapshot, now: Double) throws {
         let current = deferred.sorted()
         let limit = scheduler.config.bootLoadLimit(cpuCount: host.cpuCount)
-        let gate = "load1 \(host.load1) above \(limit) (\(scheduler.config.bootLoadFactor)x \(host.cpuCount) cores)"
+        let gate =
+            CPUAdmission.utilization(host, now: now) == nil
+            ? "load1 \(host.load1) above \(limit) (\(scheduler.config.bootLoadFactor)x \(host.cpuCount) cores)"
+            : (scheduler.config.bootWaitReason(host: host, now: now)?.summary ?? "boot resources recovered")
         guard !current.isEmpty else {
             if let last = bootDeferral {
                 let summary = "after \(Int(now - last.since))s (\(last.passes) passes; load1 \(host.load1))"
-                if host.load1 <= limit {
-                    try store.audit("pool_boot_resumed", detail: "load1 back under \(limit): " + summary, now: now)
+                if scheduler.config.bootWaitReason(host: host, now: now) == nil {
+                    try store.audit("pool_boot_resumed", detail: "boot CPU/load gate recovered: " + summary, now: now)
                 } else {
                     try store.audit(
                         "pool_boot_deferral_ended", detail: "no sim waits for a boot, load still high: " + summary,

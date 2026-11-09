@@ -542,7 +542,7 @@ struct Status: ParsableCommand {
         var flags: [String] = []
         if status.paused { flags.append("paused") }
         if status.draining { flags.append("draining") }
-        if status.loadThrottled { flags.append("load-throttled") }
+        if status.loadThrottled { flags.append("cpu/load-throttled") }
         if !flags.isEmpty { print("state: " + flags.joined(separator: ", ")) }
         for reason in status.globalWaitReasons { print("blocked: \(reason.summary)") }
     }

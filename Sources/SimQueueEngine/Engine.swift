@@ -536,7 +536,11 @@ public final class Engine {
         input.physicalDevices = devices
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
-            try store.setLoadThrottled(plan.loadThrottled, detail: "load1=\(host.load1) load5=\(host.load5)", now: now)
+            try store.setLoadThrottled(
+                plan.loadThrottled,
+                detail:
+                    "cpu_sustained=\(host.cpuSustainedPercent.map(String.init(describing:)) ?? "unavailable") load1=\(host.load1) load5=\(host.load5)",
+                now: now)
         }
         loadThrottled = plan.loadThrottled
 

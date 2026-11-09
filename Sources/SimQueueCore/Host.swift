@@ -48,6 +48,7 @@ public enum ThermalState: String, Sendable, Codable, Comparable, CaseIterable {
 
 /// One sample of host resources (spec section 5c). Produced by a `ResourceProbe`.
 public struct HostSnapshot: Sendable, Codable, Equatable {
+    public var cpuSustainedPercent: Double?
     public var cpuUsagePercent: Double?
     public var sampledAt: Double
     public var totalMemoryBytes: UInt64
