@@ -112,6 +112,8 @@ public struct HostSizing: Sendable, Equatable {
         settings.settle.load1RecoveryBelow =
             settleLoadBelowIsExplicit || settleLoad5PerCoreIsExplicit
             ? nil : min(settings.settle.loadBelow, scheduler.loadThrottle.clearBelowLoad5)
+        settings.settle.cpuRecoveryBelow =
+            settleLoadBelowIsExplicit || settleLoad5PerCoreIsExplicit ? nil : CPUAdmission.bootPercent
         pool = settings
     }
 }

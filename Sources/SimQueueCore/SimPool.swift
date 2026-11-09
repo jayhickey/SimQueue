@@ -185,6 +185,7 @@ public struct SettleConfig: Sendable, Equatable, Codable {
     /// Derived at startup for default load settling only. Explicit load5 settings
     /// remain strict. Deliberately excluded from Codable: this is not a config knob.
     public var load1RecoveryBelow: Double? = nil
+    public var cpuRecoveryBelow: Double? = nil
 
     public init(
         mode: SettleMode = .load, loadBelow: Double = 20,
@@ -206,15 +207,18 @@ public struct SettleConfig: Sendable, Equatable, Codable {
 
 /// Signal values for one settling sim. Nil means unknown, which never counts as settled.
 public struct SettleSignals: Sendable, Equatable, Codable {
+    public var cpuSustainedPercent: Double?
     public var load5: Double?
     public var load1: Double?
 
-    public init(load5: Double? = nil, load1: Double? = nil) {
+    public init(load5: Double? = nil, load1: Double? = nil, cpuSustainedPercent: Double? = nil) {
+        self.cpuSustainedPercent = cpuSustainedPercent
         self.load5 = load5
         self.load1 = load1
     }
 
     enum CodingKeys: String, CodingKey {
+        case cpuSustainedPercent
         case load5
         case load1
     }
@@ -234,7 +238,14 @@ public enum SettleGate {
         let settled: Bool
         switch config.mode {
         case .off: settled = true
-        case .load: settled = historicalLoadOK || recovered
+        case .load:
+            if let limit = config.cpuRecoveryBelow, let cpu = signals.cpuSustainedPercent,
+                cpu.isFinite, (0...100).contains(cpu)
+            {
+                settled = cpu <= limit
+            } else {
+                settled = historicalLoadOK || recovered
+            }
         }
         if settled { return .settled }
         return waitedSeconds >= config.maxWaitSeconds ? .capHit : .wait

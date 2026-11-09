@@ -175,7 +175,9 @@ function Vitals({
       'cpu',
       finite(h?.cpuUsagePercent) ? `${numeric(h.cpuUsagePercent, 0)}%` : '—',
       finite(h?.cpuCount) ? `${h.cpuCount} cores` : 'Unavailable',
-      `Load ${numeric(h?.load1)} / ${numeric(h?.load5)} · 1m / 5m`,
+      finite(h?.cpuSustainedPercent)
+        ? `10s CPU ${numeric(h.cpuSustainedPercent, 0)}% · Load ${numeric(h?.load1)} / ${numeric(h?.load5)}`
+        : `Load ${numeric(h?.load1)} / ${numeric(h?.load5)} · 1m / 5m · CPU admission warming up`,
       !finite(h?.cpuCount) && !finite(h?.cpuUsagePercent)
         ? 'muted'
         : s?.load_throttled

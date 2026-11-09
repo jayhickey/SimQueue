@@ -78,11 +78,14 @@ public struct SystemResourceProbe: ResourceProbe {
         #endif
         let attributes = try FileManager.default.attributesOfFileSystem(forPath: diskPath)
         let freeDisk = (attributes[.systemFreeSize] as? NSNumber)?.uint64Value ?? 0
-        return HostSnapshot(
+        let cpu = cpuSampler.sample(now: now)
+        var snapshot = HostSnapshot(
             sampledAt: now, totalMemoryBytes: ProcessInfo.processInfo.physicalMemory, availableMemoryBytes: available,
             swapUsedBytes: swapUsed, memoryPressure: pressure, load1: loads[0], load5: loads[1],
             cpuCount: ProcessInfo.processInfo.activeProcessorCount, freeDiskBytes: freeDisk,
-            thermalState: Self.currentThermal(), cpuUsagePercent: cpuSampler.sample())
+            thermalState: Self.currentThermal(), cpuUsagePercent: cpu.instant)
+        snapshot.cpuSustainedPercent = cpu.sustained
+        return snapshot
     }
 
     private func toolReadings() throws -> (available: UInt64, swap: UInt64, pressure: MemoryPressure) {
@@ -234,6 +237,9 @@ final class CPUSampler: @unchecked Sendable {
     #endif
     private let lock = NSLock()
     private var previous: [UInt32]?
+    private var window = CPUUsageWindow()
+    private var lastSampleAt: Double?
+    private var cached: (instant: Double?, sustained: Double?) = (nil, nil)
     static func percent(previous: [UInt32]?, current: [UInt32]) -> Double? {
         guard let previous, previous.count == 4, current.count == 4 else { return nil }
         let delta = zip(current, previous).map { UInt64($0.0 &- $0.1) }
@@ -241,10 +247,19 @@ final class CPUSampler: @unchecked Sendable {
         guard total > 0 else { return nil }
         return 100 * Double(total - delta[2]) / Double(total)
     }
-    func sample() -> Double? {
+    func sample(now: Double) -> (instant: Double?, sustained: Double?) {
         #if canImport(Darwin)
             lock.lock()
             defer { lock.unlock() }
+            // Status and pool probes can coincide. Do not turn sub-tick reads into
+            // unavailable CPU or give tiny intervals disproportionate influence.
+            if let lastSampleAt, now < lastSampleAt {
+                previous = nil
+                window = CPUUsageWindow()
+            } else if let lastSampleAt, now - lastSampleAt < 0.25 {
+                return cached
+            }
+            lastSampleAt = now
             var info = host_cpu_load_info_data_t()
             var count = mach_msg_type_number_t(
                 MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
@@ -253,13 +268,19 @@ final class CPUSampler: @unchecked Sendable {
                     host_statistics(Self.hostPort, HOST_CPU_LOAD_INFO, $0, &count)
                 }
             }
-            guard result == KERN_SUCCESS else { return nil }
+            guard result == KERN_SUCCESS else {
+                previous = nil
+                _ = window.add(at: now, percent: nil)
+                cached = (nil, nil)
+                return cached
+            }
             let current = [info.cpu_ticks.0, info.cpu_ticks.1, info.cpu_ticks.2, info.cpu_ticks.3]
             let usage = Self.percent(previous: previous, current: current)
             previous = current
-            return usage
+            cached = (usage, window.add(at: now, percent: usage))
+            return cached
         #else
-            return nil
+            return (nil, nil)
         #endif
     }
 }

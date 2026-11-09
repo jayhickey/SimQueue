@@ -111,3 +111,33 @@ public struct SchedulerConfig: Sendable, Equatable {
         pool.idleParked < maxParkedSims
     }
 }
+
+extension SchedulerConfig {
+    /// Explicit absolute load limits remain authoritative with either signal.
+    public func admissionCPUWaitReason(host: HostSnapshot, now: Double, wasThrottled: Bool) -> WaitReason? {
+        if let maximum = loadThrottle.maxLoad5,
+            host.load5 > maximum || (wasThrottled && host.load5 > (loadThrottle.resumeBelowLoad5 ?? maximum * 0.8))
+        {
+            return .loadThrottle(load1: host.load1, load5: host.load5, clearing: host.load5 <= maximum)
+        }
+        if let cpu = CPUAdmission.utilization(host, now: now) {
+            let limit = wasThrottled ? CPUAdmission.resumePercent : CPUAdmission.stopPercent
+            return cpu > limit ? .cpuThrottle(percent: cpu, limit: limit, boot: false) : nil
+        }
+        guard loadThrottle.isThrottled(load1: host.load1, load5: host.load5, wasThrottled: wasThrottled) else {
+            return nil
+        }
+        return .loadThrottle(
+            load1: host.load1, load5: host.load5,
+            clearing: !loadThrottle.isThrottled(load1: host.load1, load5: host.load5, wasThrottled: false))
+    }
+
+    public func bootWaitReason(host: HostSnapshot, now: Double) -> WaitReason? {
+        if let cpu = CPUAdmission.utilization(host, now: now) {
+            return cpu > CPUAdmission.bootPercent
+                ? .cpuThrottle(percent: cpu, limit: CPUAdmission.bootPercent, boot: true) : nil
+        }
+        let limit = bootLoadLimit(cpuCount: host.cpuCount)
+        return host.load1 > limit ? .loadTooHighForBoot(load1: host.load1, limit: limit) : nil
+    }
+}

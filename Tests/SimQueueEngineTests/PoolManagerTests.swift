@@ -26,6 +26,23 @@ final class PoolManagerTests: XCTestCase {
         try store.auditEntries().filter { $0.type == type }.compactMap(\.detail)
     }
 
+    func testPoolUsesSustainedCPUForBootAndDefaultSettling() throws {
+        let (harness, store, engine) = try setUp(load1: 150, load5: 150)
+        harness.probe.update { $0.cpuSustainedPercent = 95 }
+        var config = SimPoolConfig()
+        config.settle.cpuRecoveryBelow = CPUAdmission.bootPercent
+        _ = try engine.poolPass(config: config, demand: 1)
+        let held = try engine.poolPass(config: config, demand: 1)
+        XCTAssertEqual(held.bootsDeferredForLoad.count, 1)
+        XCTAssertTrue(try audits(store, "pool_boot_deferred").last?.contains("sustained CPU 95.0%") == true)
+        harness.probe.update { $0.cpuSustainedPercent = 40 }
+        _ = try engine.poolPass(config: config, demand: 1)
+        XCTAssertEqual(try store.poolSims().first?.phase, .settling)
+        _ = try engine.poolPass(config: config, demand: 1)
+        XCTAssertEqual(try store.poolSims().first?.phase, .ready)
+        XCTAssertEqual(try audits(store, "pool_boot_resumed").count, 1)
+    }
+
     func testDemandCreatesBootsSettlesAndWarmReleaseAllowsConsecutiveReuse() throws {
         let (harness, store, engine) = try setUp(load5: 40)
         var config = SimPoolConfig()

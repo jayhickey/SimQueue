@@ -145,11 +145,11 @@ public struct Scheduler: Sendable {
             reasons.append(.draining(recentInfraFailures: count))
         }
         let host = input.host
-        if config.loadThrottle.isThrottled(
-            load1: host.load1, load5: host.load5, wasThrottled: input.loadThrottledPreviously)
+        if let reason = config.admissionCPUWaitReason(
+            host: host, now: input.now,
+            wasThrottled: input.loadThrottledPreviously)
         {
-            let clearing = !config.loadThrottle.isThrottled(load1: host.load1, load5: host.load5, wasThrottled: false)
-            reasons.append(.loadThrottle(load1: host.load1, load5: host.load5, clearing: clearing))
+            reasons.append(reason)
         }
         if input.host.memoryPressure >= config.pressureStop {
             reasons.append(.memoryPressure(level: input.host.memoryPressure, stopAt: config.pressureStop))
@@ -231,7 +231,12 @@ public struct Scheduler: Sendable {
             let concurrent = input.active.count + admissions.count
             let latest = max(
                 input.lastAdmissionAt ?? -.infinity, input.active.compactMap(\.admittedAt).max() ?? -.infinity)
-            let recent = input.now - latest < config.minAdmissionIntervalSeconds
+            let recent =
+                input.now - latest
+                < max(
+                    config.minAdmissionIntervalSeconds,
+                    CPUAdmission.utilization(input.host, now: input.now) == nil
+                        ? 0 : CPUAdmission.admissionIntervalSeconds)
             if concurrent >= max(1, input.host.cpuCount) || admissions.count >= config.maxAdmissionsPerPass || recent {
                 wait([
                     .admissionPacing(active: concurrent, limit: max(1, input.host.cpuCount))
@@ -251,7 +256,10 @@ public struct Scheduler: Sendable {
                 allocationState.idleRunning = min(state.idleRunning, readyByTemplate[templateKey, default: 0])
                 allocationState.idleParked = 0
             }
-            switch allocate(job, state: allocationState, cpuCount: input.host.cpuCount, load1: input.host.load1) {
+            switch allocate(
+                job, state: allocationState,
+                bootReason: config.bootWaitReason(host: input.host, now: input.now))
+            {
             case .success(let allocation):
                 state.apply(allocation, job: job)
                 if readyByTemplate != nil { readyByTemplate?[templateKey, default: 0] -= allocation.fromIdle }
@@ -310,11 +318,10 @@ public struct Scheduler: Sendable {
             }
         }
 
-        let loadThrottled = config.loadThrottle.isThrottled(
-            load1: input.host.load1,
-            load5: input.host.load5,
-            wasThrottled: input.loadThrottledPreviously
-        )
+        let loadThrottled =
+            config.admissionCPUWaitReason(
+                host: input.host, now: input.now,
+                wasThrottled: input.loadThrottledPreviously) != nil
         return SchedulerPlan(
             admissions: admissions,
             waiting: waiting,
@@ -340,9 +347,11 @@ public struct Scheduler: Sendable {
 
     /// Grants the largest sim count in the job's range that fits. On failure, reports the
     /// reasons for the minimum count (the most permissive request).
-    func allocate(_ job: Job, state: CapacityState, cpuCount: Int, load1: Double) -> Result<
-        Allocation, AllocationFailure
-    > {
+    func allocate(_ job: Job, state: CapacityState, bootReason: WaitReason?)
+        -> Result<
+            Allocation, AllocationFailure
+        >
+    {
         if job.resources.minSims > config.maxRunningSims {
             return .failure(
                 AllocationFailure(reasons: [
@@ -362,7 +371,8 @@ public struct Scheduler: Sendable {
         for count in stride(
             from: min(job.resources.maxSims, config.maxRunningSims), through: job.resources.minSims, by: -1)
         {
-            let attempt = tryAllocate(job, sims: count, state: state, cpuCount: cpuCount, load1: load1)
+            let attempt = tryAllocate(
+                job, sims: count, state: state, bootReason: bootReason)
             switch attempt {
             case .success:
                 return attempt
@@ -375,7 +385,9 @@ public struct Scheduler: Sendable {
         return .failure(AllocationFailure(reasons: minimumFailure))
     }
 
-    func tryAllocate(_ job: Job, sims: Int, state: CapacityState, cpuCount: Int, load1: Double) -> Result<
+    func tryAllocate(
+        _ job: Job, sims: Int, state: CapacityState, bootReason: WaitReason?
+    ) -> Result<
         Allocation, AllocationFailure
     > {
         var reasons: [WaitReason] = []
@@ -402,10 +414,7 @@ public struct Scheduler: Sendable {
                     .bootCapacity(bootsNeeded: boots, inProgress: state.bootsInProgress, max: config.maxConcurrentBoots)
                 )
             }
-            let limit = config.bootLoadLimit(cpuCount: cpuCount)
-            if load1 > limit {
-                reasons.append(.loadTooHighForBoot(load1: load1, limit: limit))
-            }
+            if let bootReason { reasons.append(bootReason) }
         }
         let needed = job.resources.memoryCost(
             sims: sims, minimum: config.minimumJobMemoryBytes,

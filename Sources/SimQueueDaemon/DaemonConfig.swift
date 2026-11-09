@@ -894,8 +894,9 @@ public struct DaemonConfig: Sendable, Equatable {
         var parts = [
             "reserve \(scheduler.reserveBytes / mib) MiB",
             "max_running_sims \(scheduler.maxRunningSims)",
-            "boot gate load1 <= \(scheduler.bootLoadLimit(cpuCount: cpuCount))",
-            "default throttle load5 > \(throttle.load5Above) or load1 > \(throttle.load1Above) with load5 > "
+            "CPU admission 10s mean: stop > 90%, resume <= 75%, boot <= 80%, starts >= 10s apart",
+            "fallback boot gate load1 <= \(scheduler.bootLoadLimit(cpuCount: cpuCount))",
+            "fallback throttle load5 > \(throttle.load5Above) or load1 > \(throttle.load1Above) with load5 > "
                 + "\(throttle.load5WithLoad1Above), recovery at load1 <= \(throttle.clearBelowLoad5); "
                 + "otherwise load5 <= \(throttle.clearBelowLoad5) after entry triggers clear",
         ]
@@ -907,6 +908,9 @@ public struct DaemonConfig: Sendable, Equatable {
                 var settling = "settle load5 < \(pool.settle.loadBelow)"
                 if let recovery = pool.settle.load1RecoveryBelow {
                     settling += " or load1 <= \(recovery) (default recovery)"
+                }
+                if let cpu = pool.settle.cpuRecoveryBelow {
+                    settling = "settle CPU <= \(cpu)%, fallback " + settling
                 }
                 parts.append(settling)
             }

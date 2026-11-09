@@ -12,6 +12,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case memoryPressure(level: MemoryPressure, stopAt: MemoryPressure)
     case swapGrowing(bytesPerMinute: Double, limitBytesPerMinute: Double)
     case swapHigh(usedBytes: UInt64, maxBytes: UInt64)
+    case cpuThrottle(percent: Double, limit: Double, boot: Bool)
     case loadThrottle(load1: Double, load5: Double, clearing: Bool)
     case thermal(state: ThermalState, stopAt: ThermalState)
     case diskLow(freeBytes: UInt64, minBytes: UInt64)
@@ -39,6 +40,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .memoryPressure: return "memory_pressure"
         case .swapGrowing: return "swap_growing"
         case .swapHigh: return "swap_high"
+        case .cpuThrottle(_, _, let boot): return boot ? "cpu_too_high_for_boot" : "cpu_throttle"
         case .loadThrottle: return "load_throttle"
         case .thermal: return "thermal"
         case .diskLow: return "disk_low"
@@ -59,7 +61,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         switch self {
         case .admissionPacing(let active, let limit):
             return
-                "gradual admission: \(active)/\(limit) active commands; at most one new command per second, rechecks automatically"
+                "gradual admission: \(active)/\(limit) active commands; waiting for the next resource observation, rechecks automatically"
         case .cleanupPending(let jobID):
             return
                 "previous command processes for \(jobID) still hold resources; cleanup must finish before retry (simq doctor)"
@@ -76,6 +78,9 @@ public enum WaitReason: Sendable, Equatable, Codable {
             return "swap growing \(Self.mib(rate))/min (limit \(Self.mib(limit))/min)"
         case .swapHigh(let used, let maximum):
             return "swap used \(Self.gib(used)) is above \(Self.gib(maximum))"
+        case .cpuThrottle(let percent, let limit, let boot):
+            return
+                "\(boot ? "simulator boot held" : "host CPU held"): sustained CPU \(Self.fixed(percent))% exceeds \(Self.fixed(limit))%; rechecks automatically"
         case .loadThrottle(let load1, let load5, let clearing):
             return clearing
                 ? "host load has not reached recovery thresholds (load1 \(Self.fixed(load1)), load5 \(Self.fixed(load5)))"
