@@ -46,9 +46,3 @@ Read `simq agent-guide` for the installed version before submitting managed work
     repository operations beyond the user's authorization. A prior explicit authorization
     remains valid for the stated scope; routine reversible implementation needs no repeat
     confirmation.
-
-## PRs and merging
-
-- Author as `jayhickey` (`source ~/.local/bin/jay-gh-env`). Bot-written PR bodies start with `🤖 [Role]`; keep them concise and current at head.
-- Merge only after CI has finished green on the exact head (queued/running is not green). Build Infra Engineer squash-merges; no Code Reviewer approval is required. Never merge before CI completes.
-- `Web/` dashboard changes: attach light and dark screenshots as GitHub user-attachments; never commit media.
