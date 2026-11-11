@@ -5,6 +5,7 @@ Read `simq agent-guide` for the installed version before submitting managed work
 
 ## Coding environment
 
+- Before using an Apple API, look up its docs as Markdown on sosumi.ai (swap developer.apple.com for sosumi.ai in the URL, e.g. https://sosumi.ai/documentation/swiftui), especially for new OS SDK APIs.
 - All coding (app/repo/site implementation, PRs, AGENTS.md and other doc/code changes in this repository) goes through T3 Code.
 - Bots are orchestration only; T3 is the execution harness for coding and designs.
 - Do not implement via Grok Bot box coding or do heavy design or code in Grok Bot — hand it to T3.
