@@ -79,12 +79,14 @@ public struct ToolRunner: Sendable {
             return result < 0 || info.si_signo != 0
         }
         while true {
+            var madeProgress = false
             for index in descriptors.indices where !eof[index] {
                 // Bound each pass even if a tool writes forever.
                 for _ in 0..<16 {
                     var bytes = [UInt8](repeating: 0, count: 16 * 1024)
                     let count = read(descriptors[index], &bytes, bytes.count)
                     if count > 0 {
+                        madeProgress = true
                         // Bound diagnostic memory while continuing to drain the pipe.
                         let remaining = max(0, outputLimit - output[index].count)
                         output[index].append(contentsOf: bytes.prefix(min(count, remaining)))
@@ -121,7 +123,9 @@ public struct ToolRunner: Sendable {
                 if outputLimitExceeded { throw ToolError.outputLimitExceeded(command: command) }
                 throw ToolError.timedOut(command: command, seconds: timeoutSeconds)
             }
-            Thread.sleep(forTimeInterval: 0.005)
+            // Do not throttle a tool that is actively producing output. Only
+            // back off when both pipes would block (or have reached EOF).
+            if !madeProgress { Thread.sleep(forTimeInterval: 0.005) }
         }
         let status: Int32
         switch ProcessSpawner.waitBlocking(pgid) {

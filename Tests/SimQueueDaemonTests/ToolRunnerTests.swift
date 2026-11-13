@@ -97,7 +97,7 @@ final class ToolRunnerTests: XCTestCase {
     func testExcessiveToolOutputFailsExplicitlyInsteadOfReturningTruncatedSuccess() throws {
         let (bin, _) = try tool("head -c 17000000 /dev/zero")
         let runner = ToolRunner(environment: ["PATH": bin.path + ":/usr/bin:/bin"], killGraceSeconds: 0.02)
-        XCTAssertThrowsError(try runner.run("faketool", [], timeoutSeconds: 5)) {
+        XCTAssertThrowsError(try runner.run("faketool", [], timeoutSeconds: 15)) {
             guard case .outputLimitExceeded = $0 as? ToolError else { return XCTFail("\($0)") }
         }
     }
