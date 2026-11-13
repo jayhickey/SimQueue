@@ -138,7 +138,8 @@ extension Engine {
         let simNames: [String: String] =
             needsSimulatorCleanup
             ? Dictionary(
-                try environment.sims.listDevices().map { ($0.udid, $0.name) }, uniquingKeysWith: { first, _ in first })
+                try (hostCall { try self.environment.sims.listDevices() }).map { ($0.udid, $0.name) },
+                uniquingKeysWith: { first, _ in first })
             : [:]
         for resource in resources {
             do {
@@ -174,8 +175,10 @@ extension Engine {
                         target: .sim(udid: udid), auditType: Self.teardownAuditType, detail: "deleted sim \(udid)",
                         resourceID: resource.id, releaseReason: "sim deleted")
                     try performUnderIntent(intent, now: now) {
-                        try environment.sims.deleteDevice(udid: udid)
-                        if try environment.sims.listDevices().contains(where: { $0.udid == udid }) {
+                        try (hostCall { try self.environment.sims.deleteDevice(udid: udid) })
+                        if try (hostCall { try self.environment.sims.listDevices() }).contains(where: {
+                            $0.udid == udid
+                        }) {
                             throw EngineError.cleanupNotVerified("sim \(udid)")
                         }
                     }

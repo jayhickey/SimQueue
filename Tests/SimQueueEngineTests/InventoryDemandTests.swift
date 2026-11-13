@@ -49,6 +49,20 @@ final class InventoryDemandTests: XCTestCase {
         return (harness, backend, store, engine)
     }
 
+    func testInventoryCannotReleaseASimulatorRegisteredWhileItWasBeingRead() throws {
+        let (harness, backend, store, engine) = try start()
+        var registered: OwnedResource?
+        backend.beforeList = {
+            backend.beforeList = nil
+            registered = try? store.acquireResource(
+                kind: .sim, externalID: "NEW", owner: .pool, epoch: engine.epoch, now: harness.clock.now())
+        }
+        let report = try engine.reconcile()
+        let resource = try XCTUnwrap(registered)
+        XCTAssertFalse(report.actions.contains(.markGone(resourceID: resource.id)))
+        XCTAssertEqual(try store.resource(id: resource.id)?.state, .active)
+    }
+
     private var poolConfig: SimPoolConfig {
         var config = SimPoolConfig()
         config.mode = .active

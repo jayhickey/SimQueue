@@ -251,7 +251,8 @@ extension Engine {
     public func reconcilePool() throws -> PoolReconcileReport {
         let now = environment.clock.now()
         let devices = Dictionary(
-            try environment.sims.listDevices().map { ($0.udid, $0) }, uniquingKeysWith: { first, _ in first })
+            try (hostCall { try self.environment.sims.listDevices() }).map { ($0.udid, $0) },
+            uniquingKeysWith: { first, _ in first })
         var report = PoolReconcileReport()
         for var sim in try store.poolSims() {
             guard let device = devices[sim.udid] else {
@@ -305,7 +306,7 @@ extension Engine {
             ($0.record.udid == clonePlan.source || $0.record.name == clonePlan.source) && $0.record.status != "ready"
         }?.record
         let creationBoots = environment.sims.createBoots || clonePlan.boots
-        var host = try host ?? environment.probe.sample(now: now)
+        var host = try host ?? (hostCall { try self.environment.probe.sample(now: now) })
         let capacity = max(0, config.maxSims)
         let baseDemand = min(
             capacity, max(0, try demand ?? poolDemand(availableMemoryBytes: host.availableMemoryBytes)))
@@ -409,7 +410,7 @@ extension Engine {
         func refreshResourceGatesIfNeeded() throws {
             let sampledNow = environment.clock.now()
             if sampledNow - host.sampledAt >= 1 {
-                host = try environment.probe.sample(now: sampledNow)
+                host = try (hostCall { try self.environment.probe.sample(now: sampledNow) })
                 recordSwapSample(host, at: sampledNow)
                 updateResourceGates()
             }
@@ -420,9 +421,10 @@ extension Engine {
             // Inventory is needed only when an otherwise eligible action would boot a
             // simulator. Query immediately before each such action: an idle pool does no
             // simctl work, and a preceding slow host action cannot leave this gate stale.
-            let booted = config.externalBootedSims(in: try environment.sims.listDevices()).filter {
-                !environment.naming.owns($0.name)
-            }
+            let booted = config.externalBootedSims(in: try (hostCall { try self.environment.sims.listDevices() }))
+                .filter {
+                    !environment.naming.owns($0.name)
+                }
             externalBootedNames.formUnion(booted.map(\.name))
             // Inventory itself can be slow, so its return must not authorize host work
             // using a resource sample taken before that wait.
@@ -535,7 +537,9 @@ extension Engine {
                     let start = DispatchTime.now().uptimeNanoseconds
                     var bootError: (any Error)?
                     try hostWork {
-                        do { try environment.sims.bootDevice(udid: udid) } catch { bootError = error }
+                        do { try (hostCall { try self.environment.sims.bootDevice(udid: udid) }) } catch {
+                            bootError = error
+                        }
                     }
                     let duration = Self.elapsedMilliseconds(since: start)
                     let finishedAt = environment.clock.now()
@@ -577,7 +581,7 @@ extension Engine {
                         byUDID[udid] = nil
                         continue
                     }
-                    try hostWork { try environment.sims.shutdownDevice(udid: udid) }
+                    try hostWork { try (hostCall { try self.environment.sims.shutdownDevice(udid: udid) }) }
                     sim = try sim.applying(.settleFailed, now: now)
                     try store.savePoolSim(sim)
                     byUDID[udid] = sim
@@ -591,7 +595,7 @@ extension Engine {
                     sim = try sim.applying(.shutDown, now: environment.clock.now())
                     try store.savePoolSim(sim)
                     byUDID[udid] = sim
-                    try hostWork { try environment.sims.shutdownDevice(udid: udid) }
+                    try hostWork { try (hostCall { try self.environment.sims.shutdownDevice(udid: udid) }) }
                     // Do not rewrite the row after host work: a control/recovery request
                     // may have removed it while unlocked. The serial worker owns the next boot.
                     try store.audit("pool_idle_shutdown", detail: udid, now: environment.clock.now())
@@ -681,7 +685,7 @@ extension Engine {
         // while admission and new boots wait for pressure to clear. Reclaim only
         // verified ready capacity after those transitions, using a fresh host sample.
         let sampledAt = environment.clock.now()
-        let pressureHost = try environment.probe.sample(now: sampledAt)
+        let pressureHost = try (hostCall { try self.environment.probe.sample(now: sampledAt) })
         recordSwapSample(pressureHost, at: sampledAt)
         if pressureHost.memoryPressure >= scheduler.config.pressureStop {
             let relief = try reclaimPoolMemory(
@@ -1090,7 +1094,7 @@ extension Engine {
             defer { hostActionIntentsInFlight.remove(intent.id) }
             var cleanupProof = prepared
             cleanupProof.expectedTargetUDID = operation.createdUDID
-            try hostWork { try self.environment.sims.cleanUpInterruptedClone(cleanupProof) }
+            try hostWork { try (hostCall { try self.environment.sims.cleanUpInterruptedClone(cleanupProof) }) }
             let now = environment.clock.now()
             try store.database.immediateTransaction {
                 for row in partialRows {
@@ -1137,7 +1141,9 @@ extension Engine {
         let start = DispatchTime.now().uptimeNanoseconds
         do {
             var prepared: SimClonePreparation?
-            try hostWork { prepared = try self.environment.sims.prepareClone(name: name, plan: plan) }
+            try hostWork {
+                prepared = try (hostCall { try self.environment.sims.prepareClone(name: name, plan: plan) })
+            }
             guard let prepared, prepared.name == name, prepared.plan == plan,
                 !plan.boots || prepared.sourceWasShutdown
             else { throw PoolError.cloneRecoveryBlocked("invalid clone preparation") }
@@ -1153,7 +1159,7 @@ extension Engine {
             intent.detail = try Self.poolCloneDetail(operation)
             try store.updateActionIntentDetail(intent)
             var device: SimDevice?
-            try hostWork { device = try self.environment.sims.createPreparedDevice(prepared) }
+            try hostWork { device = try (hostCall { try self.environment.sims.createPreparedDevice(prepared) }) }
             guard let device else { throw PoolError.cloneRecoveryBlocked("clone returned no device") }
             let finishedAt = environment.clock.now()
             operation.createdUDID = device.udid
@@ -1226,8 +1232,8 @@ extension Engine {
             resourceID: resource?.id, releaseReason: resource == nil ? nil : "pool sim recycled")
         try performUnderIntent(intent, now: now) {
             try hostWork {
-                try environment.sims.deleteDevice(udid: sim.udid)
-                if try environment.sims.listDevices().contains(where: { $0.udid == sim.udid }) {
+                try (hostCall { try self.environment.sims.deleteDevice(udid: sim.udid) })
+                if try (hostCall { try self.environment.sims.listDevices() }).contains(where: { $0.udid == sim.udid }) {
                     throw EngineError.cleanupNotVerified("sim \(sim.udid)")
                 }
             }

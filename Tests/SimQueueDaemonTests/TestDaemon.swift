@@ -35,7 +35,8 @@ final class TestDaemon: @unchecked Sendable {
         processTable: (any ProcessTable)? = nil,
         simsOverride: (any SimBackend)? = nil, processesOverride: (any ProcessTable)? = nil,
         executorOverride: (any JobExecutor)? = nil, tickIntervalOverride: Double? = nil,
-        fileSystemOverride: (any FileSystem)? = nil
+        fileSystemOverride: (any FileSystem)? = nil,
+        configureServer: (DaemonServer) -> Void = { _ in }
     ) throws {
         let dir = stateDir ?? testScratchRoot() + "/sqd-" + UUID().uuidString.prefix(8)
         paths = SimQueuePaths(stateDir: dir)
@@ -85,6 +86,7 @@ final class TestDaemon: @unchecked Sendable {
         server = try DaemonServer(service: service, socketPath: paths.socketPath)
         server.waitPollSeconds = 0.01
         side = try JobStore(path: paths.databasePath)
+        configureServer(server)
         server.start()
     }
 

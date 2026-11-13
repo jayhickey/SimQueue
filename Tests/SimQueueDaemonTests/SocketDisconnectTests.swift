@@ -27,6 +27,27 @@ final class SocketDisconnectTests: XCTestCase {
             "simqd must be built beside the tests: \(path)")
     }
 
+    func testFullSocketBacklogCannotBlockConnectPastItsDeadline() throws {
+        let root = testScratchRoot() + "/backlog-" + UUID().uuidString.prefix(8)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let listener = try UnixListener(path: root + "/s", backlog: 1)
+        defer { listener.close() }
+        var clients: [UnixConnection] = []
+        defer { for client in clients { client.close() } }
+        var rejected = false
+        for _ in 0..<32 {
+            let start = ProcessInfo.processInfo.systemUptime
+            do {
+                clients.append(try UnixConnection.connect(path: listener.path, timeoutSeconds: 0.1))
+            } catch {
+                rejected = true
+            }
+            XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.8)
+            if rejected { break }
+        }
+        XCTAssertTrue(rejected, "an unserviced backlog must stop admitting connections")
+    }
+
     #if canImport(Darwin)
         func testPeerClosedBeforeAcceptCannotBecomeAnUnprotectedConnection() throws {
             let root = testScratchRoot() + "/closed-peer-" + UUID().uuidString.prefix(8)

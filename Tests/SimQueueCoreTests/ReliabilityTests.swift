@@ -32,6 +32,24 @@ final class ReliabilityTests: XCTestCase {
             foreignAllowlist: allowlist)
     }
 
+    func testResourcesCreatedOrChangedDuringObservationCannotBeReaped() {
+        let sim = resource(1, .sim, "NEW", owner: .pool)
+        let changed = resource(2, .runDir, layout.runDir(jobID: "J-old"))
+        let world = ObservedWorld(
+            sims: [SimDevice(udid: "NEW", name: "simq-pool-1", isBooted: false)],
+            managedDirectories: [changed.externalID],
+            resourceGenerations: [changed.id: changed.generation - 1])
+        XCTAssertTrue(
+            plan([sim, changed], world: world).isEmpty,
+            "new resources remain claimed; changed generations cannot be judged by an old observation")
+        var absent = world
+        absent.sims = []
+        absent.managedDirectories = []
+        XCTAssertTrue(
+            plan([sim, changed], world: absent).isEmpty,
+            "absence from an observation that predates registration does not release ownership")
+    }
+
     // MARK: - Defaults
 
     func testReliabilityDefaults() {

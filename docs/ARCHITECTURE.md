@@ -79,6 +79,37 @@ A waiting client reconnects to the same job; reconnect is separate from command 
 
 The watchdog runs light health checks and periodic full ownership reconciliation. It reports current anomalies, verified cleanup outcomes and circuit-breaker state through local status/doctor output. Cleanup is namespace/ownership/identity checked, verified and rate limited; its default report-only mode does not authorize destructive orphan cleanup. Templates have a separate explicit removal path and are not ordinary pool garbage.
 
+Daemon host calls release the service lock while tools run and reacquire it before
+applying results. Admission reloads job rows after those observations. Physical-device
+health is read from a background cache: one worker probes configured devices, refreshes
+values after 30 seconds, and reports unavailable once a sample is 60 seconds old.
+A cold cache reports refresh pending rather than blocking status on devicectl.
+
+ToolRunner drains nonblocking output pipes and observes/reaps its own child on the
+calling thread, independently of Dispatch worker availability. Every tool has a deadline;
+timeout sends TERM then KILL to its entire process group before reaping the leader.
+Even when the leader exits first, inherited output pipes remain bounded by that deadline.
+A dedicated nonblocking reaper owns any killed child still waiting in the kernel.
+
+Socket admission has separate limits: 4 incoming readers, 4 control requests, 8 other
+requests, 16 streaming waits, and one reserved self-check. Excess requests receive
+`queue_full` with a `daemon busy` explanation; callers may retry after a delay.
+Incoming lines have a two-second total deadline and writes are bounded. Socket handlers
+use bounded independent threads rather than blocking Dispatch's shared pool.
+
+A separate liveness thread makes a real status round-trip every five seconds, with
+bounded connect, write and read phases. If no successful round-trip occurs for 30
+seconds, simqd logs the failure and exits with status 70 without joining potentially
+wedged workers. The existing service manager can restart it; running commands have the
+same interruption/recovery limits as any daemon crash. This check is independent of
+the ownership watchdog and does not change its report-only cleanup policy.
+
+The `simq doctor` client also reports `socket_round_trip` latency, `daemon_threads`
+and `daemon_zombies`. When the socket fails, it inspects the persisted daemon PID;
+these process counts are a diagnostic snapshot, not proof that a stale PID is still the
+original daemon.
+
+
 There is no historical stats/top view, external alert delivery or webhooks. Clock, resource, simulator, process and filesystem interfaces are injectable so deterministic tests can exercise timeouts, crashes and interleavings. Fakes establish those contracts; they do not establish real simulator throughput or a clean installation.
 
 ## History and log bounds

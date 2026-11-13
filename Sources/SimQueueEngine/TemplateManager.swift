@@ -130,7 +130,7 @@ extension Engine {
     /// Pass `devices` to reuse a listing the caller already has.
     public func unregisteredTemplateSims(in devices: [SimDevice]? = nil) throws -> [SimDevice] {
         let registered = Set(try store.liveResources(kinds: [.template]).map(\.externalID))
-        return try (devices ?? environment.sims.listDevices()).filter {
+        return try (devices ?? (hostCall { try self.environment.sims.listDevices() })).filter {
             environment.naming.isTemplate($0.name) && !registered.contains($0.udid)
         }
     }
@@ -335,14 +335,14 @@ extension Engine {
             guard environment.naming.owns(entry.record.name) else {
                 throw EngineError.cleanupNotVerified("\(what) is outside the namespace")
             }
-            let present = try environment.sims.listDevices().contains { $0.udid == udid }
+            let present = try (hostCall { try self.environment.sims.listDevices() }).contains { $0.udid == udid }
             if present {
                 let intent = ActionIntent(
                     target: .sim(udid: udid), auditType: Self.templateRemovedAuditType, detail: "removed \(what)",
                     resourceID: entry.resourceID, releaseReason: "template removed")
                 try performUnderIntent(intent, now: now) {
-                    try builder.deleteTemplate(udid: udid)
-                    if try environment.sims.listDevices().contains(where: { $0.udid == udid }) {
+                    try hostCall { try builder.deleteTemplate(udid: udid) }
+                    if try (hostCall { try self.environment.sims.listDevices() }).contains(where: { $0.udid == udid }) {
                         throw EngineError.cleanupNotVerified("sim \(udid)")
                     }
                 }

@@ -34,7 +34,7 @@ extension Engine {
             guard try store.pendingActionIntents().isEmpty else { return report }
             guard let owner = try pressureShutdownOwner(udid: candidate.udid) else { continue }
             var devices: [SimDevice] = []
-            try hostWork { devices = try self.environment.sims.listDevices() }
+            try hostWork { devices = try (hostCall { try self.environment.sims.listDevices() }) }
             // Inventory runs unlocked: a caller may have leased/removed/replaced the
             // row or ownership while it ran. Require the complete original snapshot.
             guard try store.poolSims().first(where: { $0.udid == candidate.udid }) == candidate,
@@ -45,7 +45,7 @@ extension Engine {
                 device.name == candidate.name, device.state == "Booted", device.isBooted
             else { continue }
             let now = environment.clock.now()
-            let fresh = try environment.probe.sample(now: now)
+            let fresh = try (hostCall { try self.environment.probe.sample(now: now) })
             recordSwapSample(fresh, at: now)
             guard fresh.memoryPressure >= scheduler.config.pressureStop else { return report }
             let action = SimPoolAction.shutdown(udid: candidate.udid)
@@ -75,10 +75,10 @@ extension Engine {
             defer { hostActionIntentsInFlight.remove(intent.id) }
             do {
                 // The persisted barrier prevents lease acquisition before unlocking.
-                try hostWork { try self.environment.sims.shutdownDevice(udid: candidate.udid) }
+                try hostWork { try (hostCall { try self.environment.sims.shutdownDevice(udid: candidate.udid) }) }
                 try recoverPressureShutdown(intent, proof: proof, hostWork: hostWork)
                 let sampledAt = environment.clock.now()
-                let afterShutdown = try environment.probe.sample(now: sampledAt)
+                let afterShutdown = try (hostCall { try self.environment.probe.sample(now: sampledAt) })
                 recordSwapSample(afterShutdown, at: sampledAt)
                 guard afterShutdown.memoryPressure >= scheduler.config.pressureStop,
                     try store.pendingActionIntents().isEmpty,
@@ -129,7 +129,7 @@ extension Engine {
     private func recoverPressureShutdown(_ intent: ActionIntent, proof: PressureShutdown, hostWork: PoolHostWork) throws
     {
         var devices: [SimDevice] = []
-        try hostWork { devices = try self.environment.sims.listDevices() }
+        try hostWork { devices = try (hostCall { try self.environment.sims.listDevices() }) }
         let current = try store.poolSims().first(where: { $0.udid == proof.original.udid })
         let targets = devices.filter { $0.udid == proof.original.udid }
         // Startup reconciliation may already have dropped a vanished pool row and
