@@ -345,7 +345,10 @@ public enum DoctorBuilder {
 
     /// Run from the doctor client, independently of the service lock. This still
     /// reports a stuck daemon using its persisted PID when the socket does not answer.
-    public static func runtimeChecks(paths: SimQueuePaths, daemonPID: Int32?) -> [DoctorCheck] {
+    public static func runtimeChecks(
+        paths: SimQueuePaths, daemonPID: Int32?,
+        processOutput: ([String]) throws -> String = { try ToolRunner().check("ps", $0, timeoutSeconds: 2) }
+    ) -> [DoctorCheck] {
         var checks: [DoctorCheck] = []
         var pid = daemonPID
         if pid == nil, let store = try? JobStore(readOnlyPath: paths.databasePath),
@@ -376,20 +379,19 @@ public enum DoctorBuilder {
             checks.append(DoctorCheck(name: "daemon_process", level: .warn, detail: "daemon PID unavailable"))
             return checks
         }
-        let runner = ToolRunner()
         do {
             #if canImport(Darwin)
-                let threads = try runner.check("ps", ["-M", "-p", String(pid), "-o", "pid="], timeoutSeconds: 2)
+                let threads = try processOutput(["-M", "-p", String(pid), "-o", "pid="])
                     .split(separator: "\n").count
             #else
-                let text = try runner.check("ps", ["-p", String(pid), "-o", "nlwp="], timeoutSeconds: 2)
+                let text = try processOutput(["-p", String(pid), "-o", "nlwp="])
                 let threads = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
             #endif
             checks.append(
                 DoctorCheck(
                     name: "daemon_threads", level: threads >= 60 ? .warn : .ok,
                     detail: "\(threads) threads for pid \(pid)"))
-            let children = try runner.check("ps", ["-axo", "ppid=,stat="], timeoutSeconds: 2)
+            let children = try processOutput(["-axo", "ppid=,stat="])
             let zombies = children.split(separator: "\n").filter { line in
                 let fields = line.split(whereSeparator: { $0.isWhitespace })
                 return fields.count >= 2 && Int32(fields[0]) == pid && fields[1].hasPrefix("Z")
@@ -399,8 +401,9 @@ public enum DoctorBuilder {
                     name: "daemon_zombies", level: zombies > 0 ? .warn : .ok,
                     detail: "\(zombies) zombie children for pid \(pid)"))
         } catch {
-            checks.append(
-                DoctorCheck(name: "daemon_process", level: .warn, detail: "process inspection failed: \(error)"))
+            for name in ["daemon_threads", "daemon_zombies"] where !checks.contains(where: { $0.name == name }) {
+                checks.append(DoctorCheck(name: name, level: .warn, detail: "unavailable: \(error)"))
+            }
         }
         return checks
     }

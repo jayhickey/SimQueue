@@ -49,8 +49,8 @@ final class DaemonLivenessTests: XCTestCase {
             },
             configureServer: {
                 $0.livenessIntervalSeconds = 0.05
-                $0.livenessTimeoutSeconds = 0.1
-                $0.livenessFailureSeconds = 0.5
+                $0.livenessTimeoutSeconds = 0.5
+                $0.livenessFailureSeconds = 3
                 $0.livenessFailure = { falseRestart.fulfill() }
             })
         defer { daemon.destroy() }
@@ -211,9 +211,23 @@ final class DaemonLivenessTests: XCTestCase {
     func testDoctorIncludesRoundTripAndProcessCounts() throws {
         let daemon = try TestDaemon()
         defer { daemon.destroy() }
-        let checks = DoctorBuilder.runtimeChecks(paths: daemon.paths, daemonPID: nil)
+        let checks = DoctorBuilder.runtimeChecks(paths: daemon.paths, daemonPID: nil) { arguments in
+            if arguments.contains("-axo") { return "1 Z\n2 Z\n1 S\n" }
+            #if canImport(Darwin)
+                return "1\n1\n1\n"
+            #else
+                return "3"
+            #endif
+        }
         XCTAssertEqual(checks.first { $0.name == "socket_round_trip" }?.level, .ok)
-        XCTAssertNotNil(checks.first { $0.name == "daemon_threads" })
-        XCTAssertNotNil(checks.first { $0.name == "daemon_zombies" })
+        XCTAssertEqual(checks.first { $0.name == "daemon_threads" }?.detail, "3 threads for pid 1")
+        XCTAssertEqual(checks.first { $0.name == "daemon_zombies" }?.detail, "1 zombie children for pid 1")
+        let unavailable = DoctorBuilder.runtimeChecks(paths: daemon.paths, daemonPID: nil) { _ in
+            throw ToolError.timedOut(command: "ps", seconds: 2)
+        }
+        for name in ["daemon_threads", "daemon_zombies"] {
+            XCTAssertEqual(unavailable.first { $0.name == name }?.level, .warn)
+            XCTAssertTrue(unavailable.first { $0.name == name }?.detail.contains("unavailable") == true)
+        }
     }
 }

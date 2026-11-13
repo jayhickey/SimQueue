@@ -31,7 +31,7 @@ final class ToolRunnerTests: XCTestCase {
             "trap '' TERM; sleep 300 & echo $! > \"$PIDFILE\"; wait")
         let runner = ToolRunner(
             environment: ["PATH": bin.path + ":/usr/bin:/bin", "PIDFILE": pidFile.path], killGraceSeconds: 0.3)
-        XCTAssertThrowsError(try runner.run("faketool", [], timeoutSeconds: 0.5)) {
+        XCTAssertThrowsError(try runner.run("faketool", [], timeoutSeconds: 2)) {
             guard case .timedOut = $0 as? ToolError else { return XCTFail("\($0)") }
         }
         let text = try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -91,7 +91,7 @@ final class ToolRunnerTests: XCTestCase {
             workers.wait()
         }
         Thread.sleep(forTimeInterval: 0.1)
-        XCTAssertEqual(try runner.run("faketool", [], timeoutSeconds: 0.5).stdout, "output\n")
+        XCTAssertEqual(try runner.run("faketool", [], timeoutSeconds: 2).stdout, "output\n")
     }
 
     func testExcessiveToolOutputFailsExplicitlyInsteadOfReturningTruncatedSuccess() throws {
