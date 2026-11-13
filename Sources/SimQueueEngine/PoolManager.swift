@@ -1129,6 +1129,9 @@ extension Engine {
         slot: Int, now: Double, plan: SimClonePlan, hostWork: PoolHostWork = Engine.inlineHostWork,
         authorize: () throws -> Bool = { true }
     ) throws -> PoolSim? {
+        if let source = plan.source, templateRemovalsInFlight.contains(source) {
+            throw PoolError.cloneRecoveryBlocked("template \(source) is being removed")
+        }
         var operation = PoolCloneOperation(plan: plan)
         var intent = try store.recordActionIntent(
             ActionIntent(

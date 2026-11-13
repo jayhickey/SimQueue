@@ -456,7 +456,7 @@ public final class DaemonService: @unchecked Sendable {
 
     static func map(_ failure: TemplateError) -> ProtocolError {
         switch failure {
-        case .notSupported, .slimNotWired, .inProgress, .poolDisabled, .poolCreateInFlight:
+        case .notSupported, .slimNotWired, .inProgress, .poolDisabled, .poolCreateInFlight, .removalInProgress:
             ProtocolError(.invalidState, failure.description)
         case .createFailed: ProtocolError(.internalError, failure.description)
         case .alreadyExists: ProtocolError(.invalidState, failure.description)

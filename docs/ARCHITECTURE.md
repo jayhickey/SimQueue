@@ -80,7 +80,7 @@ A waiting client reconnects to the same job; reconnect is separate from command 
 The watchdog runs light health checks and periodic full ownership reconciliation. It reports current anomalies, verified cleanup outcomes and circuit-breaker state through local status/doctor output. Cleanup is namespace/ownership/identity checked, verified and rate limited; its default report-only mode does not authorize destructive orphan cleanup. Templates have a separate explicit removal path and are not ordinary pool garbage.
 
 Daemon host calls release the service lock while tools run and reacquire it before
-applying results. Admission reloads job rows after those observations. Physical-device
+applying results. Admission reloads job rows and current pool capacity after those observations. Template removal reserves its name and UDID across unlocked inventory, deletion and verification, preventing a new clone from starting against that source. Template capability probes also use the lock handoff. Physical-device
 health is read from a background cache: one worker probes configured devices, refreshes
 values after 30 seconds, and reports unavailable once a sample is 60 seconds old.
 A cold cache reports refresh pending rather than blocking status on devicectl.

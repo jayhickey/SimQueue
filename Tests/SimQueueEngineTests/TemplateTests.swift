@@ -314,6 +314,62 @@ final class TemplateTests: XCTestCase {
         XCTAssertEqual(try engine.removeTemplate(record.name), .removed)
     }
 
+    func testSlimCapabilityProbeRunsThroughTheHostHandoff() throws {
+        let (harness, store, engine) = try start()
+        var handedOff = false
+        engine.hostWork = { body in
+            handedOff = true
+            XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+            try body()
+        }
+        _ = try engine.beginTemplateBuild(request(), versions: harness.sims.toolVersions())
+        XCTAssertTrue(handedOff, "slimSupported can invoke simslim --help")
+        XCTAssertEqual(try store.pendingActionIntents().count, 1)
+    }
+
+    func testRemovalReservesTemplateBeforeUnlockedInventoryAndDeletion() throws {
+        for byName in [false, true] {
+            let (harness, store, engine) = try start()
+            let record = try engine.buildTemplate(request())
+            harness.sims.clonesTemplate = true
+            harness.sims.configuredTemplateValue = byName ? record.name : record.udid
+            var observations = 0
+            var insideHandoff = false
+            engine.hostWork = { body in
+                if insideHandoff { try body(); return }
+                insideHandoff = true
+                defer { insideHandoff = false }
+                observations += 1
+                XCTAssertThrowsError(try engine.createPoolSim(slot: 0, now: harness.clock.now())) {
+                    XCTAssertTrue(String(describing: $0).contains("being removed"))
+                }
+                XCTAssertThrowsError(try engine.removeTemplate(record.name)) {
+                    XCTAssertEqual($0 as? TemplateError, .removalInProgress(record.name))
+                }
+                try body()
+            }
+            XCTAssertEqual(try engine.removeTemplate(record.udid), .removed)
+            XCTAssertGreaterThanOrEqual(observations, 3, "inventory, deletion and verification stay reserved")
+            XCTAssertTrue(harness.sims.clonedFrom.isEmpty)
+            XCTAssertTrue(try store.poolSims().isEmpty)
+            XCTAssertTrue(try store.pendingActionIntents().isEmpty)
+            XCTAssertTrue(engine.templateRemovalsInFlight.isEmpty)
+        }
+    }
+
+    func testFailedRemovalReleasesTheReservation() throws {
+        let (harness, _, engine) = try start()
+        let record = try engine.buildTemplate(request())
+        harness.sims.clonesTemplate = true
+        harness.sims.configuredTemplateValue = record.udid
+        harness.sims.deleteFails = [record.udid]
+        XCTAssertThrowsError(try engine.removeTemplate(record.udid))
+        XCTAssertTrue(engine.templateRemovalsInFlight.isEmpty)
+        harness.sims.deleteFails = []
+        _ = try engine.createPoolSim(slot: 0, now: harness.clock.now())
+        XCTAssertEqual(harness.sims.clonedFrom, [record.udid])
+    }
+
     /// A pool sim records the template it was cloned from, by UDID and name, whichever
     /// of the two the backend's clone source gives.
     func testAPoolSimRecordsTheTemplateItWasClonedFrom() throws {

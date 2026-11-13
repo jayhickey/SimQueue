@@ -233,6 +233,8 @@ public final class Engine {
     /// Recovery skips them: only a build no live daemon is running is a crash. In memory
     /// on purpose: after a restart the set is empty, so every earlier build is recovered.
     var templateBuildsInFlight: Set<Int64> = []
+    /// Names and UDIDs reserved before template removal releases the service lock.
+    var templateRemovalsInFlight: Set<String> = []
     /// Host actions released from the service lock remain owned by their worker.
     var hostActionIntentsInFlight: Set<Int64> = []
     /// Live daemon artifact preparation writers. Updated under the service lock; their
@@ -489,7 +491,7 @@ public final class Engine {
 
         let cleanupOwners = try jobsWithLiveProcessGroups()
         var queued = try store.queuedJobs()
-        let availablePool: PoolSnapshot
+        var availablePool: PoolSnapshot
         if pool != nil {
             availablePool = try poolCapacity()
         } else if queued.contains(where: { $0.resources.needsSims }) {
@@ -510,6 +512,9 @@ public final class Engine {
             host = try (hostCall { try self.environment.probe.sample(now: now) })
             recordSwapSample(host, at: now)
         }
+        // Manual leases or pool work may have changed ready capacity while the
+        // resource probe ran unlocked. Claim only from the current ledger.
+        if pool != nil { availablePool = try poolCapacity() }
         var active = try store.activeJobs()
         let activeIDs = Set(active.map(\.id))
         let leases = try store.poolSims()

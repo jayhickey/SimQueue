@@ -60,9 +60,11 @@ public enum TemplateError: Error, Equatable, CustomStringConvertible {
     /// The pool is off or doesn't act on the host, so a template build (a sim create) is refused.
     case poolDisabled(String)
     case poolCreateInFlight(template: String, clones: [String])
+    case removalInProgress(String)
 
     public var description: String {
         switch self {
+        case .removalInProgress(let template): "template \(template) is being removed; retry after removal finishes"
         case .notSupported: "this sim backend can't build templates"
         case .alreadyExists(let project, let profile, let name):
             "\(project)/\(profile) already has a template (\(name)); pass --replace to build a new one"
@@ -148,7 +150,7 @@ extension Engine {
         -> PendingTemplate
     {
         guard let builder = templateBuilder else { throw TemplateError.notSupported }
-        guard !request.slim || builder.slimSupported else { throw TemplateError.slimNotWired }
+        guard try !request.slim || hostCall({ builder.slimSupported }) else { throw TemplateError.slimNotWired }
         try checkPoolAllowsTemplateBuild()
         let now = environment.clock.now()
         if !request.replace,
@@ -335,6 +337,12 @@ extension Engine {
             guard environment.naming.owns(entry.record.name) else {
                 throw EngineError.cleanupNotVerified("\(what) is outside the namespace")
             }
+            let reservation: Set<String> = [entry.record.name, udid]
+            guard templateRemovalsInFlight.isDisjoint(with: reservation) else {
+                throw TemplateError.removalInProgress(entry.record.name)
+            }
+            templateRemovalsInFlight.formUnion(reservation)
+            defer { templateRemovalsInFlight.subtract(reservation) }
             let present = try (hostCall { try self.environment.sims.listDevices() }).contains { $0.udid == udid }
             if present {
                 let intent = ActionIntent(
