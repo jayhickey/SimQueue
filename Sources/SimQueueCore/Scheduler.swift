@@ -11,6 +11,7 @@ public struct SchedulerInput: Sendable {
     public var pool: PoolSnapshot
     public var control: QueueControl
     public var drain: DrainStatus
+    public var restartBreaker: RestartBreakerStatus = .normal
     /// The previous pass's load-throttle decision (for hysteresis).
     public var loadThrottledPreviously: Bool
     /// False when a separate pool manager owns creation and booting. Counts remain real.
@@ -143,6 +144,9 @@ public struct Scheduler: Sendable {
         }
         if case .draining(let count) = input.drain {
             reasons.append(.draining(recentInfraFailures: count))
+        }
+        if case .tripped(let restarts, let window) = input.restartBreaker {
+            reasons.append(.restartLoop(restarts: restarts, windowSeconds: window))
         }
         let host = input.host
         if let reason = config.admissionCPUWaitReason(

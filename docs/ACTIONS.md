@@ -69,4 +69,4 @@ HEAD is checked at submission and execution; files are not frozen. See [checkout
 
 ## Runner maintenance
 
-Follow the [drain and Homebrew upgrade procedure](INSTALL.md#planned-upgrade). Waiting clients can reconnect to the same queued job across a brief service restart. Abruptly interrupted commands need deliberate recovery, and replay requires explicit retry permission. See [recovery](PROTOCOL.md#recovery) before enabling retries.
+Follow the [drain and Homebrew upgrade procedure](INSTALL.md#planned-upgrade). Waiting clients can reconnect to the same queued job across a brief service restart. A command interrupted by a daemon restart is requeued and runs again from the start; pass `--no-restart-replay` for steps whose side effects must not repeat (publishing, uploads). See [recovery](PROTOCOL.md#recovery) before enabling retries.

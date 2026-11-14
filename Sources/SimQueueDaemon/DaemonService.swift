@@ -144,6 +144,7 @@ public final class DaemonService: @unchecked Sendable {
             try self.withoutLock(body)
         }
         engine.templateVersions = { [weak self] in self?.templateVersions }
+        engine.noteProgress = { [lockActivity] step in lockActivity.enter(step) }
     }
 
     /// The host's Xcode and runtime versions for template staleness, probed outside the
@@ -169,11 +170,30 @@ public final class DaemonService: @unchecked Sendable {
         return versions
     }
 
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+    /// Counts service-lock acquisitions, and the steps a holder moves through, without
+    /// needing the lock. The socket liveness watchdog uses it to tell a daemon that is
+    /// slow (the lock changes hands, or its holder keeps moving to the next step) from
+    /// one that is wedged (neither happens).
+    private let lockActivity = LockActivity()
+    public var lockProgress: UInt64 { lockActivity.count }
+    /// Seconds since a tick last finished (successfully or not), or nil before the first.
+    /// Reported in liveness messages; not a reason to exit by itself.
+    public var secondsSinceLastTick: Double? {
+        lockActivity.lastTickUptime.map { max(0, ProcessInfo.processInfo.systemUptime - $0) }
+    }
+    /// What holds the service lock right now and for how long ("tick(), executor step,
+    /// for 31s"), or nil when it is free. For the stop reason of a wedged daemon.
+    public var lockHolderDescription: String? {
+        lockActivity.holderDescription(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func locked<T>(function: StaticString = #function, _ body: () throws -> T) rethrows -> T {
         lock.lock()
+        lockActivity.acquired(by: "\(function)", at: ProcessInfo.processInfo.systemUptime)
         Thread.current.threadDictionary[lockKey] = true
         defer {
             Thread.current.threadDictionary.removeObject(forKey: lockKey)
+            lockActivity.released()
             lock.unlock()
         }
         return try body()
@@ -190,13 +210,101 @@ public final class DaemonService: @unchecked Sendable {
         }
         hostWorkInFlight += 1
         Thread.current.threadDictionary.removeObject(forKey: lockKey)
+        let holder = lockActivity.released()
         lock.unlock()
         defer {
             lock.lock()
+            lockActivity.acquired(
+                by: holder?.name ?? "host work", phase: holder?.phase, at: ProcessInfo.processInfo.systemUptime)
             Thread.current.threadDictionary[lockKey] = true
             hostWorkInFlight -= 1
         }
         try body()
+    }
+
+    // MARK: - Stop records
+
+    /// Nil for an in-memory store and for a dry run, which shares the real state
+    /// directory and must leave no stop record a real daemon could mistake for its own.
+    private var stateDirectory: String? {
+        info.statePath == ":memory:" || info.dryRun == true
+            ? nil : (info.statePath as NSString).deletingLastPathComponent
+    }
+
+    /// Records why this daemon is stopping, before it exits. `last-stop.json` is written
+    /// first and needs nothing but the disk. The audit entry (and so `events.jsonl`)
+    /// needs the service lock: a daemon stopping because that lock is wedged gives up
+    /// after `lockTimeout` and leaves the audit to the next daemon's startup. A daemon
+    /// that lost its lease writes neither: that state belongs to another daemon now.
+    @discardableResult
+    public func recordStop(reason: String, exitCode: Int32, lockTimeout: Double = 2) -> DaemonStopRecord {
+        var record = DaemonStopRecord(
+            epoch: engine.epoch, pid: info.pid, at: Date().timeIntervalSince1970, reason: reason,
+            exitCode: exitCode, version: info.version)
+        if let stateDirectory { record.write(stateDirectory: stateDirectory) }
+        guard lock.lock(before: Date().addingTimeInterval(max(0, lockTimeout))) else { return record }
+        lockActivity.acquired(by: "recordStop", at: ProcessInfo.processInfo.systemUptime)
+        defer {
+            lockActivity.released()
+            lock.unlock()
+        }
+        do {
+            // A daemon that lost its lease no longer owns the database or `events.jsonl`:
+            // another daemon does. The log line and `last-stop.json` are its record.
+            guard try store.currentEpoch() == engine.epoch else { return record }
+            try store.audit(DaemonStopRecord.auditType, detail: record.summary, now: record.at)
+            record.audited = true
+            if let stateDirectory { record.write(stateDirectory: stateDirectory) }
+            try eventLog?.append(from: store)
+            if record.planned {
+                // The stored "why waiting" snapshot is only valid for this daemon's last
+                // tick, and the next daemon rewrites it on its first. Dropping it at a
+                // requested stop also keeps a rollback safe: an older daemon cannot decode
+                // a wait reason it does not know and would fail `explain` until that tick.
+                try store.saveExplanations([], at: record.at)
+            }
+        } catch {
+            log("stop record not audited: \(error)")
+        }
+        return record
+    }
+
+    /// Startup: says how the previous daemon ended. A stop it recorded but could not
+    /// audit is audited now; a previous epoch with no record is audited as an unrecorded
+    /// exit (killed, crashed, power loss, or a version that kept no stop records).
+    /// Anything but a requested stop also counts as an unplanned restart for the
+    /// restart-loop breaker (`RestartBreakerPolicy`).
+    /// Returns the line for the daemon log, or nil for the first daemon of a state dir.
+    @discardableResult
+    public func reportPreviousStop(previousPID: Int32?, heartbeatAgeSeconds: Double?) -> String? {
+        let previousEpoch = engine.epoch - 1
+        guard previousEpoch >= 1, let stateDirectory else { return nil }
+        let now = engine.environment.clock.now()
+        return locked {
+            if let record = DaemonStopRecord.read(stateDirectory: stateDirectory), record.epoch == previousEpoch {
+                if !record.audited {
+                    try? store.audit(
+                        DaemonStopRecord.auditType, detail: record.summary + " (audited by the next daemon)", now: now)
+                    var audited = record
+                    audited.audited = true
+                    audited.write(stateDirectory: stateDirectory)
+                }
+                if !record.planned {
+                    try? store.audit(
+                        RestartBreakerPolicy.auditType, detail: "after epoch \(previousEpoch): \(record.reason)",
+                        now: now)
+                }
+                return "previous daemon: " + record.summary
+            }
+            let detail =
+                "epoch \(previousEpoch)" + (previousPID.map { " pid \($0)" } ?? "")
+                + " left no stop record: it was killed, crashed, lost power, or ran a version that kept none"
+                + (heartbeatAgeSeconds.map { "; its last heartbeat was \(Int($0.rounded()))s before this start" } ?? "")
+            try? store.audit(DaemonStopRecord.unrecordedAuditType, detail: detail, now: now)
+            try? store.audit(
+                RestartBreakerPolicy.auditType, detail: "after epoch \(previousEpoch): no stop record", now: now)
+            return "previous daemon: " + detail
+        }
     }
 
     /// Called after server loops stop, outside the state lock. The normal upgrade
@@ -216,9 +324,11 @@ public final class DaemonService: @unchecked Sendable {
     /// is due (light every `watchdog.lightIntervalSeconds`, full every
     /// `watchdog.fullIntervalSeconds`), each followed by a fresh `health.json`.
     /// Throws `EngineError.lostLease` if another daemon took over; the caller must stop.
+    /// Any other error leaves the daemon running: the next tick retries.
     @discardableResult
     public func tick() throws -> TickResult {
-        try locked {
+        defer { lockActivity.tickFinished(at: ProcessInfo.processInfo.systemUptime) }
+        return try locked {
             if shutdownRequested, let lastTick { return lastTick }
             if let failure = poolFailure { throw failure }
             let nowForProbe = engine.environment.clock.now()
@@ -239,12 +349,15 @@ public final class DaemonService: @unchecked Sendable {
                             lastPoolPass = try engine.poolPass(
                                 config: settings, demand: engine.maintenanceDraining ? 0 : nil,
                                 extraDemand: extra, host: fresh, hostWork: { try withoutLock($0) })
-                        } catch let error as EngineError { poolFailure = error } catch {
+                        } catch let error as EngineError where error.stopsDaemon {
+                            poolFailure = error
+                        } catch {
                             log("pool pass failed: \(error)")
                         }
                     }
                 }
             }
+            lockActivity.enter("storage checks")
             if storageChecksEnabled {
                 do {
                     let roots = Set(
@@ -262,6 +375,7 @@ public final class DaemonService: @unchecked Sendable {
                     engine.admissionStorageFailure = String(describing: error)
                 }
             }
+            lockActivity.enter("scheduling")
             let result = try engine.tick(host: host)
             let now = engine.environment.clock.now()
             if !historyRunning, now - lastHistoryAt >= 3600, info.statePath != ":memory:" {
@@ -278,6 +392,7 @@ public final class DaemonService: @unchecked Sendable {
             }
             startSimPrep()
             executor?.heldJobIDs = engine.jobsAwaitingSimPrep
+            lockActivity.enter("executor step")
             do {
                 try executor?.step(store: store, epoch: engine.epoch, now: now)
             } catch {
@@ -285,6 +400,7 @@ public final class DaemonService: @unchecked Sendable {
                 throw error
             }
             startProcessPreparations()
+            lockActivity.enter("event log")
             do {
                 try eventLog?.append(from: store)
             } catch {
@@ -295,9 +411,10 @@ public final class DaemonService: @unchecked Sendable {
             if let kind = config.watchdog.due(lastLightAt: lastLightPassAt, lastFullAt: lastFullPassAt, now: now) {
                 // A failed pass (hung backend, database error) is recorded and retried at
                 // the next interval, not on every tick; scheduling carries on.
+                lockActivity.enter("watchdog \(kind.rawValue) pass")
                 do {
                     try engine.watchdogPass(kind, config: config.watchdog, includeArtifactRetention: false)
-                } catch let error as EngineError {
+                } catch let error as EngineError where error.stopsDaemon {
                     throw error
                 } catch {
                     log("watchdog \(kind.rawValue) pass failed: \(error)")
@@ -894,6 +1011,12 @@ public final class DaemonService: @unchecked Sendable {
         }
         command?.device = params.device
         command?.deviceArtifact = params.deviceArtifact
+        if params.noRestartReplay == true {
+            guard command != nil else {
+                throw ProtocolError(.invalidArgument, "no_restart_replay needs a command")
+            }
+            command?.noRestartReplay = true
+        }
         if let request = params.device {
             guard command != nil, params.minSims == 0, (params.maxSims ?? 0) == 0,
                 params.template == nil, params.freshSim != true, params.resetApps?.isEmpty != false
@@ -1133,7 +1256,8 @@ public final class DaemonService: @unchecked Sendable {
         let summary = HealthSummary.evaluate(
             breaker: state.breaker, anomalies: anomalies, draining: try engine.drainActive(now: now),
             lastPassAt: state.lastPassAt, now: now, staleAfterSeconds: 3 * config.watchdog.lightIntervalSeconds,
-            postponed: state.postponedTargets.count, lastPassError: state.lastPassError)
+            postponed: state.postponedTargets.count, lastPassError: state.lastPassError,
+            restartLoop: try engine.restartBreakerStatus(now: now))
         return HealthInfo(
             summary: summary, state: state, anomalies: anomalies, cleanupMode: config.reliability.cleanupMode.rawValue,
             now: now,
@@ -1268,5 +1392,59 @@ public final class DaemonService: @unchecked Sendable {
             try engine.teardown(job, now: now, skipping: executor?.drainsProcessGroups == true ? [.processGroup] : [])
         }
         return try requireJob(job.id)
+    }
+}
+
+/// Who has the service lock and whether its holder is moving, kept behind its own tiny
+/// lock so it can be read while the service lock is held elsewhere (or never released).
+final class LockActivity: @unchecked Sendable {
+    struct Holder {
+        var name: String
+        var phase: String?
+        var since: Double
+    }
+
+    private let guardLock = NSLock()
+    private var progress: UInt64 = 0
+    private var holder: Holder?
+    private var tickFinishedAt: Double?
+
+    func acquired(by name: String, phase: String? = nil, at uptime: Double) {
+        guardLock.withLock {
+            progress &+= 1
+            holder = Holder(name: name, phase: phase, since: uptime)
+        }
+    }
+
+    /// Call just before unlocking. Returns who held it, for a hand-back after host work.
+    @discardableResult
+    func released() -> Holder? {
+        guardLock.withLock {
+            defer { holder = nil }
+            return holder
+        }
+    }
+
+    /// The holder moved on to its next step. Counts as progress: a pass that holds the
+    /// lock while working through a list is slow, not stuck.
+    func enter(_ phase: String) {
+        guardLock.withLock {
+            progress &+= 1
+            holder?.phase = phase
+        }
+    }
+
+    func tickFinished(at uptime: Double) { guardLock.withLock { tickFinishedAt = uptime } }
+    var lastTickUptime: Double? { guardLock.withLock { tickFinishedAt } }
+
+    /// Lock acquisitions plus step changes.
+    var count: UInt64 { guardLock.withLock { progress } }
+
+    func holderDescription(now: Double) -> String? {
+        guardLock.withLock {
+            guard let holder else { return nil }
+            return holder.name + (holder.phase.map { ", \($0)," } ?? "")
+                + " for \(Int(max(0, now - holder.since).rounded()))s"
+        }
     }
 }

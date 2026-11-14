@@ -228,6 +228,55 @@ public final class ProcessExecutor: JobExecutor {
     /// The job's own TMPDIR: `<run dir>/tmp`.
     public static func tmpDirectory(directory: String) -> String { directory + "/tmp" }
 
+    /// Where an earlier attempt's result bundle is kept when a later attempt starts:
+    /// `<run dir>/Result.attempt-<n>.xcresult`, numbered by the attempt that left it.
+    public static func previousResultBundle(directory: String, attempt: Int) -> String {
+        directory + "/Result.attempt-\(attempt).xcresult"
+    }
+
+    private struct PreviousAttemptLeftover: Error { let message: String }
+
+    /// A job keeps one run directory for all its attempts, so the log reads as one
+    /// history. Before a later attempt (an infra retry, a requeue after a daemon
+    /// restart) starts, what the earlier one left there is dealt with:
+    ///
+    /// - `SIMQ_RESULT_BUNDLE`: moved aside, never deleted. `xcodebuild` refuses to start
+    ///   when `-resultBundlePath` exists, so the replay would otherwise fail at once, and
+    ///   the earlier attempt's partial results are evidence worth keeping.
+    /// - `SIMQ_TMPDIR`: removed. It is scratch space that is normally removed when the
+    ///   job's process group is gone; a daemon restart skips that step.
+    /// - `SIMQ_DERIVED_DATA`: kept. It is a build cache that tolerates an interrupted
+    ///   build, and rebuilding it is the larger cost.
+    /// - `combined.log`: appended to, each attempt under its own header line.
+    ///
+    /// Returns a line for the log, or nil if there was nothing to do.
+    static func setAsidePreviousAttempt(_ work: PreparationWork, fileSystem: any FileSystem) throws -> String? {
+        guard work.job.attempt > 0 else { return nil }
+        let tmp = tmpDirectory(directory: work.directory)
+        if fileSystem.fileExists(tmp) {
+            do { try fileSystem.removeItem(tmp) } catch {
+                throw PreviousAttemptLeftover(message: "cannot clear the previous attempt's \(tmp): \(error)")
+            }
+        }
+        guard let bundle = suggestedPaths(directory: work.directory)["SIMQ_RESULT_BUNDLE"] else { return nil }
+        // lstat, not stat: a dangling link left at the path would trip the next attempt too.
+        var info = stat()
+        guard lstat(bundle, &info) == 0 else { return nil }
+        var kept = previousResultBundle(directory: work.directory, attempt: work.job.attempt - 1)
+        var suffix = 2
+        while lstat(kept, &info) == 0 {
+            kept = work.directory + "/Result.attempt-\(work.job.attempt - 1)-\(suffix).xcresult"
+            suffix += 1
+        }
+        // rename(2) moves the entry itself and never follows a link at either path.
+        guard rename(bundle, kept) == 0 else {
+            let reason = String(cString: strerror(errno))
+            throw PreviousAttemptLeftover(
+                message: "cannot move the previous attempt's result bundle out of the way: \(reason)")
+        }
+        return "kept the previous attempt's result bundle as \((kept as NSString).lastPathComponent)"
+    }
+
     /// Removes a finished job's TMPDIR, never following symlinks and never outside the
     /// jobs root. Failures are audited, not fatal: retention removes the run dir later.
     private func removeTmpDirectory(jobID: String, store: JobStore, now: Double) throws {
@@ -274,6 +323,7 @@ public final class ProcessExecutor: JobExecutor {
             let fileSystem = StorageFileSystem(
                 base: RootedFileSystem(roots: [work.root]), roots: [work.root], validate: validateStorage)
             try fileSystem.createDirectory(work.directory)
+            let previousAttempt = try Self.setAsidePreviousAttempt(work, fileSystem: fileSystem)
             try fileSystem.createDirectory(Self.tmpDirectory(directory: work.directory))
             let header =
                 "=== simq \(work.job.id) attempt \(work.job.attempt) at \(Timestamp(work.now).rfc3339): "
@@ -287,6 +337,7 @@ public final class ProcessExecutor: JobExecutor {
             var transferred = false
             defer { if !transferred { close(descriptor) } }
             try Self.append(header, descriptor: descriptor)
+            if let previousAttempt { try Self.append("=== simq: \(previousAttempt)\n", descriptor: descriptor) }
             func preparationFailure(_ result: ResultClass, _ message: String, exitCode: Int32? = nil) -> Result<
                 PreparedStart, PreparationFailure
             > {
@@ -321,6 +372,8 @@ public final class ProcessExecutor: JobExecutor {
             return .success(PreparedStart(descriptor: descriptor, executable: executable))
         } catch let failure as StorageUnavailable {
             return .failure(.init(result: .artifactFailure, message: failure.message, storageUnavailable: true))
+        } catch let failure as PreviousAttemptLeftover {
+            return .failure(.init(result: .artifactFailure, message: failure.message))
         } catch {
             return .failure(.init(result: .artifactFailure, message: "cannot write \(work.logPath): \(error)"))
         }

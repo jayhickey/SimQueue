@@ -269,13 +269,14 @@ public struct HealthSummary: Sendable, Equatable {
     }
 
     /// - breaker open: `breaker_open`;
-    /// - breaker half-open, sustained or needs-human anomalies, the infra drain, or no
-    ///   watchdog pass within `staleAfterSeconds`: `degraded`;
+    /// - breaker half-open, sustained or needs-human anomalies, the infra drain, the
+    ///   restart-loop hold, or no watchdog pass within `staleAfterSeconds`: `degraded`;
     /// - otherwise `ok`.
     /// Postponed cleanups (a backlog held by the rate limits) are a note, never a reason.
     public static func evaluate(
         breaker: BreakerState, anomalies: [AnomalyRecord], draining: Bool, lastPassAt: Double?, now: Double,
-        staleAfterSeconds: Double, postponed: Int = 0, lastPassError: String? = nil
+        staleAfterSeconds: Double, postponed: Int = 0, lastPassError: String? = nil,
+        restartLoop: RestartBreakerStatus = .normal
     ) -> HealthSummary {
         var reasons: [String] = []
         switch breaker.phase {
@@ -288,6 +289,11 @@ public struct HealthSummary: Sendable, Equatable {
         if needsHuman > 0 { reasons.append("\(needsHuman) anomal\(needsHuman == 1 ? "y needs" : "ies need") a human") }
         if sustained > 0 { reasons.append("\(sustained) sustained anomal\(sustained == 1 ? "y" : "ies")") }
         if draining { reasons.append("infra drain active") }
+        if case .tripped(let restarts, let window) = restartLoop {
+            reasons.append(
+                "restart loop: \(restarts) unplanned daemon restarts in \(Int((window / 60).rounded())) min, "
+                    + "admissions held")
+        }
         if let lastPassError { reasons.append("last watchdog pass failed: \(lastPassError)") }
         if let lastPassAt {
             if now - lastPassAt > staleAfterSeconds { reasons.append("no watchdog pass for \(Int(now - lastPassAt))s") }

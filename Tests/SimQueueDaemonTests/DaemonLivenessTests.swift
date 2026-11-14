@@ -51,7 +51,7 @@ final class DaemonLivenessTests: XCTestCase {
                 $0.livenessIntervalSeconds = 0.05
                 $0.livenessTimeoutSeconds = 0.5
                 $0.livenessFailureSeconds = 3
-                $0.livenessFailure = { falseRestart.fulfill() }
+                $0.livenessFailure = { _ in falseRestart.fulfill() }
             })
         defer { daemon.destroy() }
         _ = try daemon.result(.status)
@@ -201,7 +201,7 @@ final class DaemonLivenessTests: XCTestCase {
                 $0.livenessIntervalSeconds = 0.05
                 $0.livenessTimeoutSeconds = 0.05
                 $0.livenessFailureSeconds = 0.3
-                $0.livenessFailure = { failed.fulfill() }
+                $0.livenessFailure = { _ in failed.fulfill() }
             })
         defer { executor.release.signal(); daemon.destroy() }
         XCTAssertEqual(executor.entered.wait(timeout: .now() + 2), .success)

@@ -126,6 +126,10 @@ public struct JobCommand: Sendable, Codable, Equatable {
     /// Durable assignment for this attempt, set atomically with admission.
     public var physicalUDID: String?
     public var deviceArtifact: DeviceArtifact?
+    /// True: never run this command again after a daemon restart interrupted it
+    /// (`--no-restart-replay`); the job ends `interrupted` instead. For commands whose
+    /// side effects must not happen twice. Nil: the daemon's `restart_recovery` policy.
+    public var noRestartReplay: Bool?
 
     /// Whether the job asks for any sim preparation.
     public var wantsSimPrep: Bool { freshSim == true || !(resetApps ?? []).isEmpty }
@@ -247,8 +251,11 @@ public struct Job: Sendable, Equatable, Codable {
     /// jobs run one at a time, for example builds that saturate the machine.
     public var exclusive: Bool
     /// May be retried automatically after an infra failure. Off by default: a non-retryable
-    /// job that hits an infra failure ends `infra_failed`. After restart, started work
-    /// requires explicit retry permission and remaining budget; unknown starts are not replayed.
+    /// job that hits an infra failure ends `infra_failed`. A daemon restart is separate:
+    /// by default every interrupted job is requeued (`restart_recovery`, bounded by the
+    /// restart cap) unless it opted out with `noRestartReplay`. Under the `interrupt`
+    /// policy, started work is replayed only with this permission and remaining budget.
+    /// Unknown starts are never replayed.
     public var retryable: Bool
     /// Infra retries allowed for a retryable job. Nil: the daemon default (1).
     public var maxRetries: Int?

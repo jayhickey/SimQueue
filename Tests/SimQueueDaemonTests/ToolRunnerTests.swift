@@ -58,10 +58,31 @@ final class ToolRunnerTests: XCTestCase {
                     Int32(
                         String(contentsOf: pidFile, encoding: .utf8)
                             .trimmingCharacters(in: .whitespacesAndNewlines)))
-                var status: Int32 = 0
-                XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1, "leader must already be reaped")
-                XCTAssertEqual(errno, ECHILD)
+                assertReapedByTheRunner(pid)
             }
+        }
+    }
+
+    /// A killed leader is reaped by the runner within a short bounded window; one the
+    /// kernel has not finished by then is handed to the runner's background reaper,
+    /// which takes it a few milliseconds later. Either way it must stop being this
+    /// process's child without the test reaping it: `peekExit` only looks. Asserting on
+    /// the instant `run` returns raced that hand-off on a slow host.
+    private func assertReapedByTheRunner(_ pid: Int32, file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(5)
+        while true {
+            do {
+                _ = try ProcessSpawner.peekExit(pid)
+            } catch {
+                XCTAssertEqual(
+                    error as? ProcessControlError, .system(call: "waitid(\(pid))", errno: ECHILD),
+                    file: file, line: line)
+                return
+            }
+            guard Date() < deadline else {
+                return XCTFail("leader \(pid) was never reaped: a zombie is left behind", file: file, line: line)
+            }
+            Thread.sleep(forTimeInterval: 0.005)
         }
     }
 

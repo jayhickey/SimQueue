@@ -569,6 +569,13 @@ extension JobStore {
         )
     }
 
+    /// When each audit entry of `type` since `since` was written, oldest first.
+    public func auditTimes(type: String, since: Double) throws -> [Double] {
+        try database.query(
+            "SELECT at FROM audit_log WHERE type = ? AND at >= ? ORDER BY at;", [.text(type), .real(since)]
+        ).compactMap { $0.double("at") }
+    }
+
     /// The newest audit entry's `seq`, or nil when there are none.
     public func latestAuditSeq() throws -> Int64? {
         try database.query("SELECT MAX(seq) AS seq FROM audit_log;").first?.int("seq")

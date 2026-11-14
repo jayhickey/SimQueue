@@ -171,6 +171,19 @@ ditto "$simqueue_state" "$simqueue_backup"
 
 Protect the backup like the original state. Waiting clients recover unanswered observations or reconnect to the same job for up to 10 minutes (`SIMQ_RECONNECT_SECONDS`) while the daemon is away. A longer backup/download can exhaust that client budget while the job remains queued; inspect `simq jobs` and reattach with `simq wait JOB_ID` instead of submitting a duplicate. Prepare large backups/downloads before the short handoff when possible. Reconnect cannot preserve arbitrary running commands across an abrupt restart.
 
+### Upgrading to a version that requeues interrupted jobs
+
+Earlier versions ended a job whose command had started as `interrupted` when the daemon restarted, unless the job was retryable. Current versions stop the command and run the job again ([recovery](PROTOCOL.md#recovery)). An upgrade is itself a restart: the first start of the new daemon applies the new rule to whatever the old daemon left running, including jobs that were submitted when "never replayed" was the contract and that could not yet pass `--no-restart-replay`. A job that publishes or uploads would do so a second time.
+
+Use one of these two procedures for that upgrade:
+
+- **Drain first.** Step 1 above, completed: `simq drain` reports "Drained; safe to restart simqd", so no job is running when the daemon stops and there is nothing to replay. This is the normal procedure and the recommended one.
+- **Start once with the old rule.** If the old daemon cannot be drained (it has already exited, or was killed), put `"restart_recovery": "interrupt"` in `config.json` before the new daemon's first start. Jobs left behind then end `interrupted`, exactly as before. Remove the setting and restart (drained) afterwards to get requeue-after-restart.
+
+Update the scripts that submit upload, publish or other must-not-repeat jobs to pass `--no-restart-replay`, and ship that change together with the upgrade: the older `simq` rejects the flag as unknown, so it cannot go in earlier for CLI callers. Socket and MCP callers can send `no_restart_replay` ahead of time; an older daemon ignores it. Until a job passes it, a restart that catches the job replays it.
+
+The first start after upgrading from a version that kept no stop records logs that the previous daemon left none and audits one `daemon_exit_unrecorded` and one `daemon_unplanned_restart`. That counts as one start toward the restart-loop breaker, which needs five; it is expected and needs no action.
+
 Before upgrading an older installation to v1:
 
 - Update caller scripts from `--memory-mib` to `--memory-hint-mib` if they use the old spelling. The hint is optional and does not reserve RAM or enforce a limit; ordinary jobs can omit it.
@@ -211,6 +224,8 @@ Then upgrade Homebrew while the old daemon remains drained and available, follow
 ### Recover a failed upgrade
 
 Stop the new service and preserve its state for diagnosis. Restore the known previous binary/formula version **and its matching pre-upgrade state backup** before starting it. An older binary can refuse a newer schema; never lower `user_version` or assume an in-place downgrade is safe. Keep failed state separate instead of mixing backup files. Review command side effects before resubmitting interrupted work: retries do not undo external effects.
+
+If you put an older binary back on the current state instead of restoring the backup, stop the newer daemon on request first (a signal or `simq`'s stop, not a kill). A requested stop drops the stored "why waiting" snapshot. After an abrupt stop that snapshot can still name a wait reason the older daemon does not know (`restart_loop`); it then fails `simq explain`, `jobs` and `wait` for those queued jobs until its first scheduling pass rewrites the snapshot, a few seconds after it starts. Nothing is lost: the jobs stay queued.
 
 ## Waiting and recovery
 
