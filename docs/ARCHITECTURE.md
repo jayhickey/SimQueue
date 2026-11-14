@@ -73,7 +73,9 @@ Write-ahead spawn/action intents record a potentially interrupted host operation
 
 After a restart, interrupted work is requeued at its original queue position, at most three times per job. That includes a command that had started: its process group is stopped first, only after its recorded identity is verified, and the command then runs again from the beginning. A daemon going away is SimQueue's failure, not the job's, so no retry permission is needed and no infra retry is used up. A job submitted with `--no-restart-replay` is never replayed after it started; it ends `interrupted`. Setting `restart_recovery` to `interrupt` restores the stricter rule host-wide: a started command is replayed only if it is retryable with retry budget left. A command whose process group is still alive and cannot be verified is never requeued beside it, and an uncertain start reports uncertainty and retains resources when absence cannot be proved. Killing an old process avoids concurrent copies but cannot undo side effects. A replay repeats them. SimQueue does not guarantee exactly-once command execution, and a running command does not survive an abrupt daemon restart; it is rerun.
 
-A restart interruption never counts toward the infra-failure drain: the drain holds admission when work keeps failing on the host, and a restart says nothing about the next job. A job that reaches the restart cap ends `infra_failed` and does count.
+A restart interruption never counts toward the infra-failure drain: the drain holds admission when work keeps failing on the host, and a restart says nothing about the next job. A job that reaches the restart cap ends `infra_failed` and does count. Repeated unplanned restarts are held back by their own breaker, described under liveness below.
+
+A replayed attempt runs in the job's existing run directory. Before it starts, the earlier attempt's result bundle is moved aside and kept and its temporary directory is emptied; the build cache and the log are kept. A requeued job is not admitted again while it still holds a simulator lease from its earlier attempt: the lease is released by the pool the way it is after any ended job, so the replay holds one simulator, in the state any job would get. A pool that takes no host action never releases a lease, so there the job is admitted with the simulator it already holds and no second one. Only the command's own process group is stopped before a replay; a descendant that left the group can outlive it.
 
 A waiting client reconnects to the same job; reconnect is separate from command recovery. Planned upgrades first drain admitted work, process groups, simulator leases, pending intents and template/pool/preparation/archive/artifact workers. A drain timeout leaves its gate set and does not authorize a restart. Live destructive uninstall also requires completed drain, refuses unresolved processes/intents even with force, and re-reads ownership after stop. See [installation](INSTALL.md) for consistent backups, legacy-state transitions and matching-backup rollback. Unfinished legacy shard groups are refused before database migration or writer journal changes.
 
@@ -103,29 +105,51 @@ A separate liveness thread makes a real status round-trip every five seconds, wi
 bounded connect, write and read phases. An unanswered probe alone is not a wedge: on a
 host far over its CPU capacity an answer can take longer than the probe waits while
 every job runs normally. So the thread also watches, without taking it, whether the
-service lock is still being acquired by anyone. Only when status has gone unanswered and
-the lock has stood still for 30 seconds does simqd exit with status 70, without joining
-potentially wedged workers. Unanswered status while the lock still changes hands is
-logged once and tolerated for ten minutes, after which the socket counts as unusable.
-Time is counted as the thread observes it, so a process that was not scheduled, or a
-host that slept, is never mistaken for a wedge. The existing service manager restarts
-the daemon; running commands are then stopped and requeued as after any daemon crash.
-This check is independent of the ownership watchdog and does not change its
-report-only cleanup policy.
+service lock shows activity: somebody acquired it, or its holder moved on to the next
+step of a pass (the next reconcile action, the next resource of a teardown). Only when
+status has gone unanswered and the lock has shown no activity for 30 seconds does simqd
+exit with status 70, without joining potentially wedged workers. Unanswered status
+while the lock is still active is logged once and tolerated for five minutes, after
+which the socket counts as unusable. That limit plus the time a restart takes is kept
+well inside the clients' ten-minute reconnect window, so clients are still reconnecting
+when the restarted daemon answers. Time is counted as the thread observes it, so a
+process that was not scheduled, or a host that slept, is never mistaken for a wedge.
+The existing service manager restarts the daemon; running commands are then stopped
+and requeued as after any daemon crash. This check is independent of the ownership
+watchdog and does not change its report-only cleanup policy.
+
+What this check does not tell apart or does not see:
+
+- A single operation that holds the service lock for the whole 30 seconds without
+  reaching a next step, such as one very large directory removal on a stalled disk, is
+  indistinguishable from a deadlock and still ends the daemon. The stop reason names
+  the holder and its step.
+- Lock activity includes other clients' requests and `wait` polls. A dead accept path
+  with a client still attached is therefore found by the five-minute rule, not the
+  30-second one.
+- A tick thread stuck outside the lock while status still answers is not detected. The
+  liveness messages report when a tick last finished; that alone never exits the daemon.
 
 Only two things stop a running daemon by its own decision: that wedge, and losing the
 daemon lease to another daemon. A failed tick is logged and retried, including a
 process table that could not be read and a cleanup that could not be confirmed yet.
 
-Every stop leaves its reason in three places. The last line of the daemon log is
-written straight to the file and flushed, after the stdout pipe has been drained; a
-line written to a pipe just before `_exit` is otherwise lost. `last-stop.json` in the
-state directory holds the epoch, PID, time, exit status and reason, and needs neither
-the service lock nor the database. The audit log gets a `daemon_stopped` entry, which
-also appears in `events.jsonl`. A wedged daemon cannot write that entry, so the next
-daemon writes it from `last-stop.json` at startup. A previous daemon that left no
-record at all (killed, crashed, power loss) is logged and audited as
-`daemon_exit_unrecorded` with the age of its last heartbeat.
+Every stop leaves its reason behind. The last line of the daemon log is written
+straight to the file and flushed, after the stdout pipe has been drained; a line
+written to a pipe just before `_exit` is otherwise lost. `last-stop.json` in the state
+directory holds the epoch, PID, time, exit status and reason, and needs neither the
+service lock nor the database. The audit log gets a `daemon_stopped` entry, which also
+appears in `events.jsonl`. A wedged daemon cannot write that entry, so the next daemon
+writes it from `last-stop.json` at startup. A daemon that lost its lease writes only
+its log line and `last-stop.json`: the database and `events.jsonl` belong to the other
+daemon by then. A previous daemon that left no record at all (killed, crashed, power
+loss) is logged and audited as `daemon_exit_unrecorded` with the age of its last
+heartbeat. A wedged daemon records its reason under a five-second hard deadline, so a
+stalled disk cannot keep it alive.
+
+Each start after anything but a requested stop is audited as
+`daemon_unplanned_restart`. Three of them within 15 minutes hold admissions
+(`restart_loop`) until `simq resume`; see [recovery](PROTOCOL.md#recovery).
 
 The `simq doctor` client also reports `socket_round_trip` latency, `daemon_threads`
 and `daemon_zombies`. When the socket fails, it inspects the persisted daemon PID;

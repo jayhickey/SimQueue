@@ -156,6 +156,31 @@ final class PhysicalDeviceTests: XCTestCase {
         XCTAssertTrue(h.sims.deletedUDIDs.isEmpty)
     }
 
+    func testAPhysicalJobRequeuedByARestartHoldsThePhoneOnceAndKeepsItsPlace() throws {
+        let h = Harness()
+        let store = try JobStore(path: ":memory:")
+        let (engine, _, _) = try h.start(store: store)
+        configure(engine)
+        let job = try submit(store)
+        _ = try engine.tick()
+        let pgid: Int32 = 4242
+        h.processes.spawn(pgid)
+        _ = try store.markRunning(jobID: job.id, pid: pgid, epoch: engine.epoch, now: h.clock.now())
+        _ = try store.acquireResource(
+            kind: .processGroup, externalID: String(pgid), owner: .job(job.id),
+            epoch: engine.epoch, identity: h.processes.processIdentity(pgid), now: h.clock.now())
+        let next = try submit(store)
+        let (restarted, recovery, _) = try h.start(store: store)
+        configure(restarted)
+        XCTAssertEqual(recovery.requeued, [job.id])
+        XCTAssertEqual(h.processes.terminated, [pgid], "the first attempt is stopped before the phone is reused")
+        // The old lease row is dropped in the same tick, before admission: one phone, one
+        // lease, and the requeued job is ahead of the job submitted after it.
+        XCTAssertEqual(try restarted.tick().admitted, [job.id])
+        XCTAssertEqual(try store.physicalLeases(), [phone.udid: job.id])
+        XCTAssertEqual(try store.job(id: next.id)?.state, .queued)
+    }
+
     func testLiveUnverifiableGroupKeepsPhoneAcrossCancel() throws {
         let h = Harness()
         let store = try JobStore(path: ":memory:")

@@ -51,6 +51,8 @@ public struct SchedulerConfig: Sendable, Equatable {
     /// Bounded per-submitter/project queue allowance for CI bursts.
     public var maxQueuedPerSubmitterPerProject: Int
     public var drain: InfraDrainPolicy
+    /// Holds admissions after repeated unplanned daemon restarts.
+    public var restartBreaker = RestartBreakerPolicy()
     /// For this long after admission, a job's memory is charged against the probe's
     /// available memory again, because the probe lags behind a freshly started job.
     public var admissionSettleSeconds: Double

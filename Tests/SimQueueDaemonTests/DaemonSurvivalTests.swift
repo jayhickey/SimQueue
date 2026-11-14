@@ -55,6 +55,36 @@ final class DaemonSurvivalTests: XCTestCase {
         }
     }
 
+    /// Holds the service lock for a long step while reporting progress through the
+    /// engine, the way a reconcile pass working through a list does. After `release` is
+    /// signalled once it goes quiet (still holding the lock): a stuck step.
+    private final class WorkingExecutor: JobExecutor {
+        var requiresCommand = false
+        var drainsProcessGroups = false
+        var heldJobIDs: Set<String> = []
+        private let engineLock = NSLock()
+        private var boundEngine: Engine?
+        var engine: Engine? {
+            get { engineLock.withLock { boundEngine } }
+            set { engineLock.withLock { boundEngine = newValue } }
+        }
+        let entered = DispatchSemaphore(value: 0)
+        let goQuiet = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        private var ran = false
+        func step(store: JobStore, epoch: Int64, now: Double) throws {
+            guard !ran else { return }
+            ran = true
+            entered.signal()
+            var item = 0
+            while goQuiet.wait(timeout: .now() + 0.02) == .timedOut {
+                item += 1
+                engine?.noteProgress("directory removal \(item)")
+            }
+            release.wait()
+        }
+    }
+
     /// Fails its first `failures` steps with `error`, then does nothing.
     private final class FailingExecutor: JobExecutor {
         var requiresCommand = false
@@ -157,6 +187,55 @@ final class DaemonSurvivalTests: XCTestCase {
         XCTAssertTrue(reason.contains("service lock held by tick(), executor step, for "), reason)
     }
 
+    func testAStepThatHoldsTheLockButKeepsMovingIsNotAWedgeUntilItStops() throws {
+        let executor = WorkingExecutor()
+        let reasons = Lines()
+        let daemon = try TestDaemon(
+            executorOverride: executor,
+            configureServer: {
+                $0.livenessIntervalSeconds = 0.05
+                $0.livenessTimeoutSeconds = 0.05
+                $0.livenessFailureSeconds = 0.4
+                $0.livenessStarvedSeconds = 600
+                $0.livenessFailure = { reasons.append($0) }
+                $0.livenessLog = { _ in }
+            })
+        executor.engine = daemon.engine
+        defer { executor.goQuiet.signal(); executor.release.signal(); daemon.destroy() }
+        XCTAssertEqual(executor.entered.wait(timeout: .now() + 2), .success)
+        // Status cannot be answered (the lock is held throughout), but the holder keeps
+        // reaching its next item: slow, not stuck.
+        Thread.sleep(forTimeInterval: 1.6)
+        XCTAssertEqual(reasons.all, [], "four failure windows of honest work")
+        // It stops moving while still holding the lock: now it is a wedge.
+        executor.goQuiet.signal()
+        eventually("the stuck step is detected") { !reasons.all.isEmpty }
+        let reason = try XCTUnwrap(reasons.all.first)
+        XCTAssertTrue(reason.contains("the daemon is wedged"), reason)
+        XCTAssertTrue(reason.contains("service lock held by tick(), directory removal "), reason)
+    }
+
+    func testTheDaemonGivesUpOnItsSocketWellBeforeItsClientsGiveUpOnIt() {
+        // A client whose socket went quiet when the starvation began must still be
+        // reconnecting when the restarted daemon answers, or it abandons a job that is
+        // about to be requeued.
+        XCTAssertLessThanOrEqual(
+            DaemonServer.defaultLivenessStarvedSeconds + DaemonServer.restartAllowanceSeconds,
+            ClientReconnect.defaultSeconds - 120,
+            "the daemon's limit plus a restart must end at least two minutes inside the clients' window")
+        XCTAssertGreaterThanOrEqual(DaemonServer.restartAllowanceSeconds, 60)
+    }
+
+    func testTheLastWordsDeadlineFiresEvenIfRecordingNeverReturns() {
+        let fired = expectation(description: "hard exit")
+        let blocked = DispatchSemaphore(value: 0)
+        HardExit.arm(after: 0.05) { fired.fulfill() }
+        // The stand-in for a log flush or a state file write on a stalled disk.
+        _ = blocked.wait(timeout: .now() + 0.5)
+        wait(for: [fired], timeout: 2)
+        XCTAssertLessThanOrEqual(HardExit.lastWordsSeconds, 10, "a wedged daemon is not kept waiting long")
+    }
+
     func testTimeTheDaemonWasNotRunningIsNotCountedAsAWedge() throws {
         let exits = Counter()
         let probes = Counter()
@@ -247,6 +326,79 @@ final class DaemonSurvivalTests: XCTestCase {
         XCTAssertEqual(events.count, 1, "written to events.jsonl before the process ends, not at the next tick")
         XCTAssertNil(events[0]["job_id"])
         XCTAssertEqual(events[0]["detail"] as? String, record.summary)
+    }
+
+    func testADaemonThatLostItsLeaseWritesNothingToStateItNoLongerOwns() throws {
+        let daemon = try TestDaemon()
+        defer { daemon.destroy() }
+        _ = try daemon.side.acquireDaemonLease(ownerID: "another daemon", pid: 2, now: Date().timeIntervalSince1970)
+        eventually("the daemon stops") { daemon.server.isStopped }
+        let before = try daemon.side.auditEntries().count
+        let events = eventLines(daemon).count
+        let record = daemon.service.recordStop(reason: try XCTUnwrap(daemon.server.failure), exitCode: 70)
+        XCTAssertFalse(record.audited)
+        XCTAssertEqual(try daemon.side.auditEntries().count, before, "no audit row on another daemon's database")
+        XCTAssertEqual(eventLines(daemon).count, events, "and nothing appended to its event log")
+        XCTAssertEqual(
+            DaemonStopRecord.read(stateDirectory: daemon.paths.stateDir)?.reason, record.reason,
+            "its own stop record is still written")
+    }
+
+    // MARK: - Restart-loop breaker
+
+    func testTheRestartBreakerCountsOnlyUnplannedStartsInsideItsWindow() {
+        let policy = RestartBreakerPolicy(limit: 3, windowSeconds: 900)
+        XCTAssertEqual(policy.status(restartTimes: [100, 200], clearedAt: nil, now: 300), .normal)
+        XCTAssertEqual(
+            policy.status(restartTimes: [100, 200, 300], clearedAt: nil, now: 300),
+            .tripped(restarts: 3, windowSeconds: 900))
+        XCTAssertEqual(
+            policy.status(restartTimes: [100, 200, 300], clearedAt: nil, now: 1_050), .normal,
+            "the oldest start aged out")
+        XCTAssertEqual(
+            policy.status(restartTimes: [100, 200, 300], clearedAt: 250, now: 300), .normal,
+            "simq resume forgets earlier starts")
+        XCTAssertEqual(
+            RestartBreakerPolicy(limit: 0).status(restartTimes: [1, 2, 3, 4], clearedAt: nil, now: 5), .normal,
+            "0 turns it off")
+        XCTAssertEqual(RestartBreakerPolicy().limit, 3)
+        XCTAssertEqual(RestartBreakerPolicy().windowSeconds, 900)
+    }
+
+    func testUnplannedRestartsHoldAdmissionsAndPlannedOnesDoNot() throws {
+        let dir = scratch("sqb")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        // Three clean stop-and-start cycles: nothing is counted.
+        var daemon = try TestDaemon(stateDir: dir)
+        for _ in 0..<3 {
+            daemon.service.recordStop(reason: "requested (SIGTERM)", exitCode: 0)
+            daemon.stop()
+            daemon = try TestDaemon(stateDir: dir)
+            daemon.service.reportPreviousStop(previousPID: 1, heartbeatAgeSeconds: 1)
+        }
+        XCTAssertTrue(try audits(daemon, RestartBreakerPolicy.auditType).isEmpty)
+        let fine = try daemon.submit(SubmitParams(project: "ok", submitter: "test", minSims: 0)).job
+        XCTAssertEqual(try daemon.wait(fine.id).state, .succeeded)
+
+        // Three starts after a daemon that failed or vanished: admissions are held.
+        for cycle in 0..<3 {
+            if cycle == 0 { daemon.service.recordStop(reason: "socket liveness: the daemon is wedged", exitCode: 70) }
+            daemon.stop()
+            daemon = try TestDaemon(stateDir: dir)
+            daemon.service.reportPreviousStop(previousPID: 1, heartbeatAgeSeconds: 40)
+        }
+        defer { daemon.destroy() }
+        XCTAssertEqual(try audits(daemon, RestartBreakerPolicy.auditType).count, 3)
+        let held = try daemon.submit(SubmitParams(project: "held", submitter: "test", minSims: 0)).job
+        try eventually("the breaker shows in status") {
+            guard case .status(let status) = try daemon.result(.status) else { return false }
+            return status.globalWaitReasons.contains { $0.code == "restart_loop" }
+        }
+        XCTAssertEqual(try daemon.job(held.id).state, .queued)
+        XCTAssertEqual(try daemon.job(held.id).waitReasons.first?.code, "restart_loop")
+
+        _ = try daemon.result(.resume)
+        XCTAssertEqual(try daemon.wait(held.id).state, .succeeded, "simq resume clears it")
     }
 
     func testAWedgedDaemonStillLeavesItsReasonAndTheNextDaemonAuditsIt() throws {

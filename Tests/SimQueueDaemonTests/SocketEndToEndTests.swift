@@ -420,9 +420,16 @@ final class DaemonConfigTests: XCTestCase {
             try DaemonConfig.parse(Data(#"{"restart_recovery": "interrupt"}"#.utf8)).restartRecovery, .interrupt)
         XCTAssertEqual(
             try DaemonConfig.parse(Data(#"{"restart_recovery": "requeue"}"#.utf8)).restartRecovery, .requeue)
+        XCTAssertEqual(config.scheduler.restartBreaker, RestartBreakerPolicy(limit: 3, windowSeconds: 900))
+        let breaker = try DaemonConfig.parse(
+            Data(#"{"max_unplanned_restarts": 5, "unplanned_restart_window_seconds": 120}"#.utf8))
+        XCTAssertEqual(breaker.scheduler.restartBreaker, RestartBreakerPolicy(limit: 5, windowSeconds: 120))
+        XCTAssertEqual(
+            try DaemonConfig.parse(Data(#"{"max_unplanned_restarts": 0}"#.utf8)).scheduler.restartBreaker.limit, 0)
         for bad in [
             #"{"default_max_retries": 11}"#, #"{"default_max_retries": -1}"#, #"{"max_concurrent_exclusive": 0}"#,
-            #"{"restart_recovery": "replay"}"#,
+            #"{"restart_recovery": "replay"}"#, #"{"max_unplanned_restarts": -1}"#,
+            #"{"unplanned_restart_window_seconds": 0}"#,
         ] {
             XCTAssertThrowsError(try DaemonConfig.parse(Data(bad.utf8)), bad)
         }

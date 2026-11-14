@@ -168,6 +168,10 @@ public final class Engine {
     /// The daemon supplies a lock handoff; standalone engines execute inline.
     /// Only host calls belong here, never database or scheduler mutations.
     public var hostWork: PoolHostWork = { try $0() }
+    /// Called with a short label as a long pass moves from one item to the next (one
+    /// reconcile action, one resource of a teardown). The daemon uses it to tell a pass
+    /// that holds the service lock while working through a list from one that is stuck.
+    public var noteProgress: (String) -> Void = { _ in }
 
     public func hostCall<T>(_ body: () throws -> T) throws -> T {
         var result: T?
@@ -546,6 +550,24 @@ public final class Engine {
         let drainPolicy = scheduler.config.drain
         let failures = try store.allInfraFailureTimes(since: now - drainPolicy.windowSeconds)
         let drain = drainPolicy.status(failureTimes: failures, clearedAt: control.drainClearedAt, now: now)
+        let restartBreaker = try restartBreakerStatus(control: control, now: now)
+        // A job requeued after a daemon restart or an infra retry can still hold the pool
+        // sims of its previous attempt until the pool pass releases them. Admitting it now
+        // would lease more on top and hand the command both. It waits, like a job whose
+        // previous processes are still being cleaned up; the release then goes through
+        // the same path as after any ended job. Only where that release will happen: a
+        // pool that is off or takes no host action never releases a lease, and the job
+        // must not wait for it forever (`leasePoolSims` keeps it to the sims it has).
+        var staleLeaseHolders: Set<String> = []
+        if let pool, pool.actsOnHost(cleanupMode: reliability.cleanupMode) {
+            let queuedIDs = Set(queued.map(\.id))
+            staleLeaseHolders = Set(
+                leases.compactMap { sim -> String? in
+                    guard sim.phase == .leased, let lease = sim.leaseID, lease.hasPrefix("job:") else { return nil }
+                    let jobID = String(lease.dropFirst("job:".count))
+                    return queuedIDs.contains(jobID) ? jobID : nil
+                })
+        }
         var input = SchedulerInput(
             now: now,
             queued: queued,
@@ -558,13 +580,14 @@ public final class Engine {
             loadThrottledPreviously: loadThrottled,
             allowNewBoots: pool == nil,
             lastAdmissionAt: lastAdmissionAt,
-            cleanupJobIDs: cleanupOwners,
+            cleanupJobIDs: cleanupOwners.union(staleLeaseHolders),
             storageFailure: admissionStorageFailure,
             readySimsByTemplate: try readySimsByTemplate(),
             defaultHostTemplate: defaultHostTemplate,
             templateCapacityKeys: try templateCapacityKeys()
         )
         input.physicalDevices = devices
+        input.restartBreaker = restartBreaker
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
             try store.setLoadThrottled(
@@ -598,6 +621,16 @@ public final class Engine {
         return TickResult(
             plan: plan, timeouts: timeoutReport, admitted: admitted, drain: drain, host: host,
             globalReasons: scheduler.globalWaitReasons(input))
+    }
+
+    /// Whether repeated unplanned daemon restarts are holding admissions right now.
+    public func restartBreakerStatus(control: QueueControl? = nil, now: Double) throws -> RestartBreakerStatus {
+        let policy = scheduler.config.restartBreaker
+        guard policy.limit > 0 else { return .normal }
+        let restarts = try store.auditTimes(type: RestartBreakerPolicy.auditType, since: now - policy.windowSeconds)
+        guard restarts.count >= policy.limit else { return .normal }
+        let clearedAt = try (control ?? store.queueControl()).drainClearedAt
+        return policy.status(restartTimes: restarts, clearedAt: clearedAt, now: now)
     }
 
     /// What exists right now, according to the injected backends.
@@ -1027,6 +1060,7 @@ public final class Engine {
                     }
                     stillParked[key] = ParkedLeftover(action: action, what: what, confirmedAt: now)
                 case .execute:
+                    noteProgress("reconcile \(action.progressLabel)")
                     try perform(action, now: now)
                     try store.clearSighting(key)
                     report.executed.append(action)
@@ -1131,4 +1165,16 @@ struct BootDeferral: Equatable {
     var since: Double
     var auditedAt: Double
     var passes: Int
+}
+
+extension ReconcileAction {
+    /// What kind of step this is, for progress reporting (no identifiers).
+    var progressLabel: String {
+        switch self {
+        case .killProcessGroup: return "process group stop"
+        case .deleteSim: return "sim delete"
+        case .removeDirectory: return "directory removal"
+        case .markGone, .adopt, .revokeLease, .reportForeignSim: return "bookkeeping"
+        }
+    }
 }

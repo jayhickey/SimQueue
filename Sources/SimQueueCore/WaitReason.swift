@@ -9,6 +9,8 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case device(state: String, detail: String)
     case paused
     case draining(recentInfraFailures: Int)
+    /// The daemon keeps restarting unexpectedly; admissions are held (`simq resume`).
+    case restartLoop(restarts: Int, windowSeconds: Double)
     case memoryPressure(level: MemoryPressure, stopAt: MemoryPressure)
     case swapGrowing(bytesPerMinute: Double, limitBytesPerMinute: Double)
     case swapHigh(usedBytes: UInt64, maxBytes: UInt64)
@@ -37,6 +39,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .device(let state, _): return state
         case .paused: return "paused"
         case .draining: return "draining"
+        case .restartLoop: return "restart_loop"
         case .memoryPressure: return "memory_pressure"
         case .swapGrowing: return "swap_growing"
         case .swapHigh: return "swap_high"
@@ -64,7 +67,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
                 "gradual admission: \(active)/\(limit) active commands; waiting for the next resource observation, rechecks automatically"
         case .cleanupPending(let jobID):
             return
-                "previous command processes for \(jobID) still hold resources; cleanup must finish before retry (simq doctor)"
+                "previous attempt of \(jobID) still holds processes or a leased simulator; cleanup must finish before retry (simq doctor)"
         case .storageUnavailable(let detail): return "job storage unavailable: \(detail)"
         case .device(let state, let detail):
             return "\(state == "device_locked" || state == "device_busy" ? "waiting" : "blocked"):\(state): \(detail)"
@@ -72,6 +75,10 @@ public enum WaitReason: Sendable, Equatable, Codable {
             return "queue is paused (simq resume)"
         case .draining(let count):
             return "draining after \(count) recent infra failures (simq resume to clear)"
+        case .restartLoop(let restarts, let window):
+            return
+                "daemon restarted unexpectedly \(restarts) times in the last \(Int((window / 60).rounded())) min; "
+                + "admissions held so jobs are not rerun in a loop. See simqd.log and last-stop.json, then simq resume"
         case .memoryPressure(let level, let stopAt):
             return "memory pressure is \(level.rawValue) (stops at \(stopAt.rawValue))"
         case .swapGrowing(let rate, let limit):

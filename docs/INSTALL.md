@@ -171,6 +171,17 @@ ditto "$simqueue_state" "$simqueue_backup"
 
 Protect the backup like the original state. Waiting clients recover unanswered observations or reconnect to the same job for up to 10 minutes (`SIMQ_RECONNECT_SECONDS`) while the daemon is away. A longer backup/download can exhaust that client budget while the job remains queued; inspect `simq jobs` and reattach with `simq wait JOB_ID` instead of submitting a duplicate. Prepare large backups/downloads before the short handoff when possible. Reconnect cannot preserve arbitrary running commands across an abrupt restart.
 
+### Upgrading to a version that requeues interrupted jobs
+
+Earlier versions ended a job whose command had started as `interrupted` when the daemon restarted, unless the job was retryable. Current versions stop the command and run the job again ([recovery](PROTOCOL.md#recovery)). An upgrade is itself a restart: the first start of the new daemon applies the new rule to whatever the old daemon left running, including jobs that were submitted when "never replayed" was the contract and that could not yet pass `--no-restart-replay`. A job that publishes or uploads would do so a second time.
+
+Use one of these two procedures for that upgrade:
+
+- **Drain first.** Step 1 above, completed: `simq drain` reports "Drained; safe to restart simqd", so no job is running when the daemon stops and there is nothing to replay. This is the normal procedure and the recommended one.
+- **Start once with the old rule.** If the old daemon cannot be drained (it has already exited, or was killed), put `"restart_recovery": "interrupt"` in `config.json` before the new daemon's first start. Jobs left behind then end `interrupted`, exactly as before. Remove the setting and restart (drained) afterwards to get requeue-after-restart.
+
+After the upgrade, add `--no-restart-replay` to any job whose side effects must not repeat.
+
 Before upgrading an older installation to v1:
 
 - Update caller scripts from `--memory-mib` to `--memory-hint-mib` if they use the old spelling. The hint is optional and does not reserve RAM or enforce a limit; ordinary jobs can omit it.

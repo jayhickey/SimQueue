@@ -76,7 +76,7 @@ let requestTimeoutSeconds: Double = {
 let daemonReconnectSeconds: Double = {
     guard let text = ProcessInfo.processInfo.environment["SIMQ_RECONNECT_SECONDS"],
         let value = Double(text), value.isFinite, value >= 0
-    else { return 600 }
+    else { return ClientReconnect.defaultSeconds }
     return value
 }()
 

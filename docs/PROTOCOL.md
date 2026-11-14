@@ -108,7 +108,21 @@ A daemon restart does not drop work. Queued work keeps its place. Work the previ
 
 Three cases still end `interrupted`, with a warning to inspect side effects before resubmitting: a job submitted with `--no-restart-replay` (`no_restart_replay` over the socket and MCP) whose command had started; a command whose process group is still alive but cannot be verified as SimQueue's own, since requeueing would run a second copy beside it; and an unknown start, where absence of a PID alone does not prove absence of execution. With `restart_recovery` set to `interrupt` in the daemon config, every started command also ends `interrupted` unless it is retryable with retry budget left: the rule SimQueue used before restart requeue became the default.
 
-Stopping the previous process prevents simultaneous duplicates but cannot undo earlier side effects, and a replay repeats them. Use `--no-restart-replay` for commands that publish, upload or otherwise must not run twice. Jobs ended `interrupted` by a restart do not count toward the infra-failure drain.
+Stopping the previous process prevents simultaneous duplicates but cannot undo earlier side effects, and a replay repeats them. Use `--no-restart-replay` for commands that publish, upload or otherwise must not run twice. Only the command's own process group is stopped. A descendant that left that group (it started its own session or process group, or handed work to a system service) is not stopped and can still be running beside the replay; this applies equally to retries and run timeouts. Pass `--no-restart-replay` for such commands too, or have them refuse to start while their earlier work is still running.
+
+A replay, like an infra retry, runs in the job's one run directory, so the log reads as a single history:
+
+| Path | On a later attempt |
+| --- | --- |
+| `combined.log` | Appended to; each attempt starts with its own `=== simq <job> attempt N` line |
+| `SIMQ_RESULT_BUNDLE` (`Result.xcresult`) | The earlier attempt's bundle is moved aside as `Result.attempt-N.xcresult` (N is that attempt) and kept. `xcodebuild` refuses to start when `-resultBundlePath` exists |
+| `SIMQ_TMPDIR` | Emptied |
+| `SIMQ_DERIVED_DATA` | Kept: it is a build cache and tolerates an interrupted build |
+| `job.json`, `summary.md`, the job's `events.jsonl` | Rewritten when the attempt ends |
+
+Anything else the command wrote into `SIMQ_RUN_DIR` is left as it was; a command that fails when its own output already exists has to handle that itself. A job requeued with a leased simulator does not start again until that lease has been released the way it is after any ended job, so a replay never holds two simulators and gets a simulator in the state any job would. A pool that takes no host action (`pool.mode` `report-only`, or `follow-cleanup` under report-only cleanup) never releases a lease; there the requeued job keeps the simulator it already holds and is not given another. `--reset-app` and `--fresh-sim` apply to every attempt.
+
+Jobs ended `interrupted` by a restart do not count toward the infra-failure drain. Restarts are counted on their own: after three unplanned daemon starts within 15 minutes (`max_unplanned_restarts`, `unplanned_restart_window_seconds`), admissions are held with the reason `restart_loop` until `simq resume`, so a daemon that keeps dying does not keep rerunning the queue. A start is unplanned when the previous daemon recorded a failure or left no stop record; a requested stop (a signal, a stop request, a drained upgrade) never counts.
 
 Client recovery is separate: `run`, `submit` and `wait` reconnect with backoff for up to 10 minutes (`SIMQ_RECONNECT_SECONDS`; 0 turns it off) after a transport interruption, and the window restarts whenever the daemon answers again. A submit is retried only when the connect failed, so nothing was sent. Only `wait`, log reads and the final job read are repeated after an ambiguous reply, using the same job ID and log offset; submission and other mutations are never replayed. A reattaching `wait` first reads the job from the new daemon, then waits on it with no recovery deadline, so a job requeued by the restart can wait in the queue as long as it needs. An explicit wait deadline still wins. Receive deadlines cover complete response lines, including partial bytes; local socket connect/send retain their existing system behavior. Recovery does not promise arbitrary command survival or exactly-once execution. Planned upgrades use drain, successful completion, Homebrew upgrade, service restart and version/health checks. A timeout exits 7 and leaves draining set; `simq resume` cancels that maintenance gate. A new daemon clears the in-memory planned gate and resumes queued jobs.
 
@@ -124,6 +138,7 @@ State defaults to `~/Library/Application Support/SimQueue`; `--state-dir` or `SI
 - `priority_aliases`, `aging_points_per_minute` and `aging_max_boost` configure priority. `max_load5`/`resume_below_load5` configure optional absolute load hysteresis, which remains binding with sustained CPU admission as well as fallback load recovery.
 - `default_run_timeout_seconds`, `default_queue_timeout_seconds`, `kill_grace_seconds`, and `default_max_retries` govern defaults.
 - `restart_recovery`: `requeue` (default) reruns a job whose command had started when the daemon restarted; `interrupt` ends it `interrupted` unless it is retryable with budget left. See [recovery](#recovery).
+- `max_unplanned_restarts` (default 3; 0 turns it off) and `unplanned_restart_window_seconds` (default 900) set the restart-loop breaker.
 - `cleanup_mode` starts report-only for orphan cleanup. Enforcement remains namespace/ownership/identity checked, verified and rate limited. Current anomaly state can open a cleanup breaker; `doctor` explains it.
 - `age_rules.artifact_retention_days` controls retained job files. Explicit pins keep required metadata; inspect `gc` before deleting artifacts. Database archival and daemon log limits are described in the architecture and release evidence.
 

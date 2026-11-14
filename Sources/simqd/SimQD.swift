@@ -323,6 +323,9 @@ struct Run: ParsableCommand {
         // reason: the log line and `last-stop.json` need no lock; the audit entry is
         // written only if the service lock can still be taken.
         server.livenessFailure = { reason in
+            // Everything below touches the disk and one step waits for the service lock.
+            // A stalled disk must not keep a wedged daemon alive: end it regardless.
+            HardExit.arm(after: HardExit.lastWordsSeconds) { _exit(SimQExitCode.internalError.rawValue) }
             RotatingDaemonLog.drain(timeout: 0.5)
             RotatingDaemonLog.writeFinal("simqd: stopped: \(reason); exiting for restart")
             service.recordStop(reason: reason, exitCode: SimQExitCode.internalError.rawValue)

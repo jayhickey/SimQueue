@@ -78,7 +78,11 @@ struct AgentGuide: ParsableCommand {
         and runs again from the start (bounded per job). Pass --no-restart-replay when a
         command's side effects must not repeat: it then ends interrupted instead. Hosts with
         restart_recovery "interrupt" replay started work only with --retryable or --retries N.
-        Replays and retries do not undo side effects.
+        Replays and retries do not undo side effects. A replay keeps SIMQ_RUN_DIR and
+        SIMQ_DERIVED_DATA; the earlier attempt's result bundle is moved aside as
+        Result.attempt-N.xcresult and SIMQ_TMPDIR is emptied. Only the command's own process
+        group is stopped first: anything it detached (its own daemon, a new session) can
+        still be running beside the replay.
 
         Physical iOS devices
         Configure devices explicitly, then use simq devices for health and exclusive leases.

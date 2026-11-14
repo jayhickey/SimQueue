@@ -117,13 +117,23 @@ public final class DaemonServer: @unchecked Sendable {
     /// the daemon counts as wedged.
     public var livenessFailureSeconds: Double = 30
     /// How long status may go unanswered while the daemon is otherwise working (the lock
-    /// still changes hands) before the socket counts as unusable. Much longer: on an
-    /// overloaded host a status answer regularly takes longer than the probe waits, and
-    /// restarting a working daemon interrupts every running job.
-    public var livenessStarvedSeconds: Double = 600
+    /// still changes hands) before the socket counts as unusable. Much longer than the
+    /// wedge window: on an overloaded host a status answer regularly takes longer than
+    /// the probe waits, and restarting a working daemon interrupts every running job.
+    public var livenessStarvedSeconds: Double = DaemonServer.defaultLivenessStarvedSeconds
+    /// Default for `livenessStarvedSeconds`: five minutes. It must stay well inside the
+    /// clients' reconnect window (`ClientReconnect.defaultSeconds`): a client whose socket
+    /// went quiet when the starvation began has to still be reconnecting when the
+    /// restarted daemon answers, or it gives up on a job that is about to be requeued.
+    public static let defaultLivenessStarvedSeconds: Double = 300
+    /// Time allowed for the restart itself (service manager throttle, recovery, stopping
+    /// the previous commands) between the exit above and the next daemon answering.
+    public static let restartAllowanceSeconds: Double = 120
     /// A wedged lock cannot be joined safely. Exit directly so KeepAlive can restart.
-    /// The argument is the reason; the default writes it to the daemon log first.
+    /// The argument is the reason; the default writes it to the daemon log first, under
+    /// a hard deadline so a stalled disk cannot keep a wedged daemon alive.
     public var livenessFailure: @Sendable (String) -> Void = { reason in
+        HardExit.arm(after: HardExit.lastWordsSeconds) { _exit(70) }
         RotatingDaemonLog.writeFinal("simqd: \(reason); exiting for restart")
         _exit(70)
     }
@@ -183,15 +193,29 @@ public final class DaemonServer: @unchecked Sendable {
         return false
     }
 
+    private func lastTickDescription() -> String {
+        service.secondsSinceLastTick.map { "last tick finished \(Int($0.rounded()))s ago" } ?? "no tick has finished"
+    }
+
     /// Exits the daemon when it is wedged, and only then.
     ///
     /// A failed probe alone proves little: with the host at many times its CPU capacity
     /// an answer can take longer than the probe waits while every job is running fine.
     /// So two things are measured: how long status has gone unanswered, and how long the
-    /// service lock has gone without being acquired by anyone. Both standing still for
-    /// `livenessFailureSeconds` is a wedge. Unanswered status with the lock still moving
-    /// is an overloaded daemon: it is logged once and left alone until
-    /// `livenessStarvedSeconds`, when the socket is as good as gone for clients anyway.
+    /// service lock has shown no activity: nobody acquired it, and its holder did not
+    /// move on to a next step. Both standing still for `livenessFailureSeconds` is a
+    /// wedge. Unanswered status with the lock still active is an overloaded daemon: it
+    /// is logged once and left alone until `livenessStarvedSeconds`, when the socket is
+    /// as good as gone for clients anyway.
+    ///
+    /// Known limits. Lock activity includes other clients' requests and `wait` polls, so
+    /// a dead accept path with a client still attached is found by the slower
+    /// `livenessStarvedSeconds` rule, not the fast one. A single operation that holds
+    /// the lock for the whole window without reaching a next step (one very large
+    /// directory removal on a stalled disk) is indistinguishable from a deadlock and
+    /// still exits; the reason names the holder and its step. A tick thread that is stuck
+    /// outside the lock while status still answers is not detected at all: the messages
+    /// report when a tick last finished, but that alone never exits the daemon.
     ///
     /// Time is counted as this thread observes it, capped per round, so a process that
     /// was itself not scheduled (or a host that slept) is never mistaken for a wedge.
@@ -199,7 +223,7 @@ public final class DaemonServer: @unchecked Sendable {
         var last = livenessUptime()
         var unanswered = 0.0
         var lockIdle = 0.0
-        var lastAcquisitions = service.lockAcquisitions
+        var lastAcquisitions = service.lockProgress
         var warned = false
         while !isStopped {
             if livenessWake.wait(timeout: .now() + livenessIntervalSeconds) == .success { return }
@@ -209,7 +233,7 @@ public final class DaemonServer: @unchecked Sendable {
             let now = livenessUptime()
             let observed = min(max(0, now - last), livenessIntervalSeconds + livenessTimeoutSeconds + 1)
             last = now
-            let acquisitions = service.lockAcquisitions
+            let acquisitions = service.lockProgress
             if acquisitions != lastAcquisitions {
                 lastAcquisitions = acquisitions
                 lockIdle = 0
@@ -229,21 +253,21 @@ public final class DaemonServer: @unchecked Sendable {
                     "socket liveness: status unanswered for \(Int(unanswered))s and the service lock idle for "
                         + "\(Int(lockIdle))s; the daemon is wedged ("
                         + (service.lockHolderDescription.map { "service lock held by \($0)" }
-                            ?? "service lock free, nobody taking it") + ")")
+                            ?? "service lock free, nobody taking it") + "; " + lastTickDescription() + ")")
                 return
             }
             if unanswered >= livenessStarvedSeconds {
                 livenessFailure(
-                    "socket liveness: status unanswered for \(Int(unanswered))s although the daemon is working; "
-                        + "the socket is unusable")
+                    "socket liveness: status unanswered for \(Int(unanswered))s although the daemon is working ("
+                        + lastTickDescription() + "); the socket is unusable")
                 return
             }
             if !warned {
                 warned = true
                 livenessLog(
                     "socket liveness: status unanswered for \(Int(unanswered))s but the daemon is working "
-                        + "(service lock last taken \(Int(lockIdle))s ago); not restarting. The host is likely "
-                        + "overloaded.")
+                        + "(service lock last active \(Int(lockIdle))s ago; " + lastTickDescription()
+                        + "); not restarting. The host is likely overloaded.")
             }
         }
     }

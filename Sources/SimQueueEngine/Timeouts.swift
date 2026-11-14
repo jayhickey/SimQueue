@@ -142,6 +142,7 @@ extension Engine {
                 uniquingKeysWith: { first, _ in first })
             : [:]
         for resource in resources {
+            noteProgress("teardown \(resource.kind.rawValue)")
             do {
                 if cleanupPending && resource.kind != .processGroup {
                     // Descendants may still use these leases, devices or paths. The

@@ -173,11 +173,15 @@ extension Engine {
     /// a shortfall means the pool changed in between: audited, and the job runs with what
     /// it got (its grant stays as admitted).
     func leasePoolSims(count: Int, jobID: String, now: Double) throws {
-        var leased = 0
-        for _ in 0..<count {
+        // Sims the job still holds from an earlier attempt count toward what it needs.
+        // On a pool that acts, a requeued job is not admitted until those are released
+        // (`Engine.tick`); on one that takes no host action nothing ever releases them,
+        // and leasing a second set on top would hand the command both.
+        let lease = Self.poolLeaseID(jobID: jobID)
+        var leased = try store.poolSims().filter { $0.phase == .leased && $0.leaseID == lease }.count
+        for _ in 0..<max(0, count - leased) {
             guard
-                try acquirePoolSim(
-                    leaseID: Self.poolLeaseID(jobID: jobID), template: store.job(id: jobID)?.command?.template) != nil
+                try acquirePoolSim(leaseID: lease, template: store.job(id: jobID)?.command?.template) != nil
             else { break }
             leased += 1
         }

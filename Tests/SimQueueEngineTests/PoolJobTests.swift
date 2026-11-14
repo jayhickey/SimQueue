@@ -70,6 +70,89 @@ final class PoolJobTests: XCTestCase {
         return (engine, config)
     }
 
+    /// A job requeued by a daemon restart still holds its first attempt's sim until the
+    /// pool pass releases it. With a spare ready sim, the first tick used to re-admit it
+    /// at once and lease the spare on top: two sims, with the used one first.
+    func testAJobRequeuedByARestartWaitsForItsOldSimToBeReleasedAndNeverHoldsTwo() throws {
+        let harness = Harness()
+        harness.reliability.cleanupMode = .enforce
+        harness.probe.update { host in
+            host.cpuCount = 8
+            host.load1 = 1
+            host.load5 = 3
+        }
+        let store = try JobStore(path: ":memory:", maxQueuedPerSubmitterPerProject: 0)
+        let (engine, _, _) = try harness.start(store: store)
+        var config = SimPoolConfig()
+        config.maxSims = 2
+        config.warmMin = 2
+        engine.pool = config
+        for _ in 0..<12 {
+            if try engine.poolCapacity().idleRunning >= 2 { break }
+            _ = try engine.poolPass(config: config)
+            harness.clock.advance(by: 10)
+        }
+        XCTAssertEqual(try engine.poolCapacity().idleRunning, 2, "two warm sims: one to use, one spare")
+
+        let job = try harness.submit(store, retryable: false, resources: ResourceRequest(minSims: 1))
+        XCTAssertEqual(try engine.tick().admitted, [job.id])
+        let first = try engine.poolSimUDIDs(jobID: job.id)
+        XCTAssertEqual(first.count, 1)
+        let pgid: Int32 = 4242
+        harness.processes.spawn(pgid)
+        XCTAssertTrue(try store.markRunning(jobID: job.id, pid: pgid, epoch: engine.epoch, now: harness.clock.now()))
+        _ = try store.acquireResource(
+            kind: .processGroup, externalID: "\(pgid)", owner: .job(job.id), epoch: engine.epoch,
+            identity: try harness.processes.processIdentity(pgid), now: harness.clock.now())
+
+        // The daemon restarts. The command is stopped and the job requeued; its lease is
+        // still on the books because no pool pass has run yet, and a spare sim is ready.
+        let (restarted, recovery, _) = try harness.start(store: store)
+        restarted.pool = config
+        XCTAssertEqual(recovery.requeued, [job.id])
+        XCTAssertEqual(try restarted.poolSimUDIDs(jobID: job.id), first)
+        XCTAssertEqual(try restarted.poolCapacity().idleRunning, 1, "the spare")
+
+        let held = try restarted.tick()
+        XCTAssertTrue(held.admitted.isEmpty, "not while it still holds the previous attempt's sim")
+        XCTAssertEqual(held.plan.waiting.first?.reasons, [.cleanupPending(jobID: job.id)])
+        XCTAssertEqual(try restarted.poolSimUDIDs(jobID: job.id), first, "nothing leased on top")
+
+        // The pool pass gives the old sim back the way it does after any ended job.
+        XCTAssertEqual(try restarted.poolPass(config: config).releasedFromJobs, first)
+        XCTAssertTrue(try restarted.poolSimUDIDs(jobID: job.id).isEmpty)
+        XCTAssertEqual(try restarted.tick().admitted, [job.id])
+        XCTAssertEqual(try restarted.poolSimUDIDs(jobID: job.id).count, 1, "one sim, like a first attempt")
+        XCTAssertEqual(try restarted.poolCapacity().busyRunning, 1)
+    }
+
+    /// A pool in report-only mode never releases a lease, so the hold above would never
+    /// end there. The job is admitted, and keeps to the sim it already has.
+    func testOnAPoolThatTakesNoHostActionARequeuedJobIsNotHeldAndStillGetsOnlyOneSim() throws {
+        let harness = Harness()
+        harness.probe.update { host in
+            host.cpuCount = 8
+            host.load1 = 1
+            host.load5 = 3
+        }
+        let store = try JobStore(path: ":memory:", maxQueuedPerSubmitterPerProject: 0)
+        let (engine, _, _) = try harness.start(store: store)
+        var config = SimPoolConfig()
+        config.maxSims = 2
+        config.mode = .reportOnly
+        engine.pool = config
+        let job = try harness.submit(store, retryable: false, resources: ResourceRequest(minSims: 1))
+        // What a restart leaves on such a host: the job queued again, its earlier lease
+        // still on the books, and a spare ready sim.
+        try store.savePoolSim(
+            PoolSim(udid: "U1", name: "simq-pool-1-1", phase: .leased, createdAt: 0, leaseID: "job:\(job.id)"))
+        try store.savePoolSim(PoolSim(udid: "U2", name: "simq-pool-2-1", phase: .ready, createdAt: 0))
+
+        XCTAssertEqual(try engine.tick().admitted, [job.id], "nothing here will ever release the lease")
+        XCTAssertEqual(try engine.poolSimUDIDs(jobID: job.id), ["U1"], "no second sim on top")
+        XCTAssertEqual(try store.poolSims().first { $0.udid == "U2" }?.phase, .ready)
+    }
+
     /// Session 3: J-0006's sim was shut down at release while J-0007/J-0008 waited, and the
     /// replacement boot was then deferred by load for 9 minutes. With queued sim demand, an
     /// ended job's sim is handed off (kept booted, ready) instead.

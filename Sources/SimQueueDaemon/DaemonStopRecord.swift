@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import Foundation
+import SimQueueCore
 import SimQueueProtocol
 
 /// Why a daemon stopped, kept in `<state dir>/last-stop.json`.
@@ -43,7 +44,14 @@ public struct DaemonStopRecord: Codable, Equatable, Sendable {
     /// A previous daemon that left no record: killed, crashed, or the host lost power.
     public static let unrecordedAuditType = "daemon_exit_unrecorded"
     /// Audit types without a job that still belong in `events.jsonl`.
-    public static let eventLogTypes: Set<String> = [auditType, unrecordedAuditType]
+    public static let eventLogTypes: Set<String> = [
+        auditType, unrecordedAuditType, RestartBreakerPolicy.auditType,
+    ]
+
+    /// A stop somebody asked for (a signal, a stop request): the daemon exited with
+    /// status 0. Anything else, including no record at all, is an unplanned stop and
+    /// counts toward the restart-loop breaker.
+    public var planned: Bool { exitCode == 0 }
 
     public static func path(stateDirectory: String) -> String { stateDirectory + "/last-stop.json" }
 

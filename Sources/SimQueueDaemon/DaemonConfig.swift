@@ -287,6 +287,8 @@ public struct DaemonConfig: Sendable, Equatable {
         var maxQueuedTotal: Int?
         var defaultMaxRetries: Int?
         var restartRecovery: String?
+        var maxUnplannedRestarts: Int?
+        var unplannedRestartWindowSeconds: Double?
         var maxConcurrentExclusive: Int?
         var maxLoad5: Double?
         var resumeBelowLoad5: Double?
@@ -466,6 +468,8 @@ public struct DaemonConfig: Sendable, Equatable {
             case maxQueuedTotal = "max_queued_total"
             case defaultMaxRetries = "default_max_retries"
             case restartRecovery = "restart_recovery"
+            case maxUnplannedRestarts = "max_unplanned_restarts"
+            case unplannedRestartWindowSeconds = "unplanned_restart_window_seconds"
             case maxConcurrentExclusive = "max_concurrent_exclusive"
             case maxLoad5 = "max_load5"
             case resumeBelowLoad5 = "resume_below_load5"
@@ -705,6 +709,18 @@ public struct DaemonConfig: Sendable, Equatable {
                         + RestartRecovery.allCases.map(\.rawValue).joined(separator: ", "))
             }
             config.restartRecovery = recovery
+        }
+        if let limit = file.maxUnplannedRestarts {
+            guard (0...1000).contains(limit) else {
+                throw LoadError.invalid("max_unplanned_restarts must be 0...1000 (0 turns the breaker off)")
+            }
+            config.scheduler.restartBreaker.limit = limit
+        }
+        if let window = file.unplannedRestartWindowSeconds {
+            guard window.isFinite, window > 0, window <= 7 * 86_400 else {
+                throw LoadError.invalid("unplanned_restart_window_seconds must be > 0 and at most 7 days")
+            }
+            config.scheduler.restartBreaker.windowSeconds = window
         }
         if let age = file.ageRules {
             var rules = config.reliability.ageRules

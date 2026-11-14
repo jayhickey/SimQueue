@@ -358,6 +358,10 @@ public enum ProcessTableRead {
     }
 
     public static let maxAttempts = 8
+    /// Largest table read. Far above any real process table (the kernel's process limit
+    /// is in the thousands); it keeps a misreported size from growing the buffer without
+    /// bound. A table past it fails the read like any other, and the caller retries later.
+    public static let maxEntries = 131_072
 
     /// Entries of slack for a table of `count` entries: a quarter more, at least 64.
     static func slack(for count: Int) -> Int { max(64, count / 4) }
@@ -366,6 +370,7 @@ public enum ProcessTableRead {
     /// the bytes written, or the errno it failed with.
     public static func entries<Entry>(
         of _: Entry.Type, empty: Entry, call: String, maxAttempts: Int = ProcessTableRead.maxAttempts,
+        maxEntries: Int = ProcessTableRead.maxEntries,
         read: (UnsafeMutableRawBufferPointer?) -> Outcome
     ) throws -> [Entry] {
         let stride = MemoryLayout<Entry>.stride
@@ -380,7 +385,12 @@ public enum ProcessTableRead {
             case .failed(let code): throw ProcessControlError.system(call: call, errno: code)
             case .bytes(let needed):
                 let count = needed / stride
-                capacity = max(capacity * 2, count + slack(for: count))
+                // Already at the ceiling and it still did not fit, or the table itself
+                // is past it: growing further is not an option.
+                guard count <= maxEntries, capacity < maxEntries else {
+                    throw ProcessControlError.system(call: call, errno: ENOMEM)
+                }
+                capacity = min(maxEntries, max(capacity * 2, count + slack(for: count)))
             }
             var entries = [Entry](repeating: empty, count: capacity)
             let outcome = entries.withUnsafeMutableBytes { read($0) }

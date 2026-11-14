@@ -37,8 +37,13 @@ final class ProcessTableReadTests: XCTestCase {
         }
     }
 
-    private func read(_ table: GrowingTable, maxAttempts: Int = ProcessTableRead.maxAttempts) throws -> [UInt64] {
-        try ProcessTableRead.entries(of: UInt64.self, empty: 0, call: "fake", maxAttempts: maxAttempts) {
+    private func read(
+        _ table: GrowingTable, maxAttempts: Int = ProcessTableRead.maxAttempts,
+        maxEntries: Int = ProcessTableRead.maxEntries
+    ) throws -> [UInt64] {
+        try ProcessTableRead.entries(
+            of: UInt64.self, empty: 0, call: "fake", maxAttempts: maxAttempts, maxEntries: maxEntries
+        ) {
             table.read($0)
         }
     }
@@ -67,11 +72,28 @@ final class ProcessTableReadTests: XCTestCase {
     }
 
     func testATableThatKeepsGrowingGivesUpWithTheKernelError() {
-        let table = GrowingTable(entries: 100, growth: Array(repeating: 1_000_000, count: 8))
+        let table = GrowingTable(entries: 100, growth: Array(repeating: 10_000, count: 8))
         XCTAssertThrowsError(try read(table, maxAttempts: 3)) { error in
             XCTAssertEqual(error as? ProcessControlError, .system(call: "fake", errno: ENOMEM))
         }
         XCTAssertEqual(table.reads, 3, "bounded: never an endless loop inside a tick")
+    }
+
+    func testTheBufferNeverGrowsPastItsCeiling() {
+        // The table outgrows a buffer that is already as large as it may get.
+        let growing = GrowingTable(entries: 900, growth: Array(repeating: 200, count: 8))
+        XCTAssertThrowsError(try read(growing, maxEntries: 1_000)) { error in
+            XCTAssertEqual(error as? ProcessControlError, .system(call: "fake", errno: ENOMEM))
+        }
+        XCTAssertEqual(growing.capacities, [1_000], "clamped, then given up: no second, larger buffer")
+
+        // A size report past the ceiling (a misreporting kernel) allocates nothing at all.
+        let absurd = GrowingTable(entries: 50_000_000)
+        XCTAssertThrowsError(try read(absurd)) { error in
+            XCTAssertEqual(error as? ProcessControlError, .system(call: "fake", errno: ENOMEM))
+        }
+        XCTAssertEqual(absurd.reads, 0)
+        XCTAssertGreaterThan(ProcessTableRead.maxEntries, 20_000, "well above any real process table")
     }
 
     func testOtherErrorsAreNotRetried() {

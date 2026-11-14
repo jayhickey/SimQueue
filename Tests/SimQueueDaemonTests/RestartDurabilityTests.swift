@@ -256,10 +256,97 @@ final class RestartDurabilityTests: XCTestCase {
         XCTAssertEqual(record.epoch, 1)
         XCTAssertEqual(record.exitCode, 70)
         XCTAssertTrue(record.reason.contains("daemon lease lost"), record.reason)
-        XCTAssertTrue(record.audited)
-        let stops = daemonEvents().filter { $0["type"] as? String == "daemon_stopped" }
-        XCTAssertEqual(stops.count, 1)
-        XCTAssertTrue((stops.first?["detail"] as? String)?.contains("daemon lease lost") == true)
+        // The database and events.jsonl belong to whoever took the lease: the daemon
+        // that lost it records its stop in its own log and stop record only.
+        XCTAssertFalse(record.audited)
+        XCTAssertTrue(try store.auditEntries().filter { $0.type == "daemon_stopped" }.isEmpty)
+        XCTAssertTrue(daemonEvents().filter { $0["type"] as? String == "daemon_stopped" }.isEmpty)
+    }
+
+    /// The first attempt leaves a result bundle and scratch files in the job's run
+    /// directory. `xcodebuild` refuses to start when `-resultBundlePath` exists, so the
+    /// replay would fail at once if it met them; `mkdir` without `-p` stands in for that.
+    func testAReplayNeverMeetsThePreviousAttemptsResultBundleOrScratchFiles() throws {
+        let first = try startDaemon()
+        let script =
+            "[ ! -e \"$TMPDIR/scratch\" ] || exit 8; mkdir \"$SIMQ_RESULT_BUNDLE\" || exit 9; "
+            + "echo \"attempt $SIMQ_ATTEMPT\" > \"$SIMQ_RESULT_BUNDLE/who\"; : > \"$TMPDIR/scratch\"; "
+            + "mkdir -p \"$SIMQ_DERIVED_DATA\"; echo \"$SIMQ_ATTEMPT\" >> \"$SIMQ_DERIVED_DATA/builds\"; "
+            + "echo \"start $SIMQ_ATTEMPT\" >> \"$MARKS/marks\"; echo $$ >> \"$MARKS/pids\"; "
+            + "[ \"$SIMQ_ATTEMPT\" = 0 ] && sleep 120; echo \"replay output\""
+        guard
+            case .submit(let response) = try call(
+                .submit(
+                    SubmitParams(
+                        project: "durability", submitter: "test", command: ["/bin/sh", "-c", script],
+                        environment: ["MARKS": stateDir], cwd: stateDir)))
+        else { throw TestFailure("submit") }
+        let id = response.job.id
+        try eventually("the first attempt is running", timeout: 30) { marks().contains("start 0") }
+        let runDir = try XCTUnwrap(try job(id).runDir)
+
+        stop(first, SIGKILL)
+        daemon = nil
+        _ = try startDaemon()
+        try eventually("the replay ends", timeout: 60) { try job(id).state.isTerminal }
+
+        let done = try job(id)
+        XCTAssertEqual(done.state, .succeeded, done.message ?? "")
+        XCTAssertEqual(done.attempt, 1)
+        func read(_ name: String) -> String? { try? String(contentsOfFile: runDir + "/" + name, encoding: .utf8) }
+        XCTAssertEqual(read("Result.xcresult/who"), "attempt 1\n", "the replay wrote its own bundle")
+        XCTAssertEqual(read("Result.attempt-0.xcresult/who"), "attempt 0\n", "the first attempt's is kept")
+        XCTAssertEqual(read("DerivedData/builds"), "0\n1\n", "the build cache is reused, not discarded")
+        let log = try XCTUnwrap(read("combined.log"))
+        XCTAssertTrue(log.contains(" attempt 0 at "), log)
+        XCTAssertTrue(log.contains(" attempt 1 at "), log)
+        XCTAssertTrue(
+            log.contains("=== simq: kept the previous attempt's result bundle as Result.attempt-0.xcresult"), log)
+        XCTAssertTrue(log.contains("replay output"), log)
+    }
+
+    /// A daemon that keeps dying must not keep rerunning the queue. Three unplanned
+    /// starts close together hold admissions until someone resumes.
+    func testRepeatedUnplannedRestartsHoldAdmissionsUntilResumed() throws {
+        var pid = try startDaemon()
+        for _ in 0..<3 {
+            stop(pid, SIGKILL)
+            daemon = nil
+            pid = try startDaemon()
+        }
+        guard
+            case .submit(let response) = try call(
+                .submit(SubmitParams(project: "durability", submitter: "test", command: ["/usr/bin/true"])))
+        else { throw TestFailure("submit") }
+        try eventually("the breaker is reported", timeout: 20) {
+            guard case .status(let status) = try call(.status) else { return false }
+            return status.globalWaitReasons.contains { $0.code == "restart_loop" }
+        }
+        XCTAssertEqual(try job(response.job.id).state, .queued, "queued work is kept, not run")
+        guard case .status(let held) = try call(.status) else { throw TestFailure("status") }
+        let reason = try XCTUnwrap(held.globalWaitReasons.first { $0.code == "restart_loop" })
+        XCTAssertTrue(reason.summary.contains("restarted unexpectedly 3 times"), reason.summary)
+        XCTAssertTrue(reason.summary.contains("simq resume"), reason.summary)
+
+        _ = try call(.resume)
+        try eventually("the job runs after resume", timeout: 30) { try job(response.job.id).state == .succeeded }
+    }
+
+    /// Stopping on request is not a failure, however often it happens.
+    func testRequestedRestartsNeverTripTheRestartBreaker() throws {
+        var pid = try startDaemon()
+        for _ in 0..<4 {
+            stop(pid, SIGTERM)
+            daemon = nil
+            pid = try startDaemon()
+        }
+        guard
+            case .submit(let response) = try call(
+                .submit(SubmitParams(project: "durability", submitter: "test", command: ["/usr/bin/true"])))
+        else { throw TestFailure("submit") }
+        try eventually("the job runs", timeout: 30) { try job(response.job.id).state == .succeeded }
+        guard case .status(let status) = try call(.status) else { throw TestFailure("status") }
+        XCTAssertFalse(status.globalWaitReasons.contains { $0.code == "restart_loop" })
     }
 
     func testTheNextDaemonSaysHowThePreviousOneEnded() throws {
@@ -291,6 +378,11 @@ final class RestartDurabilityTests: XCTestCase {
     #if DEBUG
         func testRepeatedCrashBeforeClaimHitsTheCapAndTheNextJobRuns() throws {
             try FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
+            // This test is about the per-job restart cap, which takes four crashes in a
+            // row to reach. The restart-loop breaker would hold admissions after three, so
+            // it is off here; it has its own test.
+            try #"{"max_unplanned_restarts": 0}"#.write(
+                toFile: stateDir + "/config.json", atomically: true, encoding: .utf8)
             let store = try JobStore(path: SimQueuePaths(stateDir: stateDir).databasePath)
             let bad = try store.submit(
                 JobSubmission(
