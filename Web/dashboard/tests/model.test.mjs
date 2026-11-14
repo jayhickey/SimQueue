@@ -139,13 +139,31 @@ test('poller has one lane, pauses hidden work and backs off failures', async () 
   const second = p.run();
   resolve(false);
   await second;
-  assert.equal(scheduled.at(-1).ms, 12000);
+  assert.equal(scheduled.at(-1).ms, 1500, 'a second miss is still retried quickly');
+  const third = p.run();
+  resolve(false);
+  await third;
+  assert.equal(scheduled.at(-1).ms, 6000, 'backoff starts once the misses count as an outage');
+  const fourth = p.run();
+  resolve(true);
+  await fourth;
+  assert.equal(scheduled.at(-1).ms, 3000, 'a success restores the normal cadence');
   visible = false;
   await p.run();
-  assert.equal(reads, 2);
+  assert.equal(reads, 4);
   p.stop();
   await p.run();
-  assert.equal(reads, 2);
+  assert.equal(reads, 4);
+});
+test('a missed poll keeps the snapshot live until misses repeat', () => {
+  assert.equal(m.connectionAfterFailure(1, true), 'retrying');
+  assert.equal(m.connectionAfterFailure(m.OFFLINE_AFTER_FAILURES - 1, true), 'retrying');
+  assert.equal(m.connectionAfterFailure(m.OFFLINE_AFTER_FAILURES, true), 'offline');
+  assert.equal(m.connectionAfterFailure(1, false), 'offline', 'nothing to show on first load');
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6, 7].map(m.pollDelay),
+    [3000, 1500, 1500, 6000, 12000, 24000, 30000, 30000],
+  );
 });
 test('requests bound responses, supply action header and never retry ambiguous mutations', async () => {
   const old = globalThis.fetch;

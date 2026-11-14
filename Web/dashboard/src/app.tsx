@@ -10,6 +10,7 @@ import {
   addSample,
   bytes,
   clockStamp,
+  connectionAfterFailure,
   createPoller,
   duration,
   epoch,
@@ -27,6 +28,7 @@ import {
   timings,
   tone,
   trendSegments,
+  type Connection,
   type Job,
   type Metric,
   type Sample,
@@ -52,11 +54,13 @@ document.addEventListener(
 
 function useDashboard() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
-  const [connection, setConnection] = useState<'connecting' | 'live' | 'offline'>('connecting');
+  const [connection, setConnection] = useState<Connection>('connecting');
   const [samples, setSamples] = useState<Sample[]>([]);
   const poller = useRef<ReturnType<typeof createPoller>>();
   useEffect(() => {
     const controller = new AbortController();
+    let failures = 0,
+      loaded = false;
     const p = createPoller(
       async () => {
         try {
@@ -64,13 +68,15 @@ function useDashboard() {
           if (!next.status || !Array.isArray(next.active) || !Array.isArray(next.recent))
             throw new Error('Invalid snapshot');
           if (!controller.signal.aborted) {
+            failures = 0;
+            loaded = true;
             setSnapshot(next);
             setSamples((prev) => addSample(prev, next));
             setConnection('live');
           }
           return true;
         } catch {
-          if (!controller.signal.aborted) setConnection('offline');
+          if (!controller.signal.aborted) setConnection(connectionAfterFailure(++failures, loaded));
           return false;
         }
       },
@@ -1394,7 +1400,8 @@ function App() {
       kind: 'cancel' | 'priority';
     } | null>(null),
     [priority, setPriority] = useState('');
-  const online = connection === 'live';
+  // A snapshot being retried is still current enough to act on; only `offline` is stale.
+  const online = connection === 'live' || connection === 'retrying';
   const all = snapshot?.active.concat(snapshot.recent) || [];
   const projects = [...new Set(all.map((j) => j.project).concat(project ? [project] : []))].sort();
   const active = (snapshot?.active || []).filter((j) => matches(j, query, project, state));
@@ -1476,8 +1483,16 @@ function App() {
           {snapshot?.status.daemon.probe === 'fake' ? 'FAKE RUNNER' : 'RUNNER'}
         </span>
         <span class={`connection ${connection}`} role="status">
-          <Dot kind={online ? 'success' : connection === 'offline' ? 'danger' : 'muted'} />
-          {online ? 'Live' : connection === 'offline' ? 'Disconnected' : 'Connecting'}
+          <Dot
+            kind={connection === 'live' ? 'success' : connection === 'offline' ? 'danger' : 'muted'}
+          />
+          {connection === 'live'
+            ? 'Live'
+            : connection === 'retrying'
+              ? 'Reconnecting'
+              : connection === 'offline'
+                ? 'Disconnected'
+                : 'Connecting'}
         </span>
       </header>
       <main>

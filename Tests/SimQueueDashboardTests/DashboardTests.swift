@@ -17,6 +17,14 @@ private final class ServerWorker: @unchecked Sendable {
 }
 
 final class DashboardTests: XCTestCase {
+    /// A snapshot is three daemon requests, and the page gives up on it after 12 seconds
+    /// (`request` in `model.ts`). A busy daemon gets more than the old two seconds to
+    /// answer, but all three must still fit inside the page's own deadline.
+    func testDaemonTimeoutToleratesABusyHostAndFitsTheBrowserDeadline() {
+        XCTAssertGreaterThan(DashboardAPI.daemonTimeoutSeconds, 2)
+        XCTAssertLessThan(3 * DashboardAPI.daemonTimeoutSeconds, 12)
+    }
+
     func testStoppedListenerReleasesPortAndCannotRestart() throws {
         let server = try DashboardServer(socketPath: "/unused-test-socket")
         let port = try XCTUnwrap(URLComponents(string: server.url)?.port)
