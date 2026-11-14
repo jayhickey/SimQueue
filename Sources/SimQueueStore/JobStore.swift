@@ -67,6 +67,19 @@ public enum SubmitResult: Equatable, Sendable {
     }
 }
 
+/// What a restarted daemon does with a job whose command had started when the previous
+/// daemon went away (config `restart_recovery`). A job that never started is requeued
+/// either way; one whose process group is still alive is never requeued.
+public enum RestartRecovery: String, Sendable, Codable, CaseIterable {
+    /// Put it back in the queue at its original position, up to the restart cap. The
+    /// daemon going away is SimQueue's failure, not the job's. A job opts out with
+    /// `no_restart_replay` when its side effects must not happen twice.
+    case requeue
+    /// End it `interrupted` unless the job is retryable with retry budget left: started
+    /// work is replayed only with explicit permission.
+    case interrupt
+}
+
 /// What startup recovery did.
 public struct RecoveryReport: Equatable, Sendable {
     /// Jobs put back in the queue at their original position (`daemon_restart`).
@@ -114,6 +127,8 @@ public final class JobStore {
     /// caught by more restarts than this ends `infra_failed` (`internal_error`), so a job
     /// that crashes the daemon can't loop forever.
     public var maxRestartRequeues = JobStore.defaultMaxRestartRequeues
+    /// What a restarted daemon does with a job whose command had already started.
+    public var restartRecovery: RestartRecovery = .requeue
     /// Queued independent jobs per submitter and project; 0 disables this cap.
     public var maxQueuedPerSubmitterPerProject: Int
     /// Queued jobs in total; 0 disables this cap.
@@ -321,11 +336,19 @@ public final class JobStore {
         try fetchAll("SELECT * FROM jobs ORDER BY seq;")
     }
 
-    /// Finish times of infra failures since `since` (for the drain).
+    /// Finish times of infra failures since `since` (for the drain). A job a daemon
+    /// restart ended `interrupted` is not one: the drain exists to stop admitting work
+    /// that keeps failing on this host, and a restart says nothing about the next job.
+    /// Counting them closed the queue right after every restart that caught a few
+    /// running jobs. A job that hits the restart cap still ends `infra_failed` and counts.
     public func infraFailureTimes(since: Double) throws -> [Double] {
         let classes = ResultClass.allCases.filter(\.isInfraFailure).map { "'\($0.rawValue)'" }.joined(separator: ", ")
         return try database.query(
-            "SELECT finished_at FROM jobs WHERE result_class IN (\(classes)) AND finished_at >= ? ORDER BY finished_at;",
+            """
+            SELECT finished_at FROM jobs
+            WHERE result_class IN (\(classes)) AND state != 'interrupted' AND finished_at >= ?
+            ORDER BY finished_at;
+            """,
             [.real(since)]
         ).compactMap { $0.double("finished_at") }
     }
@@ -367,6 +390,11 @@ public final class JobStore {
     /// back to the queue at its original position (same queue time and sequence, attempt
     /// + 1, `restart_requeues` + 1), retryable or not: a daemon restart is SimQueue's
     /// infra problem, not the job's. A job past `maxRestartRequeues` ends `infra_failed`.
+    ///
+    /// A job whose command had started is requeued too (`restartRecovery == .requeue`,
+    /// the default) unless it set `noRestartReplay`; it then ends `interrupted`. Under
+    /// `.interrupt` a started job is replayed only if it is retryable with budget left.
+    /// A restart interruption is never counted by the infra-failure drain.
     ///
     /// Deadlines survive restarts: a job whose run deadline (persisted start time plus run
     /// timeout) has already passed is neither requeued nor interrupted. It stays active,
@@ -415,10 +443,9 @@ public final class JobStore {
                         job.id, "interrupted", detail: "daemon restart; process group \(pid) still alive", at: now)
                     report.interrupted.append(job.id)
                     report.stillRunning.append(job.id)
-                } else if job.startedAt != nil && (!job.retryable || job.attempt >= (job.maxRetries ?? maxInfraRetries))
-                {
+                } else if let refusal = replayRefusal(job) {
                     let message =
-                        "daemon restarted after command start; side effects may have occurred. Automatic replay is disabled or its retry budget is exhausted; inspect artifacts before explicitly resubmitting."
+                        "daemon restarted after command start; side effects may have occurred. \(refusal); inspect artifacts before explicitly resubmitting."
                     try database.run(
                         "UPDATE jobs SET state='interrupted', result_class='internal_error', finished_at=?, message=?, owner_pid=NULL WHERE id=?;",
                         [.real(now), .text(message), .text(job.id)])
@@ -453,6 +480,21 @@ public final class JobStore {
                 }
             }
             return report
+        }
+    }
+
+    /// Why a job the previous daemon left behind must not be run again, or nil if it may
+    /// be requeued. A job that never started can always be requeued.
+    private func replayRefusal(_ job: Job) -> String? {
+        guard job.startedAt != nil else { return nil }
+        if job.command?.noRestartReplay == true {
+            return "This job opted out of replay after a restart (no_restart_replay)"
+        }
+        switch restartRecovery {
+        case .requeue: return nil
+        case .interrupt:
+            return job.retryable && job.attempt < (job.maxRetries ?? maxInfraRetries)
+                ? nil : "Automatic replay is disabled or its retry budget is exhausted"
         }
     }
 

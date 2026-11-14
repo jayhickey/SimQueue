@@ -74,8 +74,11 @@ struct AgentGuide: ParsableCommand {
         inspect doctor/cleanup diagnostics instead of discarding the ledger or killing broadly.
         Waiting and submitting clients reconnect across a daemon restart (up to 10 minutes,
         SIMQ_RECONNECT_SECONDS) and keep waiting on the same job; they do not
-        preserve arbitrary running commands. Started work is not replayed unless --retryable
-        or --retries N permits it within the retry budget. Retries do not undo side effects.
+        preserve arbitrary running commands. A job a daemon restart interrupted is requeued
+        and runs again from the start (bounded per job). Pass --no-restart-replay when a
+        command's side effects must not repeat: it then ends interrupted instead. Hosts with
+        restart_recovery "interrupt" replay started work only with --retryable or --retries N.
+        Replays and retries do not undo side effects.
 
         Physical iOS devices
         Configure devices explicitly, then use simq devices for health and exclusive leases.

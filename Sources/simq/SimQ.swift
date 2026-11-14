@@ -248,6 +248,7 @@ func describe(_ job: JobInfo, times: Bool = false) -> String {
     }
     if job.exclusive { parts.append("exclusive") }
     if job.retryable { parts.append("retryable") }
+    if job.noRestartReplay == true { parts.append("no-restart-replay") }
     if let position = job.position { parts.append("#\(position)") }
     if let result = job.resultClass { parts.append(result.rawValue) }
     if let code = job.commandExitCode { parts.append("command exit \(code)") }
@@ -314,7 +315,8 @@ struct Submit: ParsableCommand {
             the wait before the job's first start (default: 24h). Pass "none" for no limit.
             --kind is a free-form label for status and logs; it changes nothing. Behavior comes
             from flags: --exclusive (run one at a time in the exclusive slot), --retryable
-            (retry after an infra failure), --sims. Started non-retryable commands are interrupted after a daemon restart.
+            (retry after an infra failure), --sims. A job a daemon restart interrupted is requeued
+            unless it passed --no-restart-replay (or the daemon's restart_recovery is "interrupt").
             The command goes after --, e.g. `simq submit --kind lint -- make lint`. It runs in
             its own process group in the current directory (or --cwd) with the daemon's
             environment plus any --env NAME=VALUE and SIMQ_JOB_ID, SIMQ_ATTEMPT, SIMQ_PROJECT,
@@ -341,11 +343,14 @@ struct Submit: ParsableCommand {
     @Option(help: "Simulators to lease (default 0).") var sims = 0
     @Option(help: "Use up to this many simulators when free (at least --sims).") var maxSims: Int?
     @Flag(help: "Take the exclusive slot: exclusive jobs run one at a time.") var exclusive = false
-    @Flag(
-        help:
-            "Retry automatically after an infra failure. (Started commands replay only with explicit retry permission.)"
-    )
+    @Flag(help: "Retry automatically after an infra failure.")
     var retryable = false
+    @Flag(
+        name: .customLong("no-restart-replay"),
+        help:
+            "Never run the command again after a daemon restart interrupted it (for side effects that must not repeat). Default: such a job is requeued."
+    )
+    var noRestartReplay = false
     @Option(help: "Infra retries for a retryable job, 0...10 (implies --retryable). Default: daemon config (1).")
     var retries: Int?
     @Option(
@@ -450,6 +455,7 @@ struct Submit: ParsableCommand {
             throw ValidationError("--device-artifact-bundle and --device-artifact-path must be supplied together")
         }
         params.device = device
+        if noRestartReplay { params.noRestartReplay = true }
         if let bundle = deviceArtifactBundle, let path = deviceArtifactPath {
             params.deviceArtifact = DeviceArtifact(bundle: bundle, path: path)
         }

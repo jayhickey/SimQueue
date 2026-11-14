@@ -58,8 +58,11 @@ error comes back as a tool error (`isError: true`) with `{"error": {"code", "mes
 
 `simq_submit` has the same trusted-command boundary and recovery rules as the CLI.
 Its `exclusive` flag takes the single exclusive slot; ordinary jobs may run alongside.
-Only explicit `retryable`/retry permission permits replay of a started command, and
-restart bounds still apply. A waiting client reconnecting does not grant retry permission.
+A job interrupted by a daemon restart is requeued and its command runs again, within
+the restart bound. Set `no_restart_replay` for a command whose side effects must not
+repeat; it then ends `interrupted`. `retryable` governs retries after an infra failure
+(and, on a host with `restart_recovery: interrupt`, replay after a restart). A waiting
+client reconnecting does not grant retry permission.
 Pass selected environment entries deliberately in the submit request; `SIMQ_*` names
 are reserved. The CLI's `--env-from NAME` is a caller-side convenience rather than a
 daemon request to copy arbitrary client or daemon secrets.

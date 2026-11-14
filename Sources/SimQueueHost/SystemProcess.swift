@@ -81,7 +81,13 @@ public final class SystemProcessTable: ProcessTable, @unchecked Sendable {
     }
 
     public func isGroupLive(_ pgid: Int32) throws -> Bool {
-        try liveProcessGroups().contains(pgid)
+        #if canImport(Darwin)
+            // One group's members, not the whole table: `terminateGroup` polls this many
+            // times a second, and a full read is the one that fails on a busy host.
+            return try Self.darwinProcesses(.group(pgid)).contains { $0.kp_proc.p_stat != 5 }
+        #else
+            return try liveProcessGroups().contains(pgid)
+        #endif
     }
 
     /// `linux:<boot id>:<start ticks>` from `/proc/<pid>/stat` and the kernel boot id, or
@@ -313,27 +319,79 @@ public final class SystemProcessTable: ProcessTable, @unchecked Sendable {
             return groups
         }
 
-        static func darwinProcesses() throws -> [kinfo_proc] {
-            var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
-            var size = 0
-            guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0 else {
-                throw ProcessControlError.system(call: "sysctl(KERN_PROC_ALL)", errno: errno)
+        /// Which part of the process table to read.
+        enum DarwinProcessScope {
+            case all
+            case group(Int32)
+        }
+
+        static func darwinProcesses(_ scope: DarwinProcessScope = .all) throws -> [kinfo_proc] {
+            var mib: [Int32]
+            switch scope {
+            case .all: mib = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+            case .group(let pgid): mib = [CTL_KERN, KERN_PROC, KERN_PROC_PGRP, pgid]
             }
-            let stride = MemoryLayout<kinfo_proc>.stride
-            // Leave room for processes started between the two calls.
-            var capacity = size / stride + 64
-            var processes = [kinfo_proc](repeating: kinfo_proc(), count: capacity)
-            size = capacity * stride
-            let result = processes.withUnsafeMutableBytes { buffer in
-                sysctl(&mib, u_int(mib.count), buffer.baseAddress, &size, nil, 0)
+            let count = u_int(mib.count)
+            return try ProcessTableRead.entries(of: kinfo_proc.self, empty: kinfo_proc(), call: "sysctl(KERN_PROC)") {
+                buffer in
+                var size = buffer?.count ?? 0
+                guard sysctl(&mib, count, buffer?.baseAddress, &size, nil, 0) == 0 else { return .failed(errno) }
+                return .bytes(size)
             }
-            guard result == 0 else {
-                throw ProcessControlError.system(call: "sysctl(KERN_PROC_ALL)", errno: errno)
-            }
-            capacity = size / stride
-            return Array(processes.prefix(capacity))
         }
     #endif
+}
+
+/// Reads a kernel table whose size can change between asking for it and reading it.
+///
+/// `sysctl(KERN_PROC)` reports the size the table had when asked and then fails the read
+/// with `ENOMEM` if it has grown past the buffer since. A fixed margin is not enough on a
+/// busy host: booting a batch of simulators forks hundreds of processes in that window.
+/// So the buffer has proportional slack, and a read that still doesn't fit is retried
+/// with a larger one. Only a table that keeps outgrowing the buffer on every attempt, or
+/// any other error, is reported to the caller.
+public enum ProcessTableRead {
+    public enum Outcome: Equatable {
+        /// Bytes needed (when called without a buffer) or written (with one).
+        case bytes(Int)
+        case failed(Int32)
+    }
+
+    public static let maxAttempts = 8
+
+    /// Entries of slack for a table of `count` entries: a quarter more, at least 64.
+    static func slack(for count: Int) -> Int { max(64, count / 4) }
+
+    /// `read(nil)` returns the size needed; `read(buffer)` fills the buffer and returns
+    /// the bytes written, or the errno it failed with.
+    public static func entries<Entry>(
+        of _: Entry.Type, empty: Entry, call: String, maxAttempts: Int = ProcessTableRead.maxAttempts,
+        read: (UnsafeMutableRawBufferPointer?) -> Outcome
+    ) throws -> [Entry] {
+        let stride = MemoryLayout<Entry>.stride
+        var capacity = 0
+        var lastError: Int32 = ENOMEM
+        for _ in 0..<max(1, maxAttempts) {
+            // Ask again on every attempt: the table that didn't fit is larger now.
+            switch read(nil) {
+            case .failed(let code) where code == ENOMEM || code == EINTR || code == EAGAIN:
+                lastError = code
+                continue
+            case .failed(let code): throw ProcessControlError.system(call: call, errno: code)
+            case .bytes(let needed):
+                let count = needed / stride
+                capacity = max(capacity * 2, count + slack(for: count))
+            }
+            var entries = [Entry](repeating: empty, count: capacity)
+            let outcome = entries.withUnsafeMutableBytes { read($0) }
+            switch outcome {
+            case .bytes(let written): return Array(entries.prefix(min(capacity, written / stride)))
+            case .failed(let code) where code == ENOMEM || code == EINTR || code == EAGAIN: lastError = code
+            case .failed(let code): throw ProcessControlError.system(call: call, errno: code)
+            }
+        }
+        throw ProcessControlError.system(call: call, errno: lastError)
+    }
 }
 
 /// How a child process ended.

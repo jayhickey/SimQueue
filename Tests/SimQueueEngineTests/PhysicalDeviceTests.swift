@@ -136,6 +136,7 @@ final class PhysicalDeviceTests: XCTestCase {
     func testRunningCrashRecoveryReclaimsOnlyAfterOldGroupStops() throws {
         let h = Harness()
         let store = try JobStore(path: ":memory:")
+        store.restartRecovery = .interrupt
         let (engine, _, _) = try h.start(store: store)
         configure(engine)
         let job = try submit(store)

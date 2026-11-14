@@ -55,8 +55,14 @@ struct Run: ParsableCommand {
     @Option(help: "Who is submitting. Default: $USER.") var submitter: String?
     @Option(help: "Simulators to hold (default 1; 0 runs without one).") var sims = 1
     @Flag(help: "Take the exclusive slot: exclusive jobs run one at a time.") var exclusive = false
-    @Flag(help: "Permit replay after infrastructure failure or restart, within --retries.") var retryable = false
+    @Flag(help: "Permit replay after an infrastructure failure, within --retries.") var retryable = false
     @Option(help: "Maximum retries, 0...10 (implies --retryable).") var retries: Int?
+    @Flag(
+        name: .customLong("no-restart-replay"),
+        help:
+            "Never run the command again after a daemon restart interrupted it (for side effects that must not repeat). Default: such a job is requeued."
+    )
+    var noRestartReplay = false
     @Option(
         name: .customLong("memory-hint-mib"),
         help:
@@ -142,6 +148,7 @@ struct Run: ParsableCommand {
             resetApps: resetApps.isEmpty ? nil : resetApps,
             freshSim: freshSim ? true : nil
         )
+        if noRestartReplay { params.noRestartReplay = true }
         guard (deviceArtifactBundle == nil) == (deviceArtifactPath == nil) else {
             throw ValidationError("--device-artifact-bundle and --device-artifact-path must be supplied together")
         }

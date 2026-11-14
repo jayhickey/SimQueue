@@ -255,9 +255,28 @@ final class TimeoutTests: XCTestCase {
         XCTAssertNil(recovered.termSentAt)
     }
 
-    func testRestartBeforeDeadlineInterruptsNonRetryableWorkWithoutTimeoutOrReplay() throws {
+    func testRestartBeforeDeadlineRequeuesStartedNonRetryableWorkByDefault() throws {
         let harness = Harness(path: dbPath)
         let store = try JobStore(path: dbPath, maxQueuedPerSubmitterPerProject: 0)
+        let (engine, _, _) = try harness.start(store: store)
+        let running = try startJob(harness, store, engine, runTimeout: 3_600)
+        harness.clock.advance(by: 60)
+        let (second, recovery, _) = try harness.start(store: store)
+        XCTAssertEqual(recovery.killedProcessGroups, [running.pgid], "the verified old command is stopped first")
+        XCTAssertEqual(recovery.requeued, [running.job.id], "a restart is the queue's failure, not the job's")
+        XCTAssertTrue(recovery.interrupted.isEmpty)
+        XCTAssertEqual(second.startupTimeouts, TimeoutReport())
+        let recovered = try XCTUnwrap(store.job(id: running.job.id))
+        XCTAssertEqual(recovered.state, .queued)
+        XCTAssertEqual(recovered.restartRequeues, 1)
+        XCTAssertNil(recovered.startedAt, "the replay gets its own start time and run deadline")
+        XCTAssertEqual(try second.tick().admitted, [running.job.id], "and it runs again without anyone resubmitting")
+    }
+
+    func testRestartBeforeDeadlineInterruptsNonRetryableWorkWithoutTimeoutOrReplayUnderTheInterruptPolicy() throws {
+        let harness = Harness(path: dbPath)
+        let store = try JobStore(path: dbPath, maxQueuedPerSubmitterPerProject: 0)
+        store.restartRecovery = .interrupt
         let (engine, _, _) = try harness.start(store: store)
         let running = try startJob(harness, store, engine, runTimeout: 3_600)
         harness.clock.advance(by: 60)

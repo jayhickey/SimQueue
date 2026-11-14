@@ -53,6 +53,8 @@ enum MCPTools {
                     "exclusive": boolean("Serialize with other exclusive jobs."),
                     "retryable": boolean("Retry once after an infra failure."),
                     "max_retries": integer("Infra retries (0...10)."),
+                    "no_restart_replay": boolean(
+                        "Never rerun the command after a daemon restart interrupted it; default requeues."),
                     "run_timeout_seconds": number("Run timeout (0: none)."),
                     "queue_timeout_seconds": number("Queue timeout before start (0: none)."),
                     "environment": ["type": "object", "additionalProperties": ["type": "string"]],

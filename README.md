@@ -109,7 +109,7 @@ Warm simulators retain state from earlier jobs. Use `--reset-app your.bundle.id`
 
 Commands receive the daemon's environment. Forward selected caller variables with `--env-from NAME`, or set values with `--env NAME=value`. For automation, `--result-file result.json` records the result and artifact paths; `--exit-code mapped` distinguishes command failure from timeouts and infrastructure failures.
 
-Waiting clients reconnect after a short service interruption. An abruptly interrupted command can have side effects: started commands require explicit retry permission to replay. See the [execution and recovery reference](docs/PROTOCOL.md#recovery) before enabling retries.
+Waiting clients reconnect after a short service interruption. A job interrupted by a daemon restart is requeued and its command runs again from the start, so an abruptly interrupted command can repeat its side effects: pass `--no-restart-replay` for commands that must not run twice. See the [execution and recovery reference](docs/PROTOCOL.md#recovery).
 
 ## Documentation
 

@@ -108,6 +108,26 @@ final class SocketEndToEndTests: XCTestCase {
         }
     }
 
+    func testNoRestartReplayIsStoredWithTheCommandAndShownOnTheJob() throws {
+        var optedOut = SubmitParams(project: "app", submitter: "test", command: ["/bin/true"])
+        optedOut.noRestartReplay = true
+        let job = try daemon.submit(optedOut).job
+        XCTAssertEqual(job.noRestartReplay, true)
+        XCTAssertEqual(try daemon.side.job(id: job.id)?.command?.noRestartReplay, true)
+        let plain = try daemon.submit(SubmitParams(project: "app", submitter: "other", command: ["/bin/true"])).job
+        XCTAssertNil(plain.noRestartReplay)
+        XCTAssertNil(try daemon.side.job(id: plain.id)?.command?.noRestartReplay)
+
+        // There is nothing to replay without a command: refused, not silently dropped.
+        var commandless = SubmitParams(project: "app", submitter: "third")
+        commandless.noRestartReplay = true
+        let error = try daemon.protocolError(.submit(commandless))
+        XCTAssertEqual(error.code, .invalidArgument)
+        XCTAssertTrue(error.message.contains("no_restart_replay needs a command"), error.message)
+        let wire = String(decoding: try JSONEncoder().encode(optedOut), as: UTF8.self)
+        XCTAssertTrue(wire.contains(#""no_restart_replay":true"#), wire)
+    }
+
     func testOutOfRangePriorityAndUnknownAliasAreUsageErrors() throws {
         let tooHigh = try daemon.protocolError(.submit(params(priority: 101)))
         XCTAssertEqual(tooHigh.code, .invalidArgument)
@@ -395,8 +415,14 @@ final class DaemonConfigTests: XCTestCase {
             Data(#"{"default_max_retries": 3, "max_concurrent_exclusive": 2}"#.utf8))
         XCTAssertEqual(config.defaultMaxRetries, 3)
         XCTAssertEqual(config.scheduler.maxConcurrentExclusive, 2)
+        XCTAssertEqual(config.restartRecovery, .requeue, "a restart does not drop running jobs by default")
+        XCTAssertEqual(
+            try DaemonConfig.parse(Data(#"{"restart_recovery": "interrupt"}"#.utf8)).restartRecovery, .interrupt)
+        XCTAssertEqual(
+            try DaemonConfig.parse(Data(#"{"restart_recovery": "requeue"}"#.utf8)).restartRecovery, .requeue)
         for bad in [
             #"{"default_max_retries": 11}"#, #"{"default_max_retries": -1}"#, #"{"max_concurrent_exclusive": 0}"#,
+            #"{"restart_recovery": "replay"}"#,
         ] {
             XCTAssertThrowsError(try DaemonConfig.parse(Data(bad.utf8)), bad)
         }

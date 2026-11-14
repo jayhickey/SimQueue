@@ -71,7 +71,9 @@ The process executor starts each command in a separate process group and records
 
 Write-ahead spawn/action intents record a potentially interrupted host operation before it runs. Successful operations are confirmed against observations before their resource release is recorded. An in-flight marker prevents ordinary reconciliation from treating a live worker as a crashed action; pending clone names remain protected until ownership registration finishes.
 
-After a restart, proven-unstarted work can requeue under a bounded restart policy. A started non-retryable command is interrupted rather than replayed; explicitly retryable work obeys both retry and restart bounds. An uncertain start reports uncertainty and retains resources when absence cannot be proved. Killing an old process avoids concurrent copies but cannot undo side effects. SimQueue does not guarantee exactly-once command execution or survival across abrupt restarts.
+After a restart, interrupted work is requeued at its original queue position, at most three times per job. That includes a command that had started: its process group is stopped first, only after its recorded identity is verified, and the command then runs again from the beginning. A daemon going away is SimQueue's failure, not the job's, so no retry permission is needed and no infra retry is used up. A job submitted with `--no-restart-replay` is never replayed after it started; it ends `interrupted`. Setting `restart_recovery` to `interrupt` restores the stricter rule host-wide: a started command is replayed only if it is retryable with retry budget left. A command whose process group is still alive and cannot be verified is never requeued beside it, and an uncertain start reports uncertainty and retains resources when absence cannot be proved. Killing an old process avoids concurrent copies but cannot undo side effects. A replay repeats them. SimQueue does not guarantee exactly-once command execution, and a running command does not survive an abrupt daemon restart; it is rerun.
+
+A restart interruption never counts toward the infra-failure drain: the drain holds admission when work keeps failing on the host, and a restart says nothing about the next job. A job that reaches the restart cap ends `infra_failed` and does count.
 
 A waiting client reconnects to the same job; reconnect is separate from command recovery. Planned upgrades first drain admitted work, process groups, simulator leases, pending intents and template/pool/preparation/archive/artifact workers. A drain timeout leaves its gate set and does not authorize a restart. Live destructive uninstall also requires completed drain, refuses unresolved processes/intents even with force, and re-reads ownership after stop. See [installation](INSTALL.md) for consistent backups, legacy-state transitions and matching-backup rollback. Unfinished legacy shard groups are refused before database migration or writer journal changes.
 
@@ -98,11 +100,32 @@ Incoming lines have a two-second total deadline and writes are bounded. Socket h
 use bounded independent threads rather than blocking Dispatch's shared pool.
 
 A separate liveness thread makes a real status round-trip every five seconds, with
-bounded connect, write and read phases. If no successful round-trip occurs for 30
-seconds, simqd logs the failure and exits with status 70 without joining potentially
-wedged workers. The existing service manager can restart it; running commands have the
-same interruption/recovery limits as any daemon crash. This check is independent of
-the ownership watchdog and does not change its report-only cleanup policy.
+bounded connect, write and read phases. An unanswered probe alone is not a wedge: on a
+host far over its CPU capacity an answer can take longer than the probe waits while
+every job runs normally. So the thread also watches, without taking it, whether the
+service lock is still being acquired by anyone. Only when status has gone unanswered and
+the lock has stood still for 30 seconds does simqd exit with status 70, without joining
+potentially wedged workers. Unanswered status while the lock still changes hands is
+logged once and tolerated for ten minutes, after which the socket counts as unusable.
+Time is counted as the thread observes it, so a process that was not scheduled, or a
+host that slept, is never mistaken for a wedge. The existing service manager restarts
+the daemon; running commands are then stopped and requeued as after any daemon crash.
+This check is independent of the ownership watchdog and does not change its
+report-only cleanup policy.
+
+Only two things stop a running daemon by its own decision: that wedge, and losing the
+daemon lease to another daemon. A failed tick is logged and retried, including a
+process table that could not be read and a cleanup that could not be confirmed yet.
+
+Every stop leaves its reason in three places. The last line of the daemon log is
+written straight to the file and flushed, after the stdout pipe has been drained; a
+line written to a pipe just before `_exit` is otherwise lost. `last-stop.json` in the
+state directory holds the epoch, PID, time, exit status and reason, and needs neither
+the service lock nor the database. The audit log gets a `daemon_stopped` entry, which
+also appears in `events.jsonl`. A wedged daemon cannot write that entry, so the next
+daemon writes it from `last-stop.json` at startup. A previous daemon that left no
+record at all (killed, crashed, power loss) is logged and audited as
+`daemon_exit_unrecorded` with the age of its last heartbeat.
 
 The `simq doctor` client also reports `socket_round_trip` latency, `daemon_threads`
 and `daemon_zombies`. When the socket fails, it inspects the persisted daemon PID;
@@ -118,6 +141,7 @@ There is no historical stats/top view, external alert delivery or webhooks. Cloc
 | --- | --- |
 | Daemon stdout/stderr | Active writer rotates four 5 MiB segments (20 MiB); service external sinks are `/dev/null` |
 | `events.jsonl` | Rotate at a 64 MiB threshold, keeping one previous generation; a batch can overshoot the threshold |
+| `last-stop.json` | One record, replaced at each daemon stop |
 | Database history targets | 10,000 completed job rows; 100,000 eligible audit rows or 30-day audit age |
 | History snapshots | At most three self-contained 512 MiB archives, plus one bounded partial copy |
 | Submission backpressure | Refuse new submissions above 256 MiB of used database pages; cleanup/recovery remain writable |

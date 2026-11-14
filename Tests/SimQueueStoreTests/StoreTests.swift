@@ -573,6 +573,129 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try store.job(id: waiting.id)?.state, .queued)
     }
 
+    /// A job whose command had started, left behind by the previous daemon with its
+    /// process group already gone.
+    private func startedJob(
+        _ store: JobStore, epoch: Int64, retryable: Bool = false, maxRetries: Int? = nil,
+        noRestartReplay: Bool = false, submitter: String = "bot"
+    ) throws -> Job {
+        var command = JobCommand(argv: ["/bin/true"])
+        if noRestartReplay { command.noRestartReplay = true }
+        let job = try store.submit(
+            JobSubmission(
+                project: "app", submitter: submitter, retryable: retryable, maxRetries: maxRetries, command: command),
+            now: 10
+        ).job
+        _ = try XCTUnwrap(try store.claim(jobID: job.id, grantedSims: 0, epoch: epoch, now: 11))
+        XCTAssertTrue(try store.markRunning(jobID: job.id, pid: 4242, epoch: epoch, now: 12))
+        return job
+    }
+
+    func testRestartRequeuesAStartedNonRetryableJobByDefault() throws {
+        let (store, epoch) = try leasedStore()
+        let job = try startedJob(store, epoch: epoch)
+        let next = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: 20)
+        let report = try store.recoverAfterRestart(epoch: next, now: 20)
+        XCTAssertEqual(report.requeued, [job.id], "not dropped: it goes back to its place in the queue")
+        XCTAssertEqual(report.interrupted, [])
+        let requeued = try XCTUnwrap(try store.job(id: job.id))
+        XCTAssertEqual(requeued.state, .queued)
+        XCTAssertEqual(requeued.queueTime, 10, "keeps its place")
+        XCTAssertEqual(requeued.attempt, 1)
+        XCTAssertEqual(requeued.restartRequeues, 1)
+        XCTAssertNil(requeued.startedAt)
+        XCTAssertNil(requeued.resultClass)
+        XCTAssertTrue(try store.events(jobID: job.id).contains("requeued_after_restart"))
+        XCTAssertEqual(try store.allInfraFailureTimes(since: 0), [], "a restart requeue is not an infra failure")
+    }
+
+    func testAJobThatOptedOutOfRestartReplayEndsInterruptedAndIsNeverRunAgain() throws {
+        let (store, epoch) = try leasedStore()
+        // Retryable with budget left: the opt-out still wins. It is the explicit statement.
+        let job = try startedJob(store, epoch: epoch, retryable: true, maxRetries: 3, noRestartReplay: true)
+        let next = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: 20)
+        let report = try store.recoverAfterRestart(epoch: next, now: 20)
+        XCTAssertEqual(report.interrupted, [job.id])
+        XCTAssertEqual(report.requeued, [])
+        let ended = try XCTUnwrap(try store.job(id: job.id))
+        XCTAssertEqual(ended.state, .interrupted)
+        XCTAssertEqual(ended.restartRequeues, 0)
+        XCTAssertTrue(ended.message?.contains("opted out of replay") == true, ended.message ?? "")
+        XCTAssertTrue(ended.message?.contains("side effects") == true, ended.message ?? "")
+    }
+
+    func testAnOptedOutJobThatNeverStartedIsStillRequeued() throws {
+        let (store, epoch) = try leasedStore()
+        var command = JobCommand(argv: ["/bin/true"])
+        command.noRestartReplay = true
+        let job = try store.submit(JobSubmission(project: "app", submitter: "bot", command: command), now: 10).job
+        _ = try XCTUnwrap(try store.claim(jobID: job.id, grantedSims: 0, epoch: epoch, now: 11))
+        let next = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: 20)
+        XCTAssertEqual(
+            try store.recoverAfterRestart(epoch: next, now: 20).requeued, [job.id],
+            "nothing ran, so there is nothing to repeat")
+    }
+
+    func testTheInterruptPolicyReplaysStartedWorkOnlyWithRetryPermissionAndBudget() throws {
+        let (store, epoch) = try leasedStore()
+        store.restartRecovery = .interrupt
+        let plain = try startedJob(store, epoch: epoch, submitter: "a")
+        let retryable = try startedJob(store, epoch: epoch, retryable: true, maxRetries: 2, submitter: "b")
+        let spent = try startedJob(store, epoch: epoch, retryable: true, maxRetries: 0, submitter: "c")
+        let next = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: 20)
+        let report = try store.recoverAfterRestart(epoch: next, now: 20)
+        XCTAssertEqual(report.requeued, [retryable.id])
+        XCTAssertEqual(report.interrupted, [plain.id, spent.id])
+        let message = try XCTUnwrap(try store.job(id: plain.id)?.message)
+        XCTAssertTrue(message.contains("Automatic replay is disabled or its retry budget is exhausted"), message)
+    }
+
+    func testRestartInterruptionsNeverFeedTheInfraFailureDrain() throws {
+        let (store, epoch) = try leasedStore()
+        // Four running jobs that must not be replayed, caught by one restart: the case
+        // that used to close the queue the moment the daemon came back.
+        let jobs = try (0..<4).map {
+            try startedJob(store, epoch: epoch, noRestartReplay: true, submitter: "s\($0)")
+        }
+        let next = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: 20)
+        XCTAssertEqual(try store.recoverAfterRestart(epoch: next, now: 20).interrupted, jobs.map(\.id))
+        XCTAssertEqual(try store.job(id: jobs[0].id)?.resultClass, .internalError, "still reported as infra")
+        XCTAssertEqual(try store.allInfraFailureTimes(since: 0), [])
+        XCTAssertEqual(
+            InfraDrainPolicy().status(
+                failureTimes: try store.allInfraFailureTimes(since: 0), clearedAt: nil, now: 21), .normal)
+
+        // A real infra failure still counts, and so does a job that hit the restart cap.
+        let failing = try store.submit(submission(retryable: false, submitter: "f"), now: 22).job
+        _ = try store.claim(jobID: failing.id, grantedSims: 1, epoch: next, now: 23)
+        _ = try store.finish(jobID: failing.id, result: .runnerBootstrapFailure, now: 24)
+        XCTAssertEqual(try store.allInfraFailureTimes(since: 0), [24])
+    }
+
+    func testAJobCaughtByTooManyRestartsStillCountsAsAnInfraFailure() throws {
+        let (store, firstEpoch) = try leasedStore()
+        let job = try store.submit(submission(retryable: false), now: 10).job
+        var epoch = firstEpoch
+        for restart in 1...(JobStore.defaultMaxRestartRequeues + 1) {
+            _ = try XCTUnwrap(try store.claim(jobID: job.id, grantedSims: 1, epoch: epoch, now: Double(10 + restart)))
+            _ = try store.markRunning(jobID: job.id, pid: 4242, epoch: epoch, now: Double(10 + restart))
+            epoch = try store.acquireDaemonLease(ownerID: "restart", pid: 2, now: Double(10 + restart))
+            _ = try store.recoverAfterRestart(epoch: epoch, now: Double(10 + restart))
+        }
+        XCTAssertEqual(try store.job(id: job.id)?.state, .infraFailed)
+        XCTAssertEqual(
+            try store.allInfraFailureTimes(since: 0).count, 1,
+            "a job that keeps taking the daemon down is exactly what the drain is for")
+    }
+
+    func testCommandsStoredBeforeTheOptOutExistedStillDecode() throws {
+        let legacy = #"{"argv":["/bin/true"],"environment":{}}"#
+        let command = try JSONDecoder().decode(JobCommand.self, from: Data(legacy.utf8))
+        XCTAssertNil(command.noRestartReplay)
+        let encoded = String(decoding: try JSONEncoder().encode(JobCommand(argv: ["/bin/true"])), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("noRestartReplay"), "absent unless set: older daemons read the same rows")
+    }
+
     func testRestartRequeuesNeverUseUpInfraRetries() throws {
         let (store, firstEpoch) = try leasedStore()
         let job = try store.submit(submission(), now: 10).job  // retryable, default 1 infra retry

@@ -43,7 +43,10 @@ public final class RotatingDaemonLog: @unchecked Sendable {
         output = handle
     }
     public func append(_ data: Data) throws {
-        try lock.withLock {
+        try lock.withLock { try appendLocked(data) }
+    }
+    private func appendLocked(_ data: Data) throws {
+        do {
             // A previous rotation/write may have failed after closing or renaming the
             // writer. Reopen from the actual file length so disk recovery is automatic.
             if output == nil { try openOutput() }
@@ -78,6 +81,39 @@ public final class RotatingDaemonLog: @unchecked Sendable {
             }
         }
     }
+    /// Appends and flushes to disk, giving up if another writer holds the log for longer
+    /// than `timeout`. For a line that must survive the process ending right after it.
+    public func appendDurably(_ data: Data, timeout: Double = 1) -> Bool {
+        guard lock.lock(before: Date().addingTimeInterval(max(0, timeout))) else { return false }
+        defer { lock.unlock() }
+        guard (try? appendLocked(data)) != nil else { return false }
+        try? output?.synchronize()
+        return true
+    }
+
+    /// Copies everything written to `descriptor` into the log until it reaches end of
+    /// file, then signals the returned semaphore. Disk-pressure diagnostics remain
+    /// available over the socket: the descriptor is drained even if disk writes fail, so
+    /// logging cannot SIGPIPE or block the daemon.
+    @discardableResult
+    public func pump(from descriptor: Int32) -> DispatchSemaphore {
+        let finished = DispatchSemaphore(value: 0)
+        let reader = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        Thread.detachNewThread { [self] in
+            var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+            while true {
+                let count = read(reader.fileDescriptor, &buffer, buffer.count)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { break }
+                try? append(Data(buffer.prefix(count)))
+            }
+            finished.signal()
+        }
+        return finished
+    }
+
+    nonisolated(unsafe) private static var pumpFinished: DispatchSemaphore?
+
     public static func redirect(to path: String) throws {
         let logger = try RotatingDaemonLog(path: path)
         var descriptors: [Int32] = [0, 0]
@@ -86,17 +122,33 @@ public final class RotatingDaemonLog: @unchecked Sendable {
             close(descriptors[0]); close(descriptors[1]); throw CocoaError(.fileWriteUnknown)
         }
         close(descriptors[1]); redirected = logger
-        let reader = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
-        Thread.detachNewThread {
-            var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-            while true {
-                let count = read(reader.fileDescriptor, &buffer, buffer.count)
-                if count < 0 && errno == EINTR { continue }
-                guard count > 0 else { break }
-                // Disk-pressure diagnostics remain available over the socket. Drain the
-                // pipe even if disk writes fail, so logging cannot SIGPIPE the daemon.
-                try? logger.append(Data(buffer.prefix(count)))
-            }
-        }
+        pumpFinished = logger.pump(from: descriptors[0])
+    }
+
+    /// Writes the daemon's last line. Stdout and stderr reach the log through a pipe and
+    /// a reader thread, so a line written just before the process ends is lost whenever
+    /// the process ends before that thread runs: always after `_exit`, and often on a
+    /// busy host. With a redirected log this writes the file directly and flushes it;
+    /// otherwise the line goes to stderr as usual.
+    public static func writeFinal(_ line: String) {
+        let data = Data((line + "\n").utf8)
+        if let logger = redirected, logger.appendDurably(data) { return }
+        FileHandle.standardError.write(data)
+    }
+
+    /// Before an exit: closes the daemon's ends of the log pipe and waits (at most
+    /// `timeout` seconds) for the reader to copy what was still in it. Later output to
+    /// stdout or stderr is discarded; `writeFinal` still reaches the file, so the usual
+    /// order is `drain`, then `writeFinal` for the last line. Nothing to do without a
+    /// redirected log.
+    public static func drain(timeout: Double = 2) {
+        guard let finished = pumpFinished else { return }
+        pumpFinished = nil
+        let null = open("/dev/null", O_WRONLY)
+        guard null >= 0 else { return }
+        dup2(null, STDOUT_FILENO)
+        dup2(null, STDERR_FILENO)
+        close(null)
+        _ = finished.wait(timeout: .now() + max(0, timeout))
     }
 }

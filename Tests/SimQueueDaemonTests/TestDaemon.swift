@@ -50,6 +50,7 @@ final class TestDaemon: @unchecked Sendable {
             path: paths.databasePath, maxInfraRetries: config.defaultMaxRetries,
             maxQueuedPerSubmitterPerProject: config.maxQueuedPerSubmitterPerProject)
         store.maxQueuedTotal = config.maxQueuedTotal
+        store.restartRecovery = config.restartRecovery
         let environment = EngineEnvironment(
             clock: SystemClock(),
             probe: FakeResourceProbe(fixed: healthyFakeHost),

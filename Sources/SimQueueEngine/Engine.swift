@@ -90,6 +90,17 @@ public enum EngineError: Error, Equatable, CustomStringConvertible {
         case .cleanupNotVerified(let what): return "cleanup reported success but \(what) still exists"
         }
     }
+
+    /// Whether the daemon must stop. Only a lost lease: another daemon owns the state now.
+    /// A cleanup that could not be verified is not proof of anything on a busy host (the
+    /// process table or simulator list that would confirm it may simply lag), so the
+    /// target stays owned and the next pass retries.
+    public var stopsDaemon: Bool {
+        switch self {
+        case .lostLease: return true
+        case .cleanupNotVerified: return false
+        }
+    }
 }
 
 /// Everything the engine touches outside the database, injected so tests and soak runs

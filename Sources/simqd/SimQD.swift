@@ -103,8 +103,11 @@ struct Run: ParsableCommand {
         }
     }
 
+    /// The last line of a failed run. Written straight to a redirected log and flushed:
+    /// output still in the stdout pipe when the process ends is otherwise lost.
     private func fail(_ message: String, _ code: SimQExitCode) -> ExitCode {
-        FileHandle.standardError.write(Data("simqd: \(message)\n".utf8))
+        RotatingDaemonLog.drain()
+        RotatingDaemonLog.writeFinal("simqd: \(message)")
         return ExitCode(code.rawValue)
     }
 
@@ -174,6 +177,7 @@ struct Run: ParsableCommand {
             path: databasePath, maxInfraRetries: daemonConfig.defaultMaxRetries,
             maxQueuedPerSubmitterPerProject: daemonConfig.maxQueuedPerSubmitterPerProject)
         store.maxQueuedTotal = daemonConfig.maxQueuedTotal
+        store.restartRecovery = daemonConfig.restartRecovery
         let outputRoot = daemonConfig.jobOutputRoot ?? paths.jobsRoot
         let outputConfiguration = try JobOutputConfiguration.prepare(
             stateDirectory: paths.stateDir, root: outputRoot, store: store, persist: !dryRun)
@@ -232,6 +236,8 @@ struct Run: ParsableCommand {
         )
         environment.historicalArtifactsRoots = outputConfiguration.roots
         let pid = ProcessInfo.processInfo.processIdentifier
+        // Read before the new lease replaces it: who ran last, and when it was last alive.
+        let previousDaemon = try? store.livenessReport(now: environment.clock.now())
         let (engine, recovery, reconcile) = try Engine.start(
             store: store,
             environment: environment,
@@ -301,9 +307,26 @@ struct Run: ParsableCommand {
                 + "reconcile_actions=\(reconcile.actions.count)"
         )
 
+        if let previous = service.reportPreviousStop(
+            previousPID: previousDaemon?.daemonPID, heartbeatAgeSeconds: previousDaemon?.heartbeatAgeSeconds)
+        {
+            log("simqd: \(previous)")
+        }
+
         if exitAfterStartup {
             server.stop()
+            service.recordStop(reason: "--exit-after-startup", exitCode: 0)
+            RotatingDaemonLog.drain()
             return
+        }
+        // The watchdog's exit bypasses every normal shutdown path, so it records its own
+        // reason: the log line and `last-stop.json` need no lock; the audit entry is
+        // written only if the service lock can still be taken.
+        server.livenessFailure = { reason in
+            RotatingDaemonLog.drain(timeout: 0.5)
+            RotatingDaemonLog.writeFinal("simqd: stopped: \(reason); exiting for restart")
+            service.recordStop(reason: reason, exitCode: SimQExitCode.internalError.rawValue)
+            _exit(SimQExitCode.internalError.rawValue)
         }
 
         signal(SIGINT, SIG_IGN)
@@ -311,7 +334,7 @@ struct Run: ParsableCommand {
         let signalQueue = DispatchQueue(label: "simqd.signals")
         let sources = [SIGINT, SIGTERM].map { number -> DispatchSourceSignal in
             let source = DispatchSource.makeSignalSource(signal: number, queue: signalQueue)
-            source.setEventHandler { server.stop() }
+            source.setEventHandler { server.stop(cause: number == SIGINT ? "SIGINT" : "SIGTERM") }
             source.resume()
             return source
         }
@@ -321,8 +344,11 @@ struct Run: ParsableCommand {
             server.waitUntilStopped()
         }
         if let failure = server.failure {
+            service.recordStop(reason: failure, exitCode: SimQExitCode.internalError.rawValue)
             throw fail("stopped: \(failure)", .internalError)
         }
-        log("simqd: stopped.")
+        service.recordStop(reason: "requested" + (server.requestedBy.map { " (\($0))" } ?? ""), exitCode: 0)
+        RotatingDaemonLog.drain()
+        RotatingDaemonLog.writeFinal("simqd: stopped.")
     }
 }

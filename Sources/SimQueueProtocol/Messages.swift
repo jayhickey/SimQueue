@@ -365,8 +365,12 @@ public struct SubmitParams: Sendable, Equatable, Codable {
     public var memoryBytesPerSim: UInt64
     /// Take the single exclusive slot (run one at a time). Nil: false.
     public var exclusive: Bool?
-    /// May be retried after an infra failure and requeued after a daemon restart. Nil: false.
+    /// May be retried after an infra failure. Nil: false. Under the `interrupt` restart
+    /// policy it is also the permission to replay a started command after a daemon restart.
     public var retryable: Bool?
+    /// True: never run the command again after a daemon restart interrupted it; the job
+    /// ends `interrupted` instead of being requeued. Nil: false.
+    public var noRestartReplay: Bool?
     /// Infra retries for a retryable job (0...10). Nil: the daemon default (1).
     public var maxRetries: Int?
     /// Run timeout from job start. Nil: the config default; 0: no limit.
@@ -450,6 +454,7 @@ public struct SubmitParams: Sendable, Equatable, Codable {
         case priority, exclusive, retryable
         case command, environment, cwd
         case maxRetries = "max_retries"
+        case noRestartReplay = "no_restart_replay"
         case priorityName = "priority_name"
         case queueTimeoutSeconds = "queue_timeout_seconds"
         case gitSHA = "git_sha"
@@ -753,6 +758,8 @@ public struct JobInfo: Sendable, Equatable, Codable {
     public var exclusive: Bool
     public var retryable: Bool
     public var maxRetries: Int?
+    /// True when the job opted out of replay after a daemon restart.
+    public var noRestartReplay: Bool?
     public var submitter: String
     public var state: JobState
     public var resultClass: ResultClass?
@@ -828,6 +835,7 @@ public struct JobInfo: Sendable, Equatable, Codable {
         exclusive = job.exclusive
         retryable = job.retryable
         maxRetries = job.maxRetries
+        noRestartReplay = job.command?.noRestartReplay
         device = job.command?.device
         physicalUDID = job.command?.physicalUDID
         template = job.command?.template
@@ -882,6 +890,7 @@ public struct JobInfo: Sendable, Equatable, Codable {
         case commandExitCode = "command_exit_code"
         case logPath = "log_path"
         case maxRetries = "max_retries"
+        case noRestartReplay = "no_restart_replay"
         case resultClass = "result_class"
         case queueTime = "queue_time"
         case admittedAt = "admitted_at"

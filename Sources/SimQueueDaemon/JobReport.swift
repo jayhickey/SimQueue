@@ -102,7 +102,9 @@ public enum JobReport {
 
 /// The daemon-wide append-only event log, `<state dir>/events.jsonl` (spec §5i): every
 /// job's state changes (queued, admitted, started, retried, finished, ...) as they're
-/// recorded, one JSON object per line, for debugging and metrics. Appended from the audit
+/// recorded, one JSON object per line, for debugging and metrics. Daemon stops are in it
+/// too (`daemon_stopped`, `daemon_exit_unrecorded`, without a `job_id`), so a gap in the
+/// log explains itself. Appended from the audit
 /// log once per tick; resumes after the last `seq` already in the file, so a restart never
 /// writes a line twice. Past `rotateBytes` the file moves to `events.jsonl.1` (one old
 /// generation is kept).
@@ -152,7 +154,8 @@ public final class EventLog {
             lastSeq = after
             return
         }
-        let lines = entries.filter { $0.jobID != nil }.map(JobReport.eventLine)
+        let lines = entries.filter { $0.jobID != nil || DaemonStopRecord.eventLogTypes.contains($0.type) }
+            .map(JobReport.eventLine)
         if !lines.isEmpty {
             try rotateIfNeeded()
             try ProcessExecutor.append(lines.joined(separator: "\n") + "\n", to: path)

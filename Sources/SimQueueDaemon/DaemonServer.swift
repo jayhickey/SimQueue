@@ -113,15 +113,34 @@ public final class DaemonServer: @unchecked Sendable {
     private let healthSlots = DispatchSemaphore(value: 1)
     public var livenessIntervalSeconds: Double = 5
     public var livenessTimeoutSeconds: Double = 2
+    /// How long status may go unanswered while the service lock also stands still before
+    /// the daemon counts as wedged.
     public var livenessFailureSeconds: Double = 30
+    /// How long status may go unanswered while the daemon is otherwise working (the lock
+    /// still changes hands) before the socket counts as unusable. Much longer: on an
+    /// overloaded host a status answer regularly takes longer than the probe waits, and
+    /// restarting a working daemon interrupts every running job.
+    public var livenessStarvedSeconds: Double = 600
     /// A wedged lock cannot be joined safely. Exit directly so KeepAlive can restart.
-    public var livenessFailure: @Sendable () -> Void = { _exit(70) }
+    /// The argument is the reason; the default writes it to the daemon log first.
+    public var livenessFailure: @Sendable (String) -> Void = { reason in
+        RotatingDaemonLog.writeFinal("simqd: \(reason); exiting for restart")
+        _exit(70)
+    }
+    /// Asks the daemon for its status over its own socket; false if no answer came in time.
+    public var livenessProbe: (@Sendable () -> Bool)?
+    /// Monotonic seconds, injectable for tests.
+    public var livenessUptime: @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
+    public var livenessLog: @Sendable (String) -> Void = { line in
+        FileHandle.standardError.write(Data("simqd: \(line)\n".utf8))
+    }
     private let livenessWake = DispatchSemaphore(value: 0)
 
     private let stateLock = NSLock()
     private var stopped = false
     private var wakePending = false
     private var stopReason: String?
+    private var stopCause: String?
     private let wake = DispatchSemaphore(value: 0)
     private let finished = DispatchGroup()
 
@@ -134,6 +153,8 @@ public final class DaemonServer: @unchecked Sendable {
     public var isStopped: Bool { stateLock.withLock { stopped } }
     /// Why the server stopped (nil for a normal stop).
     public var failure: String? { stateLock.withLock { stopReason } }
+    /// Who asked for a normal stop (a signal, a client), if known.
+    public var requestedBy: String? { stateLock.withLock { stopCause } }
 
     /// Starts the accept and tick threads and returns at once.
     public func start() {
@@ -154,33 +175,87 @@ public final class DaemonServer: @unchecked Sendable {
         }
     }
 
+    private func socketAnswersStatus() -> Bool {
+        if let livenessProbe { return livenessProbe() }
+        let response = try? SimQueueClient(socketPath: listener.path, timeoutSeconds: livenessTimeoutSeconds)
+            .send(Request(id: "simqd-liveness", params: .status))
+        if case .result(.status) = response?.body { return true }
+        return false
+    }
+
+    /// Exits the daemon when it is wedged, and only then.
+    ///
+    /// A failed probe alone proves little: with the host at many times its CPU capacity
+    /// an answer can take longer than the probe waits while every job is running fine.
+    /// So two things are measured: how long status has gone unanswered, and how long the
+    /// service lock has gone without being acquired by anyone. Both standing still for
+    /// `livenessFailureSeconds` is a wedge. Unanswered status with the lock still moving
+    /// is an overloaded daemon: it is logged once and left alone until
+    /// `livenessStarvedSeconds`, when the socket is as good as gone for clients anyway.
+    ///
+    /// Time is counted as this thread observes it, capped per round, so a process that
+    /// was itself not scheduled (or a host that slept) is never mistaken for a wedge.
     private func livenessLoop() {
-        var lastSuccess = ProcessInfo.processInfo.systemUptime
+        var last = livenessUptime()
+        var unanswered = 0.0
+        var lockIdle = 0.0
+        var lastAcquisitions = service.lockAcquisitions
+        var warned = false
         while !isStopped {
             if livenessWake.wait(timeout: .now() + livenessIntervalSeconds) == .success { return }
             if isStopped { return }
-            do {
-                let response = try SimQueueClient(socketPath: listener.path, timeoutSeconds: livenessTimeoutSeconds)
-                    .send(Request(id: "simqd-liveness", params: .status))
-                if case .result(.status) = response?.body {
-                    lastSuccess = ProcessInfo.processInfo.systemUptime
-                }
-            } catch {}
-            if ProcessInfo.processInfo.systemUptime - lastSuccess >= livenessFailureSeconds {
-                FileHandle.standardError.write(
-                    Data("simqd: socket liveness deadline exceeded; exiting for restart\n".utf8))
-                livenessFailure()
+            let answered = socketAnswersStatus()
+            if isStopped { return }
+            let now = livenessUptime()
+            let observed = min(max(0, now - last), livenessIntervalSeconds + livenessTimeoutSeconds + 1)
+            last = now
+            let acquisitions = service.lockAcquisitions
+            if acquisitions != lastAcquisitions {
+                lastAcquisitions = acquisitions
+                lockIdle = 0
+            } else {
+                lockIdle += observed
+            }
+            if answered {
+                if warned { livenessLog("socket liveness: status answered again after \(Int(unanswered))s") }
+                unanswered = 0
+                warned = false
+                continue
+            }
+            unanswered += observed
+            guard unanswered >= livenessFailureSeconds else { continue }
+            if lockIdle >= livenessFailureSeconds {
+                livenessFailure(
+                    "socket liveness: status unanswered for \(Int(unanswered))s and the service lock idle for "
+                        + "\(Int(lockIdle))s; the daemon is wedged ("
+                        + (service.lockHolderDescription.map { "service lock held by \($0)" }
+                            ?? "service lock free, nobody taking it") + ")")
                 return
+            }
+            if unanswered >= livenessStarvedSeconds {
+                livenessFailure(
+                    "socket liveness: status unanswered for \(Int(unanswered))s although the daemon is working; "
+                        + "the socket is unusable")
+                return
+            }
+            if !warned {
+                warned = true
+                livenessLog(
+                    "socket liveness: status unanswered for \(Int(unanswered))s but the daemon is working "
+                        + "(service lock last taken \(Int(lockIdle))s ago); not restarting. The host is likely "
+                        + "overloaded.")
             }
         }
     }
 
-    /// Stops accepting, ends the tick loop, and waits for both threads.
-    public func stop(reason: String? = nil) {
+    /// Stops accepting, ends the tick loop, and waits for both threads. `reason` marks a
+    /// failure (the daemon exits non-zero); `cause` says who asked for a normal stop.
+    public func stop(reason: String? = nil, cause: String? = nil) {
         let first: Bool = stateLock.withLock {
             guard !stopped else { return false }
             stopped = true
             stopReason = reason
+            stopCause = cause
             return true
         }
         guard first else { return }
@@ -208,10 +283,12 @@ public final class DaemonServer: @unchecked Sendable {
         while !isStopped {
             do {
                 try service.tick()
-            } catch let error as EngineError {
+            } catch let error as EngineError where error.stopsDaemon {
                 stop(reason: error.description)
                 return
             } catch {
+                // Everything else is retried by the next tick: a process table or simulator
+                // list that could not be read says nothing about the daemon's own state.
                 FileHandle.standardError.write(Data("simqd: tick failed: \(error)\n".utf8))
             }
             _ = wake.wait(timeout: .now() + service.nextTickInterval)
@@ -315,7 +392,7 @@ public final class DaemonServer: @unchecked Sendable {
         let response = service.handle(request)
         _ = send(response, on: connection)
         if case .stop(let params) = request.params, params.exitDaemon, case .result(.status) = response.body {
-            stop()
+            stop(cause: "stop request from a client")
             return
         }
         switch request.params {
