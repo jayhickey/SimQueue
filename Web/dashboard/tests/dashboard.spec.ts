@@ -175,8 +175,9 @@ test('disconnect preserves stale snapshot, disables actions and reconnects witho
   await page.route('**/api/snapshot', (route) =>
     offline ? route.abort() : route.fulfill({ json: fixture }),
   );
+  // Misses are retried first; the banner needs several in a row.
   await expect(page.getByRole('heading', { name: 'Can’t reach the Mac' })).toBeVisible({
-    timeout: 8000,
+    timeout: 15000,
   });
   await expect(page.getByText('78%', { exact: true })).toBeVisible();
   await expect(
@@ -191,6 +192,23 @@ test('disconnect preserves stale snapshot, disables actions and reconnects witho
   await expect(
     page.getByRole('heading', { name: 'Busy · 2 running, 1 preparing, 3 waiting' }),
   ).toBeVisible();
+});
+test('one missed poll keeps the snapshot usable and recovers without a banner', async ({
+  page,
+}) => {
+  await ready(page);
+  let misses = 1;
+  await page.route('**/api/snapshot', (route) =>
+    misses-- > 0 ? route.abort() : route.fulfill({ json: fixture }),
+  );
+  const status = page.locator('.connection');
+  await expect(status).toHaveText('Reconnecting', { timeout: 8000 });
+  await expect(page.getByRole('heading', { name: 'Can’t reach the Mac' })).toHaveCount(0);
+  await expect(
+    page.locator('[data-job-id="J-2207"]').getByRole('button', { name: 'Cancel', exact: true }),
+  ).toBeEnabled();
+  await expect(status).toHaveText('Live', { timeout: 8000 });
+  await expect(page.getByRole('heading', { name: 'Can’t reach the Mac' })).toHaveCount(0);
 });
 test('first load offline and empty queue have explicit states', async ({ page }, testInfo) => {
   await page.route('**/api/snapshot', (r) => r.abort());

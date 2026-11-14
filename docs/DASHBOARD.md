@@ -55,10 +55,15 @@ transition. The API bounds active jobs at 10,000; waiting cards render in batche
 of 30. Runner counts can exceed the filtered/displayed list.
 
 One shared snapshot poll runs three seconds after the previous request completes,
-only while visible. Failures back off to at most 30 seconds. **Retry now** and
-returning to the tab trigger a refresh without overlapping requests. On failure,
+only while visible. A missed poll is not treated as an outage: a busy Mac can answer
+late. With a snapshot on screen the header shows **Reconnecting**, the snapshot and its
+controls stay usable, and the poll is retried after 1.5 seconds. Three misses in a row
+(or a miss before any snapshot loaded) show the disconnected state, and further
+failures back off to at most 30 seconds. **Retry now** and
+returning to the tab trigger a refresh without overlapping requests. Once disconnected,
 the last snapshot stays visible with a stale warning and disabled mutation controls;
-timings freeze at that snapshot. Recovery requires no page reload. Job cards retain
+timings freeze at that snapshot. The dashboard server waits up to 3.5 seconds for each
+daemon answer. Recovery requires no page reload. Job cards retain
 DOM identity during updates, preserving normal scrolling and focus without scroll
 restoration or touch-gesture hacks.
 

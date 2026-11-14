@@ -383,6 +383,20 @@ export async function request<T>(
     options.signal?.removeEventListener('abort', abort);
   }
 }
+// One missed poll is not an outage: a busy Mac answers late. With a snapshot on screen,
+// the dashboard keeps it and retries quickly; only this many misses in a row (or a miss
+// with nothing to show) is reported as disconnected.
+export const OFFLINE_AFTER_FAILURES = 3;
+export type Connection = 'connecting' | 'live' | 'retrying' | 'offline';
+export function connectionAfterFailure(failures: number, hasSnapshot: boolean): Connection {
+  return hasSnapshot && failures < OFFLINE_AFTER_FAILURES ? 'retrying' : 'offline';
+}
+// Normal cadence, quick retries while a miss may still be a blip, then backoff.
+export function pollDelay(failures: number): number {
+  if (failures === 0) return 3000;
+  if (failures < OFFLINE_AFTER_FAILURES) return 1500;
+  return Math.min(30000, 3000 * 2 ** Math.min(failures - OFFLINE_AFTER_FAILURES + 1, 4));
+}
 // A single scheduling lane: refresh requests (including manual retry) never overlap.
 export function createPoller(
   task: () => Promise<boolean>,
@@ -408,7 +422,7 @@ export function createPoller(
     } finally {
       busy = false;
       if (!stopped) {
-        const delay = rerun ? 0 : Math.min(30000, 3000 * 2 ** Math.min(failures, 4));
+        const delay = rerun ? 0 : pollDelay(failures);
         rerun = false;
         timer = schedule(run, delay);
       }

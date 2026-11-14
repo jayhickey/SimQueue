@@ -9,15 +9,20 @@ import SimQueueProtocol
 public struct DashboardAPI {
     public static let historyLimit = 100
     public static let activeLimit = 10_000
+    /// How long one daemon request may take. A snapshot is three requests and the browser
+    /// gives up on it after 12 s, so three of these must fit. Two seconds was too tight:
+    /// a loaded host regularly answers status later than that while working normally, and
+    /// each miss showed the dashboard as disconnected.
+    public static let daemonTimeoutSeconds: Double = 3.5
     private let observe: (RequestParams) throws -> ResultPayload
 
     public init(observe: @escaping (RequestParams) throws -> ResultPayload) {
         self.observe = observe
     }
 
-    public init(socketPath: String) {
+    public init(socketPath: String, timeoutSeconds: Double = DashboardAPI.daemonTimeoutSeconds) {
         self.init { params in
-            let client = SimQueueClient(socketPath: socketPath, timeoutSeconds: 2)
+            let client = SimQueueClient(socketPath: socketPath, timeoutSeconds: timeoutSeconds)
             guard let response = try client.send(Request(params: params)) else { throw DashboardError.unavailable }
             switch response.body {
             case .result(let value): return value
