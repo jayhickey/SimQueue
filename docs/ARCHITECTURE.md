@@ -75,7 +75,7 @@ After a restart, interrupted work is requeued at its original queue position, at
 
 A restart interruption never counts toward the infra-failure drain: the drain holds admission when work keeps failing on the host, and a restart says nothing about the next job. A job that reaches the restart cap ends `infra_failed` and does count. Repeated unplanned restarts are held back by their own breaker, described under liveness below.
 
-A replayed attempt runs in the job's existing run directory. Before it starts, the earlier attempt's result bundle is moved aside and kept and its temporary directory is emptied; the build cache and the log are kept. A requeued job is not admitted again while it still holds a simulator lease from its earlier attempt: the lease is released by the pool the way it is after any ended job, so the replay holds one simulator, in the state any job would get. A pool that takes no host action never releases a lease, so there the job is admitted with the simulator it already holds and no second one. Only the command's own process group is stopped before a replay; a descendant that left the group can outlive it.
+A replayed attempt runs in the job's existing run directory. Before it starts, the earlier attempt's result bundle is moved aside and kept and its temporary directory is emptied; the build cache and the log are kept. A requeued job is not admitted again while it still holds a simulator lease from its earlier attempt: the lease is released by the pool the way it is after any ended job, so the replay holds one simulator, in the state any job would get. A pool that takes no host action never releases a lease, so the hold is not applied there: the job is admitted only when another simulator is ready, keeps the one it holds, and otherwise waits like every simulator job on such a pool. Only the command's own process group is stopped before a replay; a descendant that left the group can outlive it.
 
 A waiting client reconnects to the same job; reconnect is separate from command recovery. Planned upgrades first drain admitted work, process groups, simulator leases, pending intents and template/pool/preparation/archive/artifact workers. A drain timeout leaves its gate set and does not authorize a restart. Live destructive uninstall also requires completed drain, refuses unresolved processes/intents even with force, and re-reads ownership after stop. See [installation](INSTALL.md) for consistent backups, legacy-state transitions and matching-backup rollback. Unfinished legacy shard groups are refused before database migration or writer journal changes.
 
@@ -148,8 +148,10 @@ heartbeat. A wedged daemon records its reason under a five-second hard deadline,
 stalled disk cannot keep it alive.
 
 Each start after anything but a requested stop is audited as
-`daemon_unplanned_restart`. Three of them within 15 minutes hold admissions
-(`restart_loop`) until `simq resume`; see [recovery](PROTOCOL.md#recovery).
+`daemon_unplanned_restart`. While five of them fall inside the last 15 minutes,
+admissions are held (`restart_loop`) and health is `degraded`. The hold lifts by itself
+when the oldest ages out of the window, and `simq resume` lifts it sooner; see
+[recovery](PROTOCOL.md#recovery).
 
 The `simq doctor` client also reports `socket_round_trip` latency, `daemon_threads`
 and `daemon_zombies`. When the socket fails, it inspects the persisted daemon PID;

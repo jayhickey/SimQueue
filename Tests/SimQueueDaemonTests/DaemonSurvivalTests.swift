@@ -2,13 +2,14 @@
 
 import Foundation
 import SimQueueCore
-import SimQueueDaemon
 import SimQueueEngine
 import SimQueueHost
 import SimQueueIPC
 import SimQueueProtocol
 import SimQueueStore
 import XCTest
+
+@testable import SimQueueDaemon
 
 #if canImport(Darwin)
     import Darwin
@@ -361,16 +362,16 @@ final class DaemonSurvivalTests: XCTestCase {
         XCTAssertEqual(
             RestartBreakerPolicy(limit: 0).status(restartTimes: [1, 2, 3, 4], clearedAt: nil, now: 5), .normal,
             "0 turns it off")
-        XCTAssertEqual(RestartBreakerPolicy().limit, 3)
+        XCTAssertEqual(RestartBreakerPolicy().limit, 5)
         XCTAssertEqual(RestartBreakerPolicy().windowSeconds, 900)
     }
 
     func testUnplannedRestartsHoldAdmissionsAndPlannedOnesDoNot() throws {
         let dir = scratch("sqb")
         defer { try? FileManager.default.removeItem(atPath: dir) }
-        // Three clean stop-and-start cycles: nothing is counted.
+        // Six clean stop-and-start cycles: nothing is counted.
         var daemon = try TestDaemon(stateDir: dir)
-        for _ in 0..<3 {
+        for _ in 0..<6 {
             daemon.service.recordStop(reason: "requested (SIGTERM)", exitCode: 0)
             daemon.stop()
             daemon = try TestDaemon(stateDir: dir)
@@ -380,25 +381,56 @@ final class DaemonSurvivalTests: XCTestCase {
         let fine = try daemon.submit(SubmitParams(project: "ok", submitter: "test", minSims: 0)).job
         XCTAssertEqual(try daemon.wait(fine.id).state, .succeeded)
 
-        // Three starts after a daemon that failed or vanished: admissions are held.
-        for cycle in 0..<3 {
+        // Five starts after a daemon that failed or vanished: admissions are held.
+        for cycle in 0..<5 {
             if cycle == 0 { daemon.service.recordStop(reason: "socket liveness: the daemon is wedged", exitCode: 70) }
             daemon.stop()
             daemon = try TestDaemon(stateDir: dir)
             daemon.service.reportPreviousStop(previousPID: 1, heartbeatAgeSeconds: 40)
         }
         defer { daemon.destroy() }
-        XCTAssertEqual(try audits(daemon, RestartBreakerPolicy.auditType).count, 3)
+        XCTAssertEqual(try audits(daemon, RestartBreakerPolicy.auditType).count, 5)
         let held = try daemon.submit(SubmitParams(project: "held", submitter: "test", minSims: 0)).job
         try eventually("the breaker shows in status") {
             guard case .status(let status) = try daemon.result(.status) else { return false }
             return status.globalWaitReasons.contains { $0.code == "restart_loop" }
         }
         XCTAssertEqual(try daemon.job(held.id).state, .queued)
-        XCTAssertEqual(try daemon.job(held.id).waitReasons.first?.code, "restart_loop")
+        let reason = try XCTUnwrap(try daemon.job(held.id).waitReasons.first)
+        XCTAssertEqual(reason.code, "restart_loop")
+        XCTAssertTrue(
+            reason.summary.contains("Lifts by itself once the oldest restart is older than that"), reason.summary)
+        XCTAssertTrue(reason.summary.contains("simq resume lifts it now"), reason.summary)
+        // Visible where an operator or a monitor looks, not only on the job.
+        guard case .status(let status) = try daemon.result(.status) else { return XCTFail("no status") }
+        let health = try XCTUnwrap(status.health)
+        XCTAssertEqual(health.health, "degraded")
+        XCTAssertTrue(
+            health.reasons.contains { $0.hasPrefix("restart loop: 5 unplanned daemon restarts") }, "\(health.reasons)")
+        try daemon.service.writeHealth(now: Date().timeIntervalSince1970)
+        let healthFile = try String(contentsOfFile: daemon.service.healthPath, encoding: .utf8)
+        XCTAssertTrue(healthFile.contains("restart loop: 5 unplanned daemon restarts"), healthFile)
 
         _ = try daemon.result(.resume)
-        XCTAssertEqual(try daemon.wait(held.id).state, .succeeded, "simq resume clears it")
+        XCTAssertEqual(try daemon.wait(held.id).state, .succeeded, "simq resume lifts it at once")
+        guard case .status(let after) = try daemon.result(.status) else { return XCTFail("no status") }
+        XCTAssertEqual(after.health?.reasons.contains { $0.hasPrefix("restart loop") }, false)
+    }
+
+    func testARequestedStopDropsTheStoredWaitReasonsAnOlderDaemonCouldNotRead() throws {
+        let daemon = try TestDaemon()
+        defer { daemon.destroy() }
+        try daemon.side.setPaused(true)
+        let job = try daemon.submit(SubmitParams(project: "waiting", submitter: "test", minSims: 0)).job
+        eventually("the wait reason is stored") { (try? daemon.side.explanation(jobID: job.id)) != nil }
+        daemon.stop()
+
+        // A failure stop leaves the snapshot alone; a requested one drops it.
+        daemon.service.recordStop(reason: "daemon lease lost", exitCode: 70)
+        XCTAssertNotNil(try daemon.side.explanation(jobID: job.id))
+        daemon.service.recordStop(reason: "requested (SIGTERM)", exitCode: 0)
+        XCTAssertNil(try daemon.side.explanation(jobID: job.id), "nothing left for a rolled-back daemon to trip over")
+        XCTAssertEqual(try daemon.side.job(id: job.id)?.state, .queued, "the job itself is untouched")
     }
 
     func testAWedgedDaemonStillLeavesItsReasonAndTheNextDaemonAuditsIt() throws {

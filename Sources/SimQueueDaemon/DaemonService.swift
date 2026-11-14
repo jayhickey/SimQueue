@@ -256,6 +256,13 @@ public final class DaemonService: @unchecked Sendable {
             record.audited = true
             if let stateDirectory { record.write(stateDirectory: stateDirectory) }
             try eventLog?.append(from: store)
+            if record.planned {
+                // The stored "why waiting" snapshot is only valid for this daemon's last
+                // tick, and the next daemon rewrites it on its first. Dropping it at a
+                // requested stop also keeps a rollback safe: an older daemon cannot decode
+                // a wait reason it does not know and would fail `explain` until that tick.
+                try store.saveExplanations([], at: record.at)
+            }
         } catch {
             log("stop record not audited: \(error)")
         }
@@ -1249,7 +1256,8 @@ public final class DaemonService: @unchecked Sendable {
         let summary = HealthSummary.evaluate(
             breaker: state.breaker, anomalies: anomalies, draining: try engine.drainActive(now: now),
             lastPassAt: state.lastPassAt, now: now, staleAfterSeconds: 3 * config.watchdog.lightIntervalSeconds,
-            postponed: state.postponedTargets.count, lastPassError: state.lastPassError)
+            postponed: state.postponedTargets.count, lastPassError: state.lastPassError,
+            restartLoop: try engine.restartBreakerStatus(now: now))
         return HealthInfo(
             summary: summary, state: state, anomalies: anomalies, cleanupMode: config.reliability.cleanupMode.rawValue,
             now: now,

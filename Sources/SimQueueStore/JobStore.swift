@@ -767,7 +767,7 @@ public final class JobStore {
         try database.run("UPDATE queue_control SET paused = ? WHERE singleton = 1;", [.integer(paused ? 1 : 0)])
     }
 
-    /// `simq resume`: unpauses and forgets infra failures so far.
+    /// `simq resume`: unpauses and forgets infra failures and unplanned restarts so far.
     public func resume(now: Double) throws {
         try database.run("UPDATE queue_control SET paused = 0, drain_cleared_at = ? WHERE singleton = 1;", [.real(now)])
     }

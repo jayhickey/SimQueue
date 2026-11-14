@@ -788,7 +788,8 @@ public final class Engine {
         try store.saveWatchdogState(state, now: now)
         let health = HealthSummary.evaluate(
             breaker: after, anomalies: report.anomalies, draining: try drainActive(now: now), lastPassAt: now,
-            now: now, staleAfterSeconds: .infinity, postponed: state.postponedTargets.count)
+            now: now, staleAfterSeconds: .infinity, postponed: state.postponedTargets.count,
+            restartLoop: try restartBreakerStatus(now: now))
         let alerts =
             Self.alertEvents(escalated: report.escalated, transitions: transitions) + report.lookalikeAlerts
             + ageAlerts

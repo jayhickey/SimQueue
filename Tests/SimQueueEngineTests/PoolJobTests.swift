@@ -127,8 +127,12 @@ final class PoolJobTests: XCTestCase {
     }
 
     /// A pool in report-only mode never releases a lease, so the hold above would never
-    /// end there. The job is admitted, and keeps to the sim it already has.
-    func testOnAPoolThatTakesNoHostActionARequeuedJobIsNotHeldAndStillGetsOnlyOneSim() throws {
+    /// end there and is not applied. What then decides is ordinary capacity: the sim the
+    /// job still holds counts as busy, so it is admitted only if another sim is ready,
+    /// and it keeps to the one it has. Without a spare it waits, like every sim job on a
+    /// pool that never gives sims back; only switching the pool to a mode that acts (or
+    /// canceling the job) ends that wait.
+    func testOnAPoolThatTakesNoHostActionARequeuedJobNeedsASpareAndStillGetsOnlyOneSim() throws {
         let harness = Harness()
         harness.probe.update { host in
             host.cpuCount = 8
@@ -143,13 +147,21 @@ final class PoolJobTests: XCTestCase {
         engine.pool = config
         let job = try harness.submit(store, retryable: false, resources: ResourceRequest(minSims: 1))
         // What a restart leaves on such a host: the job queued again, its earlier lease
-        // still on the books, and a spare ready sim.
+        // still on the books.
         try store.savePoolSim(
             PoolSim(udid: "U1", name: "simq-pool-1-1", phase: .leased, createdAt: 0, leaseID: "job:\(job.id)"))
-        try store.savePoolSim(PoolSim(udid: "U2", name: "simq-pool-2-1", phase: .ready, createdAt: 0))
 
-        XCTAssertEqual(try engine.tick().admitted, [job.id], "nothing here will ever release the lease")
-        XCTAssertEqual(try engine.poolSimUDIDs(jobID: job.id), ["U1"], "no second sim on top")
+        let waiting = try engine.tick()
+        XCTAssertTrue(waiting.admitted.isEmpty, "its own sim is busy and no other is ready")
+        XCTAssertNotEqual(
+            waiting.plan.waiting.first?.reasons, [.cleanupPending(jobID: job.id)],
+            "not the cleanup hold: nothing here would ever end it")
+        XCTAssertEqual(try engine.poolSimUDIDs(jobID: job.id), ["U1"])
+
+        // A spare ready sim: admitted, and no second sim on top of the one it holds.
+        try store.savePoolSim(PoolSim(udid: "U2", name: "simq-pool-2-1", phase: .ready, createdAt: 0))
+        XCTAssertEqual(try engine.tick().admitted, [job.id])
+        XCTAssertEqual(try engine.poolSimUDIDs(jobID: job.id), ["U1"])
         XCTAssertEqual(try store.poolSims().first { $0.udid == "U2" }?.phase, .ready)
     }
 

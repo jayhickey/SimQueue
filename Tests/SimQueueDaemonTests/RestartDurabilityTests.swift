@@ -54,13 +54,15 @@ final class RestartDurabilityTests: XCTestCase {
 
     /// Starts simqd in the foreground on the fake backend and waits until it answers.
     private func startDaemon(
-        crashBeforeClaim: String? = nil, waitForReady: Bool = true, logToState: Bool = false
+        crashBeforeClaim: String? = nil, waitForReady: Bool = true, logToState: Bool = false,
+        stallLastWords: Bool = false
     ) throws -> Int32 {
         let simqd = try binary("simqd")
         var environment = ProcessInfo.processInfo.environment
         environment["SIMQ_NO_AUTOSTART"] = "1"
         environment["SIMQ_HOST_LOCK"] = stateDir + "-host.lock"
         environment["SIMQ_TEST_CRASH_BEFORE_CLAIM"] = crashBeforeClaim
+        environment["SIMQ_TEST_STALL_LAST_WORDS"] = stallLastWords ? "1" : nil
         try FileManager.default.createDirectory(
             atPath: stateDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // With --log-to-state the daemon redirects its own output into simqd.log through
@@ -305,11 +307,13 @@ final class RestartDurabilityTests: XCTestCase {
         XCTAssertTrue(log.contains("replay output"), log)
     }
 
-    /// A daemon that keeps dying must not keep rerunning the queue. Three unplanned
-    /// starts close together hold admissions until someone resumes.
+    /// A daemon that keeps dying must not keep rerunning the queue. Five unplanned
+    /// starts close together hold admissions; `simq resume` lifts the hold at once (it
+    /// would also lift by itself once the oldest start left the window, which the engine
+    /// tests cover on an injected clock).
     func testRepeatedUnplannedRestartsHoldAdmissionsUntilResumed() throws {
         var pid = try startDaemon()
-        for _ in 0..<3 {
+        for _ in 0..<5 {
             stop(pid, SIGKILL)
             daemon = nil
             pid = try startDaemon()
@@ -325,8 +329,12 @@ final class RestartDurabilityTests: XCTestCase {
         XCTAssertEqual(try job(response.job.id).state, .queued, "queued work is kept, not run")
         guard case .status(let held) = try call(.status) else { throw TestFailure("status") }
         let reason = try XCTUnwrap(held.globalWaitReasons.first { $0.code == "restart_loop" })
-        XCTAssertTrue(reason.summary.contains("restarted unexpectedly 3 times"), reason.summary)
-        XCTAssertTrue(reason.summary.contains("simq resume"), reason.summary)
+        XCTAssertTrue(reason.summary.contains("restarted unexpectedly 5 times"), reason.summary)
+        XCTAssertTrue(reason.summary.contains("Lifts by itself"), reason.summary)
+        XCTAssertTrue(reason.summary.contains("simq resume lifts it now"), reason.summary)
+        let health = try XCTUnwrap(held.health)
+        XCTAssertEqual(health.health, "degraded")
+        XCTAssertTrue(health.reasons.contains { $0.hasPrefix("restart loop: 5 unplanned") }, "\(health.reasons)")
 
         _ = try call(.resume)
         try eventually("the job runs after resume", timeout: 30) { try job(response.job.id).state == .succeeded }
@@ -376,13 +384,25 @@ final class RestartDurabilityTests: XCTestCase {
     }
 
     #if DEBUG
+        /// The wiring of the hard exit on a failure stop. Recording the stop never returns
+        /// (a debug-only fault, standing in for a stalled disk); the daemon must still
+        /// exit with its failure status instead of living on with its state lock held.
+        func testAFailingDaemonExitsEvenIfRecordingItsStopNeverReturns() throws {
+            let pid = try startDaemon(logToState: true, stallLastWords: true)
+            let store = try JobStore(path: SimQueuePaths(stateDir: stateDir).databasePath)
+            _ = try store.acquireDaemonLease(ownerID: "usurper", pid: 1, now: Date().timeIntervalSince1970)
+            let lost = Date()
+            XCTAssertEqual(try waitForExit(pid, timeout: 60), .exited(70))
+            XCTAssertNil(stopRecord(), "nothing was recorded: the exit came from the deadline, not the normal path")
+            XCTAssertFalse(log().contains("simqd: stopped:"), log())
+            XCTAssertLessThan(Date().timeIntervalSince(lost), 45, "bounded")
+        }
+
         func testRepeatedCrashBeforeClaimHitsTheCapAndTheNextJobRuns() throws {
             try FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
-            // This test is about the per-job restart cap, which takes four crashes in a
-            // row to reach. The restart-loop breaker would hold admissions after three, so
-            // it is off here; it has its own test.
-            try #"{"max_unplanned_restarts": 0}"#.write(
-                toFile: stateDir + "/config.json", atomically: true, encoding: .utf8)
+            // Default configuration on purpose: the per-job restart cap (four crashes) has
+            // to end the job that keeps taking the daemon down before the restart-loop
+            // breaker (five unplanned starts) would hold the whole queue.
             let store = try JobStore(path: SimQueuePaths(stateDir: stateDir).databasePath)
             let bad = try store.submit(
                 JobSubmission(
@@ -405,6 +425,10 @@ final class RestartDurabilityTests: XCTestCase {
             }
             _ = try startDaemon(crashBeforeClaim: bad.id)
             try eventually("next job finishes after the cap", timeout: 20) { try job(next.id).state == .succeeded }
+            guard case .status(let status) = try call(.status) else { throw TestFailure("status") }
+            XCTAssertFalse(
+                status.globalWaitReasons.contains { $0.code == "restart_loop" },
+                "four unplanned starts: the cap acted first, the queue was never held")
             let capped = try job(bad.id)
             XCTAssertEqual(capped.state, .infraFailed)
             XCTAssertEqual(capped.resultClass, .internalError)

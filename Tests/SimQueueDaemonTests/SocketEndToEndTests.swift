@@ -420,10 +420,10 @@ final class DaemonConfigTests: XCTestCase {
             try DaemonConfig.parse(Data(#"{"restart_recovery": "interrupt"}"#.utf8)).restartRecovery, .interrupt)
         XCTAssertEqual(
             try DaemonConfig.parse(Data(#"{"restart_recovery": "requeue"}"#.utf8)).restartRecovery, .requeue)
-        XCTAssertEqual(config.scheduler.restartBreaker, RestartBreakerPolicy(limit: 3, windowSeconds: 900))
+        XCTAssertEqual(config.scheduler.restartBreaker, RestartBreakerPolicy(limit: 5, windowSeconds: 900))
         let breaker = try DaemonConfig.parse(
-            Data(#"{"max_unplanned_restarts": 5, "unplanned_restart_window_seconds": 120}"#.utf8))
-        XCTAssertEqual(breaker.scheduler.restartBreaker, RestartBreakerPolicy(limit: 5, windowSeconds: 120))
+            Data(#"{"max_unplanned_restarts": 3, "unplanned_restart_window_seconds": 120}"#.utf8))
+        XCTAssertEqual(breaker.scheduler.restartBreaker, RestartBreakerPolicy(limit: 3, windowSeconds: 120))
         XCTAssertEqual(
             try DaemonConfig.parse(Data(#"{"max_unplanned_restarts": 0}"#.utf8)).scheduler.restartBreaker.limit, 0)
         for bad in [

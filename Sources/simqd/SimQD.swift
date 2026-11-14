@@ -32,6 +32,23 @@ enum ExecutorKind: String, ExpressibleByArgument, CaseIterable {
     case fake
 }
 
+/// Runs a failing daemon's last words (its stop record and final log line) under a hard
+/// deadline. Each of them is disk I/O, and one waits for the service lock: on a stalled
+/// disk any of them can block forever, and a daemon that never exits keeps its state
+/// directory lock, so the service manager cannot start a replacement. The deadline ends
+/// the process with `exitCode` whatever `record` is blocked on. It stays armed after
+/// `record` returns, covering the rest of the way out.
+func lastWords(exitCode: Int32, _ record: () -> Void) {
+    HardExit.arm(after: HardExit.lastWordsSeconds) { _exit(exitCode) }
+    #if DEBUG
+        // Fault injection: recording never returns, as on a stalled disk. Absent in release builds.
+        if ProcessInfo.processInfo.environment["SIMQ_TEST_STALL_LAST_WORDS"] != nil {
+            while true { Thread.sleep(forTimeInterval: 3_600) }
+        }
+    #endif
+    record()
+}
+
 /// Unbuffered stdout line, so logs appear promptly under launchd or a pipe.
 func log(_ line: String) {
     FileHandle.standardOutput.write(Data((line + "\n").utf8))
@@ -321,14 +338,14 @@ struct Run: ParsableCommand {
         }
         // The watchdog's exit bypasses every normal shutdown path, so it records its own
         // reason: the log line and `last-stop.json` need no lock; the audit entry is
-        // written only if the service lock can still be taken.
+        // written only if the service lock can still be taken. All of it runs under the
+        // hard deadline of `lastWords`.
         server.livenessFailure = { reason in
-            // Everything below touches the disk and one step waits for the service lock.
-            // A stalled disk must not keep a wedged daemon alive: end it regardless.
-            HardExit.arm(after: HardExit.lastWordsSeconds) { _exit(SimQExitCode.internalError.rawValue) }
-            RotatingDaemonLog.drain(timeout: 0.5)
-            RotatingDaemonLog.writeFinal("simqd: stopped: \(reason); exiting for restart")
-            service.recordStop(reason: reason, exitCode: SimQExitCode.internalError.rawValue)
+            lastWords(exitCode: SimQExitCode.internalError.rawValue) {
+                RotatingDaemonLog.drain(timeout: 0.5)
+                RotatingDaemonLog.writeFinal("simqd: stopped: \(reason); exiting for restart")
+                service.recordStop(reason: reason, exitCode: SimQExitCode.internalError.rawValue)
+            }
             _exit(SimQExitCode.internalError.rawValue)
         }
 
@@ -347,7 +364,9 @@ struct Run: ParsableCommand {
             server.waitUntilStopped()
         }
         if let failure = server.failure {
-            service.recordStop(reason: failure, exitCode: SimQExitCode.internalError.rawValue)
+            lastWords(exitCode: SimQExitCode.internalError.rawValue) {
+                service.recordStop(reason: failure, exitCode: SimQExitCode.internalError.rawValue)
+            }
             throw fail("stopped: \(failure)", .internalError)
         }
         service.recordStop(reason: "requested" + (server.requestedBy.map { " (\($0))" } ?? ""), exitCode: 0)

@@ -9,7 +9,8 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case device(state: String, detail: String)
     case paused
     case draining(recentInfraFailures: Int)
-    /// The daemon keeps restarting unexpectedly; admissions are held (`simq resume`).
+    /// The daemon keeps restarting unexpectedly. Admissions are held while that many
+    /// unplanned starts fall inside the window; `simq resume` lifts the hold sooner.
     case restartLoop(restarts: Int, windowSeconds: Double)
     case memoryPressure(level: MemoryPressure, stopAt: MemoryPressure)
     case swapGrowing(bytesPerMinute: Double, limitBytesPerMinute: Double)
@@ -78,7 +79,8 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .restartLoop(let restarts, let window):
             return
                 "daemon restarted unexpectedly \(restarts) times in the last \(Int((window / 60).rounded())) min; "
-                + "admissions held so jobs are not rerun in a loop. See simqd.log and last-stop.json, then simq resume"
+                + "admissions held so jobs are not rerun in a loop. Lifts by itself once the oldest restart is "
+                + "older than that; simq resume lifts it now. See simqd.log and last-stop.json"
         case .memoryPressure(let level, let stopAt):
             return "memory pressure is \(level.rawValue) (stops at \(stopAt.rawValue))"
         case .swapGrowing(let rate, let limit):
