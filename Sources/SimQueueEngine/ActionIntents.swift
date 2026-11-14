@@ -69,14 +69,18 @@ extension Engine {
             if intent.auditType == Self.pressureShutdownAuditType { continue }
             let present: Bool
             switch intent.target {
-            case .processGroup(let pgid): present = try environment.processes.liveProcessGroups().contains(pgid)
-            case .sim(let udid): present = try environment.sims.listDevices().contains { $0.udid == udid }
+            case .processGroup(let pgid):
+                present = try environment.processes.liveProcessGroups().contains(pgid)
+            case .sim(let udid):
+                present = try (hostCall { try self.environment.sims.listDevices() }).contains { $0.udid == udid }
             case .path(let path): present = environment.fileSystem.fileExists(path)
             case .simCreate(let name):
                 // A create is the other way round: a sim with the name means it happened.
                 // Its pool row may be missing; the watchdog then sees an owned-namespace sim
                 // without an ownership row and handles it like any other leftover.
-                if let device = try environment.sims.listDevices().first(where: { $0.name == name }) {
+                if let device = try (hostCall { try self.environment.sims.listDevices() }).first(where: {
+                    $0.name == name
+                }) {
                     // A template build that died between create and register: register it now.
                     _ = try recoverTemplateCreate(intent, device: device, now: now)
                     try store.confirmActionIntent(intent, detailSuffix: " (confirmed by recovery)", now: now)

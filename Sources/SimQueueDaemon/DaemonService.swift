@@ -13,6 +13,7 @@ import SimQueueStore
 /// scheduler.
 public final class DaemonService: @unchecked Sendable {
     private let lock = NSLock()
+    private let lockKey = "simqd.service-lock." + UUID().uuidString
     public let engine: Engine
     public let config: DaemonConfig
     public let info: DaemonInfo
@@ -89,14 +90,16 @@ public final class DaemonService: @unchecked Sendable {
         self.engine = engine
         self.config = config
         engine.physicalDevices = config.devices
-        engine.deviceHealth =
-            deviceHealth ?? { udid in
+        let healthCache = DeviceHealthCache(
+            probe: deviceHealth ?? { udid in
                 guard info.backend != "fake" else {
                     return DeviceHealth(
                         state: "device_unavailable", detail: "physical device probes disabled with fake backend")
                 }
                 return Devicectl().health(udid: udid)
-            }
+            })
+        engine.deviceHealth = { healthCache.health($0) }
+        engine.deviceHealthIsCached = true
         engine.pool = config.pool
         engine.hostTemplates = config.hostTemplates
         engine.defaultHostTemplate = config.defaultHostTemplate
@@ -136,6 +139,10 @@ public final class DaemonService: @unchecked Sendable {
         self.lastLightPassAt = state.lastLightPassAt
         self.lastFullPassAt = state.lastFullPassAt
         try? writeHealth(now: engine.environment.clock.now())
+        engine.hostWork = { [weak self] body in
+            guard let self else { try body(); return }
+            try self.withoutLock(body)
+        }
         engine.templateVersions = { [weak self] in self?.templateVersions }
     }
 
@@ -164,17 +171,31 @@ public final class DaemonService: @unchecked Sendable {
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
-        defer { lock.unlock() }
+        Thread.current.threadDictionary[lockKey] = true
+        defer {
+            Thread.current.threadDictionary.removeObject(forKey: lockKey)
+            lock.unlock()
+        }
         return try body()
     }
 
-    /// For the pool pass's slow host work (a simslim clone, a boot): called with the service
-    /// lock held, it drops the lock for `body` and takes it back after, so requests are
-    /// answered meanwhile. The serial pool worker owns one pass, so no second pass starts.
+    /// Snapshot host-call arguments under the service lock, execute without it,
+    /// then reacquire before applying results. Thread-local ownership makes nested
+    /// handoffs and standalone/off-lock engine calls safe without unlocking twice.
+    /// The serial tick/pool workers retain ownership of their respective passes.
     private func withoutLock(_ body: () throws -> Void) throws {
+        guard Thread.current.threadDictionary[lockKey] as? Bool == true else {
+            try body()
+            return
+        }
         hostWorkInFlight += 1
+        Thread.current.threadDictionary.removeObject(forKey: lockKey)
         lock.unlock()
-        defer { lock.lock(); hostWorkInFlight -= 1 }
+        defer {
+            lock.lock()
+            Thread.current.threadDictionary[lockKey] = true
+            hostWorkInFlight -= 1
+        }
         try body()
     }
 
@@ -201,7 +222,7 @@ public final class DaemonService: @unchecked Sendable {
             if shutdownRequested, let lastTick { return lastTick }
             if let failure = poolFailure { throw failure }
             let nowForProbe = engine.environment.clock.now()
-            let host = try engine.environment.probe.sample(now: nowForProbe)
+            let host = try (engine.hostCall { try self.engine.environment.probe.sample(now: nowForProbe) })
             if var pool = config.pool, !poolPassRunning {
                 if engine.maintenanceDraining { pool.warmMin = 0 }
                 let settings = pool
@@ -212,7 +233,9 @@ public final class DaemonService: @unchecked Sendable {
                         defer { poolPassRunning = false }
                         do {
                             let now = engine.environment.clock.now()
-                            let fresh = now - host.sampledAt <= 1 ? host : try engine.environment.probe.sample(now: now)
+                            let fresh =
+                                now - host.sampledAt <= 1
+                                ? host : try (engine.hostCall { try self.engine.environment.probe.sample(now: now) })
                             lastPoolPass = try engine.poolPass(
                                 config: settings, demand: engine.maintenanceDraining ? 0 : nil,
                                 extraDemand: extra, host: fresh, hostWork: { try withoutLock($0) })
@@ -433,7 +456,7 @@ public final class DaemonService: @unchecked Sendable {
 
     static func map(_ failure: TemplateError) -> ProtocolError {
         switch failure {
-        case .notSupported, .slimNotWired, .inProgress, .poolDisabled, .poolCreateInFlight:
+        case .notSupported, .slimNotWired, .inProgress, .poolDisabled, .poolCreateInFlight, .removalInProgress:
             ProtocolError(.invalidState, failure.description)
         case .createFailed: ProtocolError(.internalError, failure.description)
         case .alreadyExists: ProtocolError(.invalidState, failure.description)
@@ -1233,7 +1256,8 @@ public final class DaemonService: @unchecked Sendable {
             where resource.kind == .processGroup && resource.state == .active {
                 // Never a pgid now led by a different process (#38).
                 if let pgid = Int32(resource.externalID), live.contains(pgid),
-                    try engine.environment.processes.verifyGroup(pgid, identity: resource.identity, live: live)
+                    try engine.environment.processes.verifyGroup(
+                        pgid, identity: resource.identity, live: live)
                         == .verified
                 {
                     try? engine.environment.processes.signalGroup(pgid, .term)

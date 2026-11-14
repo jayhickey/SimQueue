@@ -60,9 +60,11 @@ public enum TemplateError: Error, Equatable, CustomStringConvertible {
     /// The pool is off or doesn't act on the host, so a template build (a sim create) is refused.
     case poolDisabled(String)
     case poolCreateInFlight(template: String, clones: [String])
+    case removalInProgress(String)
 
     public var description: String {
         switch self {
+        case .removalInProgress(let template): "template \(template) is being removed; retry after removal finishes"
         case .notSupported: "this sim backend can't build templates"
         case .alreadyExists(let project, let profile, let name):
             "\(project)/\(profile) already has a template (\(name)); pass --replace to build a new one"
@@ -130,7 +132,7 @@ extension Engine {
     /// Pass `devices` to reuse a listing the caller already has.
     public func unregisteredTemplateSims(in devices: [SimDevice]? = nil) throws -> [SimDevice] {
         let registered = Set(try store.liveResources(kinds: [.template]).map(\.externalID))
-        return try (devices ?? environment.sims.listDevices()).filter {
+        return try (devices ?? (hostCall { try self.environment.sims.listDevices() })).filter {
             environment.naming.isTemplate($0.name) && !registered.contains($0.udid)
         }
     }
@@ -148,7 +150,7 @@ extension Engine {
         -> PendingTemplate
     {
         guard let builder = templateBuilder else { throw TemplateError.notSupported }
-        guard !request.slim || builder.slimSupported else { throw TemplateError.slimNotWired }
+        guard try !request.slim || hostCall({ builder.slimSupported }) else { throw TemplateError.slimNotWired }
         try checkPoolAllowsTemplateBuild()
         let now = environment.clock.now()
         if !request.replace,
@@ -335,14 +337,20 @@ extension Engine {
             guard environment.naming.owns(entry.record.name) else {
                 throw EngineError.cleanupNotVerified("\(what) is outside the namespace")
             }
-            let present = try environment.sims.listDevices().contains { $0.udid == udid }
+            let reservation: Set<String> = [entry.record.name, udid]
+            guard templateRemovalsInFlight.isDisjoint(with: reservation) else {
+                throw TemplateError.removalInProgress(entry.record.name)
+            }
+            templateRemovalsInFlight.formUnion(reservation)
+            defer { templateRemovalsInFlight.subtract(reservation) }
+            let present = try (hostCall { try self.environment.sims.listDevices() }).contains { $0.udid == udid }
             if present {
                 let intent = ActionIntent(
                     target: .sim(udid: udid), auditType: Self.templateRemovedAuditType, detail: "removed \(what)",
                     resourceID: entry.resourceID, releaseReason: "template removed")
                 try performUnderIntent(intent, now: now) {
-                    try builder.deleteTemplate(udid: udid)
-                    if try environment.sims.listDevices().contains(where: { $0.udid == udid }) {
+                    try hostCall { try builder.deleteTemplate(udid: udid) }
+                    if try (hostCall { try self.environment.sims.listDevices() }).contains(where: { $0.udid == udid }) {
                         throw EngineError.cleanupNotVerified("sim \(udid)")
                     }
                 }

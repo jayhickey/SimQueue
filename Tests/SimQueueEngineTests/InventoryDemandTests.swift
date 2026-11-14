@@ -49,6 +49,42 @@ final class InventoryDemandTests: XCTestCase {
         return (harness, backend, store, engine)
     }
 
+    func testInventoryCannotReleaseASimulatorRegisteredWhileItWasBeingRead() throws {
+        let (harness, backend, store, engine) = try start()
+        var registered: OwnedResource?
+        backend.beforeList = {
+            backend.beforeList = nil
+            registered = try? store.acquireResource(
+                kind: .sim, externalID: "NEW", owner: .pool, epoch: engine.epoch, now: harness.clock.now())
+        }
+        let report = try engine.reconcile()
+        let resource = try XCTUnwrap(registered)
+        XCTAssertFalse(report.actions.contains(.markGone(resourceID: resource.id)))
+        XCTAssertEqual(try store.resource(id: resource.id)?.state, .active)
+    }
+
+    func testAdmissionRefreshesPoolCapacityAfterUnlockedResourceProbe() throws {
+        let (harness, _, store, engine) = try start()
+        engine.pool = poolConfig
+        try store.savePoolSim(
+            PoolSim(
+                udid: "READY", name: "simq-pool-ready", phase: .ready, createdAt: harness.clock.now()))
+        let job = try harness.submit(store)
+        let stale = try harness.probe.sample(now: harness.clock.now() - 2)
+        var leased = false
+        engine.hostWork = { body in
+            if !leased {
+                leased = true
+                XCTAssertNotNil(try engine.acquireManualLease(leaseID: "lease:other", pid: nil))
+            }
+            try body()
+        }
+        XCTAssertTrue(try engine.tick(host: stale).admitted.isEmpty)
+        XCTAssertTrue(leased)
+        XCTAssertEqual(try store.job(id: job.id)?.state, .queued)
+        XCTAssertEqual(try store.poolSims().first?.leaseID, "lease:other")
+    }
+
     private var poolConfig: SimPoolConfig {
         var config = SimPoolConfig()
         config.mode = .active

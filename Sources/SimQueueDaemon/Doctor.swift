@@ -3,6 +3,8 @@
 import Foundation
 import SimQueueCore
 import SimQueueEngine
+import SimQueueHost
+import SimQueueIPC
 import SimQueueProtocol
 import SimQueueSim
 import SimQueueStore
@@ -269,7 +271,7 @@ public enum DoctorBuilder {
         }
 
         let config = live.engine.scheduler.config
-        if let host = try? live.engine.environment.probe.sample(now: now) {
+        if let host = try? (live.engine.hostCall { try live.engine.environment.probe.sample(now: now) }) {
             let free = host.freeDiskBytes
             // Same floor the scheduler uses: warn below it, fail below half of it (0: always ok).
             let diskLevel: DoctorCheck.Level =
@@ -341,7 +343,71 @@ public enum DoctorBuilder {
         String(format: "%.1f GiB", Double(bytes) / Double(ByteSize.gibibyte))
     }
 
-    /// Offline report from the state file, opened read-only.
+    /// Run from the doctor client, independently of the service lock. This still
+    /// reports a stuck daemon using its persisted PID when the socket does not answer.
+    public static func runtimeChecks(
+        paths: SimQueuePaths, daemonPID: Int32?,
+        processOutput: ([String]) throws -> String = { try ToolRunner().check("ps", $0, timeoutSeconds: 2) }
+    ) -> [DoctorCheck] {
+        var checks: [DoctorCheck] = []
+        var pid = daemonPID
+        if pid == nil, let store = try? JobStore(readOnlyPath: paths.databasePath),
+            let row = try? store.database.query("SELECT pid FROM daemon_lease WHERE singleton = 1;").first,
+            let value = row.int("pid")
+        {
+            pid = Int32(exactly: value)
+        }
+        let start = ProcessInfo.processInfo.systemUptime
+        do {
+            let response = try SimQueueClient(socketPath: paths.socketPath, timeoutSeconds: 2)
+                .send(Request(params: .status))
+            guard case .result(.status(let status)) = response?.body else { throw SocketError.closed }
+            pid = status.daemon.pid
+            let milliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1000
+            checks.append(
+                DoctorCheck(
+                    name: "socket_round_trip", level: .ok,
+                    detail: String(format: "%.1f ms (status round-trip)", milliseconds)))
+        } catch {
+            checks.append(
+                DoctorCheck(
+                    name: "socket_round_trip",
+                    level: pid.flatMap { try? SystemProcessTable().processIdentity($0) } != nil ? .fail : .warn,
+                    detail: "status round-trip failed: \(error)"))
+        }
+        guard let pid, pid > 0 else {
+            checks.append(DoctorCheck(name: "daemon_process", level: .warn, detail: "daemon PID unavailable"))
+            return checks
+        }
+        do {
+            #if canImport(Darwin)
+                let threads = try processOutput(["-M", "-p", String(pid), "-o", "pid="])
+                    .split(separator: "\n").count
+            #else
+                let text = try processOutput(["-p", String(pid), "-o", "nlwp="])
+                let threads = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            #endif
+            checks.append(
+                DoctorCheck(
+                    name: "daemon_threads", level: threads >= 60 ? .warn : .ok,
+                    detail: "\(threads) threads for pid \(pid)"))
+            let children = try processOutput(["-axo", "ppid=,stat="])
+            let zombies = children.split(separator: "\n").filter { line in
+                let fields = line.split(whereSeparator: { $0.isWhitespace })
+                return fields.count >= 2 && Int32(fields[0]) == pid && fields[1].hasPrefix("Z")
+            }.count
+            checks.append(
+                DoctorCheck(
+                    name: "daemon_zombies", level: zombies > 0 ? .warn : .ok,
+                    detail: "\(zombies) zombie children for pid \(pid)"))
+        } catch {
+            for name in ["daemon_threads", "daemon_zombies"] where !checks.contains(where: { $0.name == name }) {
+                checks.append(DoctorCheck(name: name, level: .warn, detail: "unavailable: \(error)"))
+            }
+        }
+        return checks
+    }
+
     public static func offline(paths: SimQueuePaths, now: Double) throws -> DoctorReport {
         let store = try JobStore(readOnlyPath: paths.databasePath)
         return try build(store: store, now: now, daemon: nil, socketPath: paths.socketPath)

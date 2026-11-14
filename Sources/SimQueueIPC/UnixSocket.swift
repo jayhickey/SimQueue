@@ -99,16 +99,42 @@ public final class UnixConnection: @unchecked Sendable {
         // Protect a fresh socket before connecting: a server that immediately closes
         // must not turn the option setup into a disconnected-socket EINVAL.
         let connection = try UnixConnection(descriptor: descriptor)
+        // A full Unix-socket backlog can block connect itself. Bound that phase
+        // as well as reads, including the daemon's own liveness round-trip.
+        let originalFlags = fcntl(descriptor, F_GETFL)
+        _ = fcntl(descriptor, F_SETFL, originalFlags | O_NONBLOCK)
+        defer { if connection.descriptor >= 0 { _ = fcntl(descriptor, F_SETFL, originalFlags) } }
         let result = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Foundation.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 else {
+        if result != 0 {
             let code = errno
-            connection.close()
-            throw SocketError.system(call: "connect", errno: code)
+            guard code == EINPROGRESS else {
+                connection.close()
+                if code == EAGAIN || code == EWOULDBLOCK { throw SocketError.timedOut }
+                throw SocketError.system(call: "connect", errno: code)
+            }
+            let deadline = ProcessInfo.processInfo.systemUptime + (timeoutSeconds > 0 ? timeoutSeconds : 5)
+            var event = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            while true {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { connection.close(); throw SocketError.timedOut }
+                let ready = poll(&event, 1, Int32(min(remaining * 1000 + 1, Double(Int32.max))))
+                if ready < 0 && errno == EINTR { continue }
+                guard ready > 0 else { connection.close(); throw SocketError.timedOut }
+                var failure: Int32 = 0
+                var length = socklen_t(MemoryLayout<Int32>.size)
+                guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &failure, &length) == 0, failure == 0 else {
+                    let code = failure == 0 ? errno : failure
+                    connection.close()
+                    throw SocketError.system(call: "connect", errno: code)
+                }
+                break
+            }
         }
+        connection.setSendTimeout(timeoutSeconds > 0 ? timeoutSeconds : 5)
         connection.setReceiveTimeout(timeoutSeconds)
         return connection
     }
@@ -119,6 +145,14 @@ public final class UnixConnection: @unchecked Sendable {
         value.tv_sec = Int(seconds)
         value.tv_usec = .init(Int((seconds - Double(Int(seconds))) * 1_000_000))
         setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &value, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    /// Bound writes too: a client that stops reading must not pin a worker.
+    public func setSendTimeout(_ seconds: Double) {
+        var value = timeval()
+        value.tv_sec = Int(seconds)
+        value.tv_usec = .init(Int((seconds - Double(Int(seconds))) * 1_000_000))
+        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &value, socklen_t(MemoryLayout<timeval>.size))
     }
 
     /// The connecting process's uid, if the platform reports it.
@@ -152,6 +186,7 @@ public final class UnixConnection: @unchecked Sendable {
                     if errno == EINTR { continue }
                     throw SocketError.system(call: "send", errno: errno)
                 }
+                guard sent > 0 else { throw SocketError.closed }
                 offset += sent
             }
         }

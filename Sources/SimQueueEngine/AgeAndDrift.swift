@@ -452,7 +452,7 @@ extension Engine {
         var findings: [String] = []
         let sightings = try store.sightings()
         let owned = Set(try store.liveResources().filter { $0.kind == .sim }.map(\.externalID))
-        for sim in try environment.sims.listDevices().sorted(by: { $0.udid < $1.udid })
+        for sim in try (hostCall { try self.environment.sims.listDevices() }).sorted(by: { $0.udid < $1.udid })
         where sim.isBooted && !owned.contains(sim.udid) && !environment.naming.owns(sim.name) {
             guard let first = sightings["foreign_sim:\(sim.udid)"]?.firstSeenAt,
                 now - first >= rules.foreignBootedSimReportSeconds

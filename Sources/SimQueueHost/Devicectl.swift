@@ -6,7 +6,11 @@ import SimQueueCore
 /// Read-only health probes. ToolRunner's environment permits a fake xcrun on PATH.
 public struct Devicectl: Sendable {
     public var runner: ToolRunner
-    public init(runner: ToolRunner = ToolRunner()) { self.runner = runner }
+    public var timeoutSeconds: Double
+    public init(runner: ToolRunner = ToolRunner(), timeoutSeconds: Double = 15) {
+        self.runner = runner
+        self.timeoutSeconds = timeoutSeconds
+    }
 
     private func json(_ arguments: [String]) throws -> [String: Any] {
         // JSON files work across Xcode versions, including versions without stdout JSON.
@@ -14,7 +18,8 @@ public struct Devicectl: Sendable {
             "simq-device-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: file) }
         _ = try runner.check(
-            "xcrun", ["devicectl"] + arguments + ["--timeout", "10", "--json-output", file.path], timeoutSeconds: 15)
+            "xcrun", ["devicectl"] + arguments + ["--timeout", "10", "--json-output", file.path],
+            timeoutSeconds: timeoutSeconds)
         let data = try Data(contentsOf: file)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let result = root["result"] as? [String: Any]

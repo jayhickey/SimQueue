@@ -154,6 +154,17 @@ public final class Engine {
     /// How long a parked leftover goes without a full re-check (pgid reuse, namespace).
     static let parkedReconfirmSeconds: Double = 3600
     public let store: JobStore
+    /// The daemon supplies a lock handoff; standalone engines execute inline.
+    /// Only host calls belong here, never database or scheduler mutations.
+    public var hostWork: PoolHostWork = { try $0() }
+
+    public func hostCall<T>(_ body: () throws -> T) throws -> T {
+        var result: T?
+        try hostWork { result = try body() }
+        guard let result else { preconditionFailure("hostWork must execute its body synchronously") }
+        return result
+    }
+
     public let environment: EngineEnvironment
     public let scheduler: Scheduler
     public let epoch: Int64
@@ -173,6 +184,7 @@ public final class Engine {
     public var deviceHealth: (String) -> DeviceHealth = { _ in
         DeviceHealth(state: "device_unavailable", detail: "device backend not configured")
     }
+    public var deviceHealthIsCached = false
     private var deviceHealthCache: [String: (Double, DeviceHealth)] = [:]
     public func recordPhysicalDeviceLocked(udid: String) {
         deviceHealthCache[udid] = (
@@ -188,12 +200,13 @@ public final class Engine {
             if !device.enabled {
                 health = DeviceHealth(state: "device_unavailable", detail: "disabled in config")
             } else if let cached = deviceHealthCache[device.udid], now < cached.0 + 30,
+                (!deviceHealthIsCached || cached.1.state == "device_locked"),
                 !(refreshReady && cached.1.ready && leases[device.udid] == nil)
             {
                 health = cached.1
             } else {
                 health = deviceHealth(device.udid)
-                deviceHealthCache[device.udid] = (now, health)
+                if !deviceHealthIsCached { deviceHealthCache[device.udid] = (now, health) }
             }
             return PhysicalDeviceInfo(device: device, health: health, jobID: leases[device.udid])
         }
@@ -220,6 +233,8 @@ public final class Engine {
     /// Recovery skips them: only a build no live daemon is running is a crash. In memory
     /// on purpose: after a restart the set is empty, so every earlier build is recovered.
     var templateBuildsInFlight: Set<Int64> = []
+    /// Names and UDIDs reserved before template removal releases the service lock.
+    var templateRemovalsInFlight: Set<String> = []
     /// Host actions released from the service lock remain owned by their worker.
     var hostActionIntentsInFlight: Set<Int64> = []
     /// Live daemon artifact preparation writers. Updated under the service lock; their
@@ -449,7 +464,8 @@ public final class Engine {
                 if resource.externalID.hasPrefix(JobStore.spawnIntentPrefix) { owners.insert(jobID) }
                 continue
             }
-            switch try environment.processes.verifyGroup(pgid, identity: resource.identity, live: live) {
+            switch try environment.processes.verifyGroup(pgid, identity: resource.identity, live: live)
+            {
             case .verified, .unverifiable: owners.insert(jobID)
             case .gone, .reused: break
             }
@@ -470,26 +486,16 @@ public final class Engine {
             throw EngineError.lostLease(epoch: epoch)
         }
         var timeoutReport = try enforceTimeouts(now: now)
-        var host = try snapshot ?? environment.probe.sample(now: now)
+        var host = try snapshot ?? (hostCall { try self.environment.probe.sample(now: now) })
         recordSwapSample(host, at: now)
 
         let cleanupOwners = try jobsWithLiveProcessGroups()
-        var active = try store.activeJobs()
-        let activeIDs = Set(active.map(\.id))
-        let leases = try store.poolSims()
-        for jobID in cleanupOwners.subtracting(activeIDs) {
-            guard var job = try store.job(id: jobID) else { continue }
-            // An infra retry clears grants, but its old process and simulator lease
-            // remain a real capacity commitment until verified cleanup finishes.
-            job.grantedSims = max(job.grantedSims, leases.filter { $0.leaseID == Self.poolLeaseID(jobID: jobID) }.count)
-            active.append(job)
-        }
         var queued = try store.queuedJobs()
-        let availablePool: PoolSnapshot
+        var availablePool: PoolSnapshot
         if pool != nil {
             availablePool = try poolCapacity()
         } else if queued.contains(where: { $0.resources.needsSims }) {
-            availablePool = try environment.sims.poolSnapshot()
+            availablePool = try (hostCall { try self.environment.sims.poolSnapshot() })
         } else {
             // No simulator allocation can be made this pass. Active jobs still feed
             // CapacityState's committed grants and project/exclusive accounting; a
@@ -503,9 +509,23 @@ public final class Engine {
         // sample; jobs whose queue deadline passed during that wait cannot be admitted.
         now = environment.clock.now()
         if now - host.sampledAt >= 1 {
-            host = try environment.probe.sample(now: now)
+            host = try (hostCall { try self.environment.probe.sample(now: now) })
             recordSwapSample(host, at: now)
         }
+        // Manual leases or pool work may have changed ready capacity while the
+        // resource probe ran unlocked. Claim only from the current ledger.
+        if pool != nil { availablePool = try poolCapacity() }
+        var active = try store.activeJobs()
+        let activeIDs = Set(active.map(\.id))
+        let leases = try store.poolSims()
+        for jobID in cleanupOwners.subtracting(activeIDs) {
+            guard var job = try store.job(id: jobID) else { continue }
+            // An infra retry clears grants, but its old process and simulator lease
+            // remain a real capacity commitment until verified cleanup finishes.
+            job.grantedSims = max(job.grantedSims, leases.filter { $0.leaseID == Self.poolLeaseID(jobID: jobID) }.count)
+            active.append(job)
+        }
+        queued = try store.queuedJobs()
         for job in queued where job.isQueueExpired(now: now) {
             if try store.expire(jobID: job.id, now: now) { timeoutReport.expired.append(job.id) }
         }
@@ -571,6 +591,8 @@ public final class Engine {
 
     /// What exists right now, according to the injected backends.
     public func observeWorld() throws -> ObservedWorld {
+        let generations = Dictionary(uniqueKeysWithValues: try store.liveResources().map { ($0.id, $0.generation) })
+        let devices = try (hostCall { try self.environment.sims.listDevices() })
         let fileSystem = environment.fileSystem
         let layout = environment.layout
         let directories = try fileSystem.children(of: layout.runsRoot) + fileSystem.children(of: layout.derivedDataRoot)
@@ -588,11 +610,11 @@ public final class Engine {
         let registeredSims =
             protectedCreates.isEmpty ? Set<String>() : Set(try store.liveResources(kinds: [.sim]).map(\.externalID))
         return ObservedWorld(
-            sims: try environment.sims.listDevices().filter {
+            sims: devices.filter {
                 !protectedCreates.contains($0.name) || registeredSims.contains($0.udid)
             },
             liveProcessGroups: try environment.processes.liveProcessGroups(),
-            managedDirectories: Set(directories)
+            managedDirectories: Set(directories), resourceGenerations: generations
         )
     }
 
@@ -815,7 +837,8 @@ public final class Engine {
         // grow with every leftover a report-only full pass carries).
         let world =
             scope == .light
-            ? ObservedWorld(liveProcessGroups: try environment.processes.liveProcessGroups()) : try observeWorld()
+            ? ObservedWorld(liveProcessGroups: try environment.processes.liveProcessGroups())
+            : try observeWorld()
         let activeJobs = Set(try store.activeJobs().filter { $0.ownerEpoch == epoch }.map(\.id))
         let liveResources =
             scope == .light
@@ -1055,7 +1078,11 @@ public final class Engine {
                 target: .processGroup(pgid), auditType: Self.destructiveAuditType,
                 detail: "terminated process group \(pgid)", resourceID: id, releaseReason: "process group terminated")
             try performUnderIntent(intent, now: now) {
-                try environment.processes.terminateGroup(pgid, graceSeconds: environment.processGraceSeconds)
+                try
+                    (hostCall {
+                        try self.environment.processes.terminateGroup(
+                            pgid, graceSeconds: environment.processGraceSeconds)
+                    })
                 if try environment.processes.liveProcessGroups().contains(pgid) {
                     throw EngineError.cleanupNotVerified("process group \(pgid)")
                 }
@@ -1065,8 +1092,8 @@ public final class Engine {
                 target: .sim(udid: udid), auditType: Self.destructiveAuditType, detail: "deleted sim \(udid)",
                 resourceID: id, releaseReason: id == nil ? nil : "sim deleted")
             try performUnderIntent(intent, now: now) {
-                try environment.sims.deleteDevice(udid: udid)
-                if try environment.sims.listDevices().contains(where: { $0.udid == udid }) {
+                try (hostCall { try self.environment.sims.deleteDevice(udid: udid) })
+                if try (hostCall { try self.environment.sims.listDevices() }).contains(where: { $0.udid == udid }) {
                     throw EngineError.cleanupNotVerified("sim \(udid)")
                 }
             }

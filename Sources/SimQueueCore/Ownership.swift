@@ -115,13 +115,20 @@ public struct RunDirectoryLayout: Sendable, Equatable {
 public struct ObservedWorld: Sendable, Equatable {
     public var sims: [SimDevice]
     public var liveProcessGroups: Set<Int32>
+    /// Ledger generations that existed before an unlocked observation. New or
+    /// changed rows are claimed, but cannot be judged absent by an older snapshot.
+    public var resourceGenerations: [Int64: Int64]?
     /// Entries found under the managed run and DerivedData roots (absolute paths).
     public var managedDirectories: Set<String>
 
-    public init(sims: [SimDevice] = [], liveProcessGroups: Set<Int32> = [], managedDirectories: Set<String> = []) {
+    public init(
+        sims: [SimDevice] = [], liveProcessGroups: Set<Int32> = [], managedDirectories: Set<String> = [],
+        resourceGenerations: [Int64: Int64]? = nil
+    ) {
         self.sims = sims
         self.liveProcessGroups = liveProcessGroups
         self.managedDirectories = managedDirectories
+        self.resourceGenerations = resourceGenerations
     }
 }
 
@@ -196,6 +203,14 @@ public enum Reconciler {
         var claimedDirectories = Set<String>()
 
         for resource in resources.sorted(by: { $0.id < $1.id }) where resource.state != .released {
+            if let generations = world.resourceGenerations, generations[resource.id] != resource.generation {
+                switch resource.kind {
+                case .sim, .template: claimedSims.insert(resource.externalID)
+                case .runDir, .derivedDataDir: claimedDirectories.insert(resource.externalID)
+                case .lease, .processGroup: break
+                }
+                continue
+            }
             let ownerAlive: Bool
             switch resource.owner {
             case .job(let jobID):

@@ -104,6 +104,20 @@ public final class DaemonServer: @unchecked Sendable {
     /// Seconds between `wait` polls of the job row.
     public var waitPollSeconds: Double = 0.05
 
+    // Separate bounded lanes keep streaming waits and slow administrative work
+    // from consuming the control lane or Dispatch's shared worker pool.
+    private let ingressSlots = DispatchSemaphore(value: 4)
+    private let workSlots = DispatchSemaphore(value: 8)
+    private let controlSlots = DispatchSemaphore(value: 4)
+    private let waitSlots = DispatchSemaphore(value: 16)
+    private let healthSlots = DispatchSemaphore(value: 1)
+    public var livenessIntervalSeconds: Double = 5
+    public var livenessTimeoutSeconds: Double = 2
+    public var livenessFailureSeconds: Double = 30
+    /// A wedged lock cannot be joined safely. Exit directly so KeepAlive can restart.
+    public var livenessFailure: @Sendable () -> Void = { _exit(70) }
+    private let livenessWake = DispatchSemaphore(value: 0)
+
     private let stateLock = NSLock()
     private var stopped = false
     private var wakePending = false
@@ -133,6 +147,32 @@ public final class DaemonServer: @unchecked Sendable {
             tickLoop()
             finished.leave()
         }
+        finished.enter()
+        Thread.detachNewThread { [self] in
+            livenessLoop()
+            finished.leave()
+        }
+    }
+
+    private func livenessLoop() {
+        var lastSuccess = ProcessInfo.processInfo.systemUptime
+        while !isStopped {
+            if livenessWake.wait(timeout: .now() + livenessIntervalSeconds) == .success { return }
+            if isStopped { return }
+            do {
+                let response = try SimQueueClient(socketPath: listener.path, timeoutSeconds: livenessTimeoutSeconds)
+                    .send(Request(id: "simqd-liveness", params: .status))
+                if case .result(.status) = response?.body {
+                    lastSuccess = ProcessInfo.processInfo.systemUptime
+                }
+            } catch {}
+            if ProcessInfo.processInfo.systemUptime - lastSuccess >= livenessFailureSeconds {
+                FileHandle.standardError.write(
+                    Data("simqd: socket liveness deadline exceeded; exiting for restart\n".utf8))
+                livenessFailure()
+                return
+            }
+        }
     }
 
     /// Stops accepting, ends the tick loop, and waits for both threads.
@@ -146,6 +186,7 @@ public final class DaemonServer: @unchecked Sendable {
         guard first else { return }
         listener.close()
         wake.signal()
+        livenessWake.signal()
     }
 
     /// Blocks until `stop` has been called and both loops have exited.
@@ -187,7 +228,20 @@ public final class DaemonServer: @unchecked Sendable {
                 if isStopped { return }
                 continue
             }
-            DispatchQueue.global().async { [self] in
+            connection.setSendTimeout(0.1)
+            guard ingressSlots.wait(timeout: .now()) == .success else {
+                _ = send(
+                    Response(
+                        id: "",
+                        body: .error(
+                            ProtocolError(.queueFull, "daemon busy: too many incoming requests; retry shortly"))),
+                    on: connection)
+                connection.close()
+                continue
+            }
+            finished.enter()
+            Thread.detachNewThread { [self] in
+                defer { ingressSlots.signal(); finished.leave() }
                 serve(connection)
             }
         }
@@ -199,8 +253,10 @@ public final class DaemonServer: @unchecked Sendable {
     }
 
     func serve(_ connection: UnixConnection) {
-        defer { connection.close() }
-        connection.setReceiveTimeout(10)
+        var handedOff = false
+        defer { if !handedOff { connection.close() } }
+        connection.setReceiveTimeout(2)
+        connection.setSendTimeout(1)
         // Owner-only socket; also refuse a peer running as a different user.
         if let peer = connection.peerUID(), peer != getuid() {
             _ = send(
@@ -210,7 +266,10 @@ public final class DaemonServer: @unchecked Sendable {
         }
         let line: Data
         do {
-            guard let read = try connection.readLine(maxBytes: LineCodec.maxLineBytes) else { return }
+            guard
+                let read = try connection.readLine(
+                    maxBytes: LineCodec.maxLineBytes, deadline: Date().timeIntervalSince1970 + 2)
+            else { return }
             line = read
         } catch {
             _ = send(Response(id: "", body: .error(ProtocolError(.badRequest, "\(error)"))), on: connection)
@@ -225,6 +284,30 @@ public final class DaemonServer: @unchecked Sendable {
                 on: connection)
             return
         }
+        let slots: DispatchSemaphore
+        switch request.params {
+        case .wait: slots = waitSlots
+        case .status where request.id == "simqd-liveness": slots = healthSlots
+        case .status, .submit, .cancel, .jobs: slots = controlSlots
+        default: slots = workSlots
+        }
+        guard slots.wait(timeout: .now()) == .success else {
+            _ = send(
+                Response(
+                    id: request.id,
+                    body: .error(ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly"))),
+                on: connection)
+            return
+        }
+        handedOff = true
+        finished.enter()
+        Thread.detachNewThread { [self] in
+            defer { connection.close(); slots.signal(); finished.leave() }
+            execute(request, on: connection)
+        }
+    }
+
+    private func execute(_ request: Request, on connection: UnixConnection) {
         if case .wait(let params) = request.params, request.schemaVersion <= Envelope.currentSchemaVersion {
             streamWait(request, params, on: connection)
             return

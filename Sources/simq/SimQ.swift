@@ -640,6 +640,7 @@ struct Doctor: ParsableCommand {
                 throw ExitCode(2)
             }
         }
+        report.checks += DoctorBuilder.runtimeChecks(paths: connection.paths, daemonPID: report.daemon?.pid)
         report.checks.insert(.version(client: SimQueueVersion.current, daemon: report.daemon?.version), at: 0)
         if let simq = Bundle.main.executablePath,
             let appCLI = DoctorCheck.appCLI(runningSimq: simq, apps: DoctorCheck.installedApps())
