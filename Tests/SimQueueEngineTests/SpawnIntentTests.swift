@@ -48,9 +48,22 @@ final class SpawnIntentTests: XCTestCase {
         XCTAssertTrue(try store.unresolvedSpawnIntents().isEmpty)
     }
 
-    func testAFoundStartedNonRetryableCommandIsStoppedButNotReplayed() throws {
+    func testAFoundStartedNonRetryableCommandIsStoppedThenRequeuedByDefault() throws {
         let harness = Harness()
         let (store, job, intent) = try crashAfterSpawn(harness, retryable: false)
+        let (_, recovery, _) = try harness.start(store: store)
+        XCTAssertEqual(recovery.killedProcessGroups, [900], "never requeued beside its first copy")
+        XCTAssertEqual(harness.processes.terminated, [900])
+        XCTAssertEqual(recovery.requeued, [job.id], "a restart does not drop the job")
+        XCTAssertEqual(try store.job(id: job.id)?.state, .queued)
+        XCTAssertEqual(try store.job(id: job.id)?.restartRequeues, 1)
+        XCTAssertEqual(try store.resource(id: intent.id)?.state, .released)
+    }
+
+    func testAFoundStartedNonRetryableCommandIsStoppedButNotReplayedUnderTheInterruptPolicy() throws {
+        let harness = Harness()
+        let (store, job, intent) = try crashAfterSpawn(harness, retryable: false)
+        store.restartRecovery = .interrupt
         let (_, recovery, _) = try harness.start(store: store)
         XCTAssertEqual(recovery.resolvedSpawnIntents, [900])
         XCTAssertEqual(recovery.killedProcessGroups, [900], "SimQueue's own job group: stopped in any cleanup mode")
