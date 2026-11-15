@@ -106,9 +106,7 @@ public final class DaemonServer: @unchecked Sendable {
 
     // Separate bounded lanes keep streaming waits and slow administrative work
     // from consuming the control lane or Dispatch's shared worker pool.
-    /// Connections reading their request line at once. Each holds a slot only until its
-    /// request is decoded and handed to a per-kind pool below, so this bounds threads, not work.
-    private let ingressSlots = DispatchSemaphore(value: 16)
+    private let ingressSlots = DispatchSemaphore(value: 4)
     private let workSlots = DispatchSemaphore(value: 8)
     private let controlSlots = DispatchSemaphore(value: 4)
     private let waitSlots = DispatchSemaphore(value: 16)

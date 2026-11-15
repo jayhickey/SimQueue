@@ -95,7 +95,7 @@ timeout sends TERM then KILL to its entire process group before reaping the lead
 Even when the leader exits first, inherited output pipes remain bounded by that deadline.
 A dedicated nonblocking reaper owns any killed child still waiting in the kernel.
 
-Socket admission has separate limits: 16 incoming readers, 4 control requests, 8 other
+Socket admission has separate limits: 4 incoming readers, 4 control requests, 8 other
 requests, 16 streaming waits, and one reserved self-check. Excess requests receive
 `queue_full` with a `daemon busy` explanation and `retryable: true`: the daemon ran none
 of the request. The `simq` client resends such a request, of any kind, with jittered
