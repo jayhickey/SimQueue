@@ -146,7 +146,7 @@ State defaults to `~/Library/Application Support/SimQueue`; `--state-dir` or `SI
 
 ## Socket API
 
-Transport is newline-delimited JSON over an owner-only Unix socket. One request per connection; `wait` may stream changes then a final result. Requests carry `schema_version`, `id`, `method`, `params`. Responses carry the same id and either `result_kind`/`result` or a structured error. Newer unsupported schemas are refused. Removed legacy group-submission fields are rejected rather than silently submitting a different job.
+Transport is newline-delimited JSON over an owner-only Unix socket. One request per connection; `wait` may stream changes then a final result. Requests carry `schema_version`, `id`, `method`, `params`. Responses carry the same id and either `result_kind`/`result` or a structured error. An error with `retryable: true` was refused before any of the request ran and may be resent after a backoff. Newer unsupported schemas are refused. Removed legacy group-submission fields are rejected rather than silently submitting a different job.
 
 Methods: `submit`, `status`, `jobs`, `explain`, `cancel`, `wait`, `logs`, `doctor`, `drain`, `resume`, `gc`, `lease_acquire`, `lease_renew`, `lease_release`, `template_build`, `template_list`, `template_rm`. Submit fields include project/submitter, integer priority, label, command argv, environment/cwd, memory bytes, simulator count, timeout/retry/exclusive options, checkout assertion, reset/fresh options, dedupe and artifact keep. No test orchestration is supported. Commands and argument help expose the current complete surface.
 
@@ -171,7 +171,7 @@ A terminal result can carry `cleanup_pending: true` while owned processes remain
 | 66 | Unknown job ID |
 | 69 | Daemon unavailable |
 | 70 | Internal client error |
-| 73 | Queue backlog limit reached |
+| 73 | Queue backlog limit reached, or a daemon still busy after the client's retry window |
 | 77 | `simq run` refused inside a SimQueue job (`SIMQ_JOB_ID` is set); nothing is queued |
 | 128 + signal | The waiting `run` client received a termination signal |
 

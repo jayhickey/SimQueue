@@ -23,6 +23,8 @@ final class ObservationRecoveryTests: XCTestCase {
             /// The daemon goes away: stops listening (removing the socket), then drops this
             /// connection mid-request, like a drained simqd exiting for a restart.
             case exit
+            /// Answers with a protocol error (a busy daemon's refusal, a full queue).
+            case refuse(ProtocolError)
         }
         let listener: UnixListener
         let done = DispatchGroup()
@@ -57,6 +59,8 @@ final class ObservationRecoveryTests: XCTestCase {
                     case .exit:
                         listener.close()
                         return
+                    case .refuse(let error):
+                        try? connection.write(LineCodec.encode(Response(id: request.id, body: .error(error))))
                     case .trickle:
                         for _ in 0..<50 {
                             do { try connection.write(Data(" ".utf8)) } catch { break }
@@ -305,5 +309,77 @@ final class ObservationRecoveryTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(server.requests.count, 2)
             server.stop()
         }
+    }
+
+    /// A finished run: submit, one wait, one complete log read, a final explain.
+    private static func finishedRun(_ request: Request) -> Server.Answer {
+        switch request.params {
+        case .submit: return .result(.submit(SubmitResponse(job: job(.queued), deduplicated: false)))
+        case .wait: return .result(.job(job(.running)))
+        case .logs(let params):
+            return .result(
+                .logs(
+                    LogsResult(
+                        jobID: params.jobID, path: "unused", offset: params.offset,
+                        nextOffset: params.offset + 5, data: "done\n", jobFinished: true, atEnd: true)))
+        case .explain: return .result(.job(job(.succeeded)))
+        default: return .disconnect
+        }
+    }
+
+    private static let busy = ProtocolError(
+        .queueFull, "daemon busy: too many incoming requests; retry shortly", retryable: true)
+
+    func testBusyRefusalsAreResentForSubmissionAndObservation() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        // Refuse the first submit and the first wait; the daemon ran neither.
+        let server = try Server(path: path + "/simq.sock") { request, index in
+            index == 0 || index == 2 ? .refuse(Self.busy) : Self.finishedRun(request)
+        }
+        defer { server.stop() }
+        let (code, text, _) = try run(["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 5)
+        XCTAssertEqual(code, 0, text)
+        XCTAssertEqual(text.components(separatedBy: "daemon busy: too many incoming requests").count - 1, 1, text)
+        XCTAssertEqual(server.requests.map { $0.method }.prefix(4), [.submit, .submit, .wait, .wait], text)
+        XCTAssertEqual(text.components(separatedBy: "done\n").count - 1, 1, text)
+    }
+
+    func testOlderDaemonBusyRefusalWithoutFlagIsResent() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let legacy = ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly")
+        let server = try Server(path: path + "/simq.sock") { request, index in
+            index == 0 ? .refuse(legacy) : Self.finishedRun(request)
+        }
+        defer { server.stop() }
+        let (code, text, _) = try run(["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 5)
+        XCTAssertEqual(code, 0, text)
+        XCTAssertEqual(server.requests.map { $0.method }.prefix(2), [.submit, .submit], text)
+    }
+
+    func testQueueCapRefusalFailsWithoutResending() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let full = ProtocolError(.queueFull, "queue_full: adding 1 queued jobs would go over the queue cap of 5")
+        let server = try Server(path: path + "/simq.sock") { _, _ in .refuse(full) }
+        defer { server.stop() }
+        let (code, text, _) = try run(["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 5)
+        XCTAssertEqual(code, 73, text)
+        XCTAssertEqual(server.requests.map { $0.method }, [.submit], text)
+        XCTAssertTrue(text.contains("queue cap of 5"), text)
+    }
+
+    func testBusyRetriesStopAtTheirWindow() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let server = try Server(path: path + "/simq.sock") { _, _ in .refuse(Self.busy) }
+        defer { server.stop() }
+        let (code, text, elapsed) = try run(
+            ["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 0.6)
+        XCTAssertEqual(code, 73, text)
+        XCTAssertGreaterThan(server.requests.count, 1, text)
+        XCTAssertTrue(server.requests.allSatisfy { $0.method == .submit }, text)
+        XCTAssertLessThan(elapsed, 4, "busy retries must honor the reconnect window")
     }
 }

@@ -114,6 +114,9 @@ func parseTimeout(_ text: String?, flag: String) throws -> Double? {
 /// after an ambiguous disconnect or an unanswered request. A `wait` first re-reads the job
 /// (a short `explain`) to prove the new daemon answers and still has it, then waits again
 /// with no recovery deadline: a requeued job can wait in the queue as long as it needs.
+/// A daemon that refuses a request because it is busy (`ProtocolError.isTransientBusy`:
+/// nothing ran) gets the same request again with jittered backoff for up to
+/// `daemonReconnectSeconds`, for every request kind, since the refusal precedes execution.
 /// `stopRetrying` ends the retries early (a signal).
 func call(
     _ connection: Connection, _ params: RequestParams, timeout: Double = requestTimeoutSeconds,
@@ -125,6 +128,27 @@ func call(
     var reconnectUntil: Date?
     var backoff = 0.2
     var triedAutoStart = false
+    var busyUntil: Date?
+    var busyBackoff = 0.2
+    /// Sleeps before resending a busy refusal; false when the retry window is spent.
+    func retryBusy(_ refusal: Response?) -> Bool {
+        guard let refusal, case .error(let error) = refusal.body, error.isTransientBusy,
+            daemonReconnectSeconds > 0, !stopRetrying()
+        else { return false }
+        let now = Date()
+        if busyUntil == nil {
+            busyUntil = now.addingTimeInterval(daemonReconnectSeconds)
+            if !connection.json {
+                printError("\(error.message); retrying for up to \(Int(daemonReconnectSeconds.rounded(.up))) s")
+            }
+        }
+        var until = busyUntil ?? now
+        if let deadline { until = min(until, Date(timeIntervalSince1970: deadline)) }
+        guard now < until else { return false }
+        Thread.sleep(forTimeInterval: min(busyBackoff * Double.random(in: 0.5...1), until.timeIntervalSince(now)))
+        busyBackoff = min(busyBackoff * 2, 5)
+        return true
+    }
     let observingJob: Bool
     switch params {
     case .wait, .logs, .explain: observingJob = true
@@ -141,6 +165,7 @@ func call(
                 let probe = try connection.client(timeout: requestTimeoutSeconds).send(
                     Request(params: .explain(JobRef(jobID: wait.jobID))), deadline: attemptDeadline)
                 if let probe, case .error = probe.body {
+                    if retryBusy(probe) { continue }
                     response = probe
                     break
                 }
@@ -164,6 +189,10 @@ func call(
                     response = try connection.client(timeout: timeout).send(
                         Request(params: params), deadline: attemptDeadline, onEvent: onEvent)
                 }
+            }
+            if retryBusy(response) {
+                response = nil
+                continue
             }
             break
         } catch SocketError.timedOut where deadline.map({ Date().timeIntervalSince1970 >= $0 }) == true {

@@ -335,10 +335,21 @@ public enum ProtocolErrorCode: String, Sendable, Codable, CaseIterable {
 public struct ProtocolError: Error, Sendable, Equatable, Codable {
     public var code: ProtocolErrorCode
     public var message: String
+    /// True when the daemon refused the request before running any of it (it was busy),
+    /// so a client may send the same request again after a short backoff.
+    /// Omitted (nil) by older daemons and for every other error.
+    public var retryable: Bool?
 
-    public init(_ code: ProtocolErrorCode, _ message: String) {
+    public init(_ code: ProtocolErrorCode, _ message: String, retryable: Bool? = nil) {
         self.code = code
         self.message = message
+        self.retryable = retryable
+    }
+
+    /// The daemon's own request-limit refusal: nothing ran, so resending is safe. Older
+    /// daemons send the same refusal without `retryable`; its message identifies it.
+    public var isTransientBusy: Bool {
+        retryable == true || (code == .queueFull && message.hasPrefix("daemon busy:"))
     }
 }
 

@@ -106,7 +106,9 @@ public final class DaemonServer: @unchecked Sendable {
 
     // Separate bounded lanes keep streaming waits and slow administrative work
     // from consuming the control lane or Dispatch's shared worker pool.
-    private let ingressSlots = DispatchSemaphore(value: 4)
+    /// Connections reading their request line at once. Each holds a slot only until its
+    /// request is decoded and handed to a per-kind pool below, so this bounds threads, not work.
+    private let ingressSlots = DispatchSemaphore(value: 16)
     private let workSlots = DispatchSemaphore(value: 8)
     private let controlSlots = DispatchSemaphore(value: 4)
     private let waitSlots = DispatchSemaphore(value: 16)
@@ -335,7 +337,8 @@ public final class DaemonServer: @unchecked Sendable {
                     Response(
                         id: "",
                         body: .error(
-                            ProtocolError(.queueFull, "daemon busy: too many incoming requests; retry shortly"))),
+                            ProtocolError(
+                                .queueFull, "daemon busy: too many incoming requests; retry shortly", retryable: true))),
                     on: connection)
                 connection.close()
                 continue
@@ -396,7 +399,9 @@ public final class DaemonServer: @unchecked Sendable {
             _ = send(
                 Response(
                     id: request.id,
-                    body: .error(ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly"))),
+                    body: .error(
+                        ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly", retryable: true))
+                ),
                 on: connection)
             return
         }
