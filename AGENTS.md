@@ -3,15 +3,7 @@
 Read `simq agent-guide` for the installed version before submitting managed work.
 `simq docs` locates full offline documentation; optional skills are installed explicitly.
 
-## Coding environment
-
 - Before using an Apple API, look up its docs as Markdown on sosumi.ai (swap developer.apple.com for sosumi.ai in the URL, e.g. https://sosumi.ai/documentation/swiftui), especially for new OS SDK APIs.
-- All coding (app/repo/site implementation, PRs, AGENTS.md and other doc/code changes in this repository) goes through T3 Code.
-- Bots are orchestration only; T3 is the execution harness for coding and designs.
-- Do not implement via Grok Bot box coding or do heavy design or code in Grok Bot — hand it to T3.
-- Do not use Cursor Cloud Agents unless Jay explicitly names CloudAgent.
-- The Mac mini is for builds, installs, CI, and device ops.
-- Settle T3 threads when the work is done; unsettle or reopen freely if revisiting.
 
 1. Follow the user's explicit task scope and repository instructions. Use the configured
    author identity; never invent a maintainer identity or approve on someone else's behalf.
@@ -36,7 +28,7 @@ Read `simq agent-guide` for the installed version before submitting managed work
    including skips and limitations.
    Follow explicit user instructions about direct commits or pull requests.
 7. Public CI must run untrusted contributions only on disposable GitHub-hosted runners.
-   Never register a personal/shared Mac runner to this public repository. Workflows use
+   Never register a self-hosted runner to this public repository. Workflows use
    least-privilege tokens; publishing is separate from read-only build/test jobs.
 8. Commit source and useful regression tests, not credentials, host configuration,
    device identifiers, local paths, private validation data or generated build artifacts.
