@@ -33,11 +33,11 @@ public enum JobStorage {
         }
     }
 
-    public static func ensureFreeSpace(_ free: UInt64?, minimum: UInt64) throws {
+    public static func ensureFreeSpace(_ free: UInt64?, minimum: UInt64, volume: String = "job output") throws {
         guard minimum > 0 else { return }
-        guard let free else { throw Failure("cannot read free space on job output volume") }
+        guard let free else { throw Failure("cannot read free space on \(volume) volume") }
         guard free >= minimum else {
-            throw Failure("job output volume has \(free) bytes free; requires \(minimum) bytes")
+            throw Failure("\(volume) volume has \(free) bytes free; requires \(minimum) bytes")
         }
     }
 
@@ -46,8 +46,30 @@ public enum JobStorage {
         while !FileManager.default.fileExists(atPath: ancestor), ancestor != "/" {
             ancestor = (ancestor as NSString).deletingLastPathComponent
         }
-        return (try? FileManager.default.attributesOfFileSystem(forPath: ancestor)[.systemFreeSize] as? NSNumber)?
-            .uint64Value
+        return try? availableBytes(
+            important: {
+                #if os(macOS)
+                    let values = try URL(fileURLWithPath: ancestor).resourceValues(
+                        forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                    return values.volumeAvailableCapacityForImportantUsage
+                #else
+                    return nil
+                #endif
+            },
+            raw: {
+                let attributes = try FileManager.default.attributesOfFileSystem(forPath: ancestor)
+                guard let value = attributes[.systemFreeSize] as? NSNumber else {
+                    throw Failure("cannot read free space")
+                }
+                return value.uint64Value
+            })
+    }
+
+    /// macOS can reclaim purgeable storage for writes. Use its available capacity
+    /// consistently for dashboard reporting and admission, with raw free space as fallback.
+    static func availableBytes(important: () throws -> Int64?, raw: () throws -> UInt64) throws -> UInt64 {
+        if let capacity = try? important(), capacity >= 0 { return UInt64(capacity) }
+        return try raw()
     }
 
     public struct Failure: Error, CustomStringConvertible {

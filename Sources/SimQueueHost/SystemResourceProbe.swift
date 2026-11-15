@@ -76,8 +76,9 @@ public struct SystemResourceProbe: ResourceProbe {
             let readings = try toolReadings()
             available = readings.available; swapUsed = readings.swap; pressure = readings.pressure
         #endif
-        let attributes = try FileManager.default.attributesOfFileSystem(forPath: diskPath)
-        let freeDisk = (attributes[.systemFreeSize] as? NSNumber)?.uint64Value ?? 0
+        guard let freeDisk = JobStorage.freeBytes(diskPath) else {
+            throw ProbeError.reading("available disk capacity")
+        }
         let cpu = cpuSampler.sample(now: now)
         var snapshot = HostSnapshot(
             sampledAt: now, totalMemoryBytes: ProcessInfo.processInfo.physicalMemory, availableMemoryBytes: available,

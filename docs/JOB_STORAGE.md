@@ -56,3 +56,9 @@ new work without interrupting running jobs; admission resumes automatically once
 space recovers. The dashboard shows the actual hold and offers a background storage
 review with a cleanup preview (see [the dashboard guide](DASHBOARD.md)). A command
 may still choose its own output paths outside managed storage.
+
+On macOS, available bytes include space the system can reclaim for important
+writes (`volumeAvailableCapacityForImportantUsage`). Dashboard reporting and disk
+admission checks use the same measurement, falling back to raw filesystem free
+bytes when that capacity is unavailable. This can exceed the free space shown by
+`df`; it is an OS estimate, not a guarantee that a later write will succeed.
