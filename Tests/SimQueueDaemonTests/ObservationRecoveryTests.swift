@@ -340,7 +340,8 @@ final class ObservationRecoveryTests: XCTestCase {
         defer { server.stop() }
         let (code, text, _) = try run(["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 5)
         XCTAssertEqual(code, 0, text)
-        XCTAssertEqual(text.components(separatedBy: "daemon busy: too many incoming requests").count - 1, 1, text)
+        // One note per refused call: the submit and the wait were each refused once.
+        XCTAssertEqual(text.components(separatedBy: "daemon busy: too many incoming requests").count - 1, 2, text)
         XCTAssertEqual(server.requests.map { $0.method }.prefix(4), [.submit, .submit, .wait, .wait], text)
         XCTAssertEqual(text.components(separatedBy: "done\n").count - 1, 1, text)
     }
