@@ -1,0 +1,11 @@
+kit_version: 0.1.0
+kit_adoption: true
+main_workflow: ci.yml
+linear:
+  team:
+    private_key: simqueue_linear_team
+callers: []
+agents_base: public
+opt_outs:
+  - callers
+  - main-red-issue.yml
