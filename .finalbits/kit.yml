@@ -12,5 +12,12 @@
   "opt_outs": [
     "callers",
     "main-red-issue.yml"
+  ],
+  "pins": [
+    {
+      "key": "merge_policy.method",
+      "value": "squash",
+      "reason": "Maintainers use squash merges after required CI passes for this repository."
+    }
   ]
 }
