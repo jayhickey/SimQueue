@@ -30,7 +30,10 @@ final class ObservationRecoveryTests: XCTestCase {
         let done = DispatchGroup()
         private let lock = NSLock()
         private var received: [RequestParams] = []
+        private var receivedAt: [Double] = []
         var requests: [RequestParams] { lock.withLock { received } }
+        /// `systemUptime` when each request arrived, in order.
+        var arrivals: [Double] { lock.withLock { receivedAt } }
 
         init(path: String, answer: @escaping @Sendable (Request, Int) -> Answer) throws {
             listener = try UnixListener(path: path)
@@ -44,6 +47,7 @@ final class ObservationRecoveryTests: XCTestCase {
                     else { continue }
                     let index = lock.withLock {
                         received.append(request.params)
+                        receivedAt.append(ProcessInfo.processInfo.systemUptime)
                         return received.count - 1
                     }
                     switch answer(request, index) {
@@ -91,7 +95,10 @@ final class ObservationRecoveryTests: XCTestCase {
         return path
     }
 
-    private func run(_ args: [String], state: String, recovery: Double = 0.7) throws -> (Int32, String, Double) {
+    private func run(
+        _ args: [String], state: String, recovery: Double = 0.7, environment: [String: String] = [:],
+        whileRunning: (@Sendable (Int32) -> Void)? = nil
+    ) throws -> (Int32, String, Double) {
         #if os(macOS)
             let products = try XCTUnwrap(Bundle.allBundles.first { $0.bundlePath.hasSuffix(".xctest") })
                 .bundleURL.deletingLastPathComponent()
@@ -113,6 +120,7 @@ final class ObservationRecoveryTests: XCTestCase {
         env["SIMQ_NO_AUTOSTART"] = "1"
         env["SIMQ_REQUEST_TIMEOUT_SECONDS"] = "0.1"
         env["SIMQ_RECONNECT_SECONDS"] = String(recovery)
+        env.merge(environment) { $1 }
         process.environment = env
         let output = URL(fileURLWithPath: state).appendingPathComponent(UUID().uuidString + ".client.log")
         FileManager.default.createFile(atPath: output.path, contents: nil)
@@ -122,6 +130,10 @@ final class ObservationRecoveryTests: XCTestCase {
         process.standardError = handle
         let started = ProcessInfo.processInfo.systemUptime
         try process.run()
+        if let whileRunning {
+            let pid = process.processIdentifier
+            Thread.detachNewThread { whileRunning(pid) }
+        }
         let limit = started + 8
         while process.isRunning, ProcessInfo.processInfo.systemUptime < limit { Thread.sleep(forTimeInterval: 0.01) }
         if process.isRunning {
@@ -381,6 +393,67 @@ final class ObservationRecoveryTests: XCTestCase {
         XCTAssertEqual(code, 73, text)
         XCTAssertGreaterThan(server.requests.count, 1, text)
         XCTAssertTrue(server.requests.allSatisfy { $0.method == .submit }, text)
-        XCTAssertLessThan(elapsed, 4, "busy retries must honor the reconnect window")
+        let arrivals = server.arrivals
+        let span = try XCTUnwrap(arrivals.last) - XCTUnwrap(arrivals.first)
+        XCTAssertLessThan(span, 0.6 + 0.2, "no resend may start after the 0.6 s busy window")
+        XCTAssertLessThan(elapsed, 0.6 + 1.5, "busy retries must honor the reconnect window")
+    }
+
+    /// With a fixed 0.25 s backoff and a 0.5 s window, a resend at 0 s and 0.25 s fit; the
+    /// backoff after the second ends exactly at expiry and must not be followed by a third.
+    func testBusyRetryExpiryDuringBackoffSendsNoExtraAttempt() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let server = try Server(path: path + "/simq.sock") { _, _ in .refuse(Self.busy) }
+        defer { server.stop() }
+        let (code, text, _) = try run(
+            ["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 0.5,
+            environment: ["SIMQ_TEST_BUSY_BACKOFF_SECONDS": "0.25"])
+        XCTAssertEqual(code, 73, text)
+        XCTAssertTrue((1...2).contains(server.requests.count), "\(server.requests.count) attempts: \(text)")
+    }
+
+    /// A signal during the backoff after a refused submit must not be followed by a
+    /// resend: the daemon would accept it and queue a job for a client that is leaving.
+    func testSignalDuringBusyBackoffSendsNoFurtherSubmission() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let server = try Server(path: path + "/simq.sock") { request, index in
+            index == 0 ? .refuse(Self.busy) : Self.finishedRun(request)
+        }
+        defer { server.stop() }
+        let (code, text, _) = try run(
+            ["run", "--sims", "0", "--", "/usr/bin/true"], state: path, recovery: 30,
+            environment: ["SIMQ_TEST_BUSY_BACKOFF_SECONDS": "1.5"]
+        ) { pid in
+            let limit = ProcessInfo.processInfo.systemUptime + 5
+            while server.requests.isEmpty, ProcessInfo.processInfo.systemUptime < limit {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            Thread.sleep(forTimeInterval: 0.2)  // inside the 1.5 s backoff
+            kill(pid, SIGTERM)
+        }
+        XCTAssertNotEqual(code, 0, text)
+        XCTAssertEqual(server.requests.map { $0.method }, [.submit], text)
+    }
+
+    /// `lease acquire --wait-timeout` bounds busy retries too: a daemon that stays busy past
+    /// it ends with exit 7 even though the reconnect window is far longer, and never grants.
+    func testLeaseWaitTimeoutBoundsBusyRetries() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let opened = ProcessInfo.processInfo.systemUptime
+        let server = try Server(path: path + "/simq.sock") { _, _ in
+            guard ProcessInfo.processInfo.systemUptime - opened > 3 else { return .refuse(Self.busy) }
+            return .result(.lease(LeaseResult(state: "granted", holder: "ci-1", udid: "SIM-1", name: "sim")))
+        }
+        defer { server.stop() }
+        let (code, text, elapsed) = try run(
+            ["lease", "acquire", "--holder", "ci-1", "--pid", "0", "--wait-timeout", "1s"], state: path,
+            recovery: 600)
+        XCTAssertEqual(code, 7, text)
+        XCTAssertFalse(text.contains("SIM-1"), text)
+        XCTAssertLessThan(elapsed, 2.8, "the 1 s wait timeout, not the reconnect window, ends busy retries")
+        XCTAssertTrue(server.requests.allSatisfy { $0.method == .leaseAcquire }, text)
     }
 }
