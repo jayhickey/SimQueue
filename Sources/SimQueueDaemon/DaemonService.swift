@@ -363,7 +363,7 @@ public final class DaemonService: @unchecked Sendable {
                     let roots = Set(
                         [artifacts.root] + (try store.queuedJobs()).compactMap { $0.command?.artifactsRoot })
                     try JobStorage.ensureFreeSpace(
-                        JobStorage.freeBytes("/"), minimum: config.scheduler.minFreeDiskBytes)
+                        JobStorage.freeBytes("/"), minimum: config.scheduler.minFreeDiskBytes, volume: "system")
                     for root in roots {
                         try validateStorage(root)
                         try JobStorage.ensureFreeSpace(
