@@ -1,49 +1,75 @@
-# Contributor and coding-agent guidance
+# Contributor guidance
+
+## Build and test
 
 Read `simq agent-guide` for the installed version before submitting managed work.
-`simq docs` locates full offline documentation; optional skills are installed explicitly.
+`simq docs` locates the full offline documentation.
 
-## Coding environment
+Use SimQueue by default for builds and iOS simulator tests on shared Macs. Keep
+concurrent work in separate checkouts and bound compiler parallelism. For work
+that needs no simulator, submit with `--sims 0`:
 
-- Before using an Apple API, look up its docs as Markdown on sosumi.ai (swap developer.apple.com for sosumi.ai in the URL, e.g. https://sosumi.ai/documentation/swiftui), especially for new OS SDK APIs.
-- All coding (app/repo/site implementation, PRs, AGENTS.md and other doc/code changes in this repository) goes through T3 Code.
-- Bots are orchestration only; T3 is the execution harness for coding and designs.
-- Do not implement via Grok Bot box coding or do heavy design or code in Grok Bot — hand it to T3.
-- Do not use Cursor Cloud Agents unless Jay explicitly names CloudAgent.
-- The Mac mini is for builds, installs, CI, and device ops.
-- Settle T3 threads when the work is done; unsettle or reopen freely if revisiting.
+```sh
+simq run --project simqueue --sims 0 --timeout 20m -- swift build -j 2
+simq run --project simqueue --sims 0 --timeout 20m -- swift test -j 2
+```
 
-1. Follow the user's explicit task scope and repository instructions. Use the configured
-   author identity; never invent a maintainer identity or approve on someone else's behalf.
-2. Keep changes focused and generic. Project names are caller-supplied labels. A normal
-   job runs its complete workload on one leased simulator; simulator-free work uses
-   `--sims 0`. Do not introduce implicit test sharding or project-specific scheduling.
-3. Prefer fake backends, injected clocks and isolated test state for development. Live
-   simulator, service and host changes must stay within the user's authorized scope.
-   Preserve unrelated devices, services, repositories and processes.
-4. On a shared host managed by SimQueue, admit heavy work through its existing queue
-   and bound compiler parallelism. Do not bypass resource gates or replace its daemon.
-   Fresh disposable CI machines can build directly with bounded workers.
-5. Use the supplied `SIMQ_UDID`, DerivedData and result-bundle paths for managed simulator
-   jobs. Keep concurrent builds in separate checkouts. Never infer device ownership from
-   a similar name, discard pending cleanup, or kill unrelated simulator services.
-6. Push draft changes freely. Before landing Swift changes on main, required CI must
-   pass on the current commit, including build, tests and formatting. Run focused local
-   checks when they provide faster feedback or cover behavior CI cannot exercise.
-   Before every push, run CI's formatter check (there is no hook): `swift format lint --strict
-   --recursive Package.swift Sources Tests` (fix with `swift format format -i <files>`).
-   Add regression coverage for behavior changes. Report commands, commit and results,
-   including skips and limitations.
-   Follow explicit user instructions about direct commits or pull requests.
-7. Public CI must run untrusted contributions only on disposable GitHub-hosted runners.
-   Never register a personal/shared Mac runner to this public repository. Workflows use
-   least-privilege tokens; publishing is separate from read-only build/test jobs.
-8. Commit source and useful regression tests, not credentials, host configuration,
-   device identifiers, local paths, private validation data or generated build artifacts.
-   Keep machine-specific deployment scripts and raw test evidence outside the repository.
-9. Preserve truthful user-facing behavior and documentation. A passing fake test does not
-   establish live simulator behavior; report the actual platform, workload and evidence.
-10. Do not send messages, create releases, change external services or perform destructive
-    repository operations beyond the user's authorization. A prior explicit authorization
-    remains valid for the stated scope; routine reversible implementation needs no repeat
-    confirmation.
+Build the embedded dashboard before building the Swift package:
+
+```sh
+npm --prefix Web/dashboard ci --no-audit --no-fund
+npm --prefix Web/dashboard run build
+```
+
+Before each push, run the formatter checks used by CI:
+
+```sh
+swift format lint --strict --recursive Package.swift Sources Tests
+swift format lint --strict --recursive Plugins
+swift format lint --strict scripts/verify-sparkle-update.swift
+```
+
+For dashboard changes, also run:
+
+```sh
+node Tests/Dashboard/dashboard.test.cjs
+npm --prefix Web/dashboard run format:check
+npm --prefix Web/dashboard test
+```
+
+The complete build, packaging, release-control and browser checks are defined in
+`.github/workflows/ci.yml`. Extended fake soak checks are in
+`.github/workflows/nightly-soak.yml`; publishing is in `.github/workflows/release.yml`.
+Fresh disposable CI machines may build directly with bounded workers.
+
+## Simulator and host safety
+
+- Run a job's complete simulator suite on one leased simulator. Use the supplied
+  `SIMQ_UDID`, `SIMQ_DERIVED_DATA` and `SIMQ_RESULT_BUNDLE` paths; expand them in
+  the queued command. Do not infer ownership from a device name.
+- Prefer fake backends, injected clocks and isolated test state. A passing fake
+  test does not establish live simulator behavior; describe the actual evidence.
+- Preserve existing host configuration, services, devices and unrelated processes.
+  Do not bypass admission gates or replace the running daemon to accelerate a build.
+- Inspect an existing job after a disconnect before resubmitting. Do not retry
+  timeout (3 or 143) or cancellation (5) results. Daemon-unavailable (69) and
+  queue-full (73) results may be retried after checking job state and backpressure.
+  Interpret codes using the selected exit-code mode and recorded result class.
+- Keep project labels caller-supplied and scheduling generic; do not introduce
+  implicit test sharding or project-specific scheduling.
+
+## Pull requests
+
+- Keep changes focused, preserve unrelated work and add regression coverage for
+  behavior changes. Use the configured author identity.
+- Open draft pull requests for review. Describe what changed, why, commands run,
+  results, skips and limitations. Required CI must pass at the current head before
+  maintainers squash-merge. Do not merge without maintainer authorization.
+- Keep credentials, machine configuration, local paths, device identifiers,
+  generated artifacts and private validation data out of commits. Keep proof
+  media outside Git.
+- Run untrusted public contributions only on disposable GitHub-hosted runners.
+  Never attach a personal or shared Mac runner to this public repository. Use
+  least-privilege workflow tokens and separate publishing from build/test jobs.
+- Keep repository instructions and workflow dependencies usable by public
+  contributors. Do not add dependencies that require private repository access.
