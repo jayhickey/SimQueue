@@ -28,7 +28,7 @@ Read `simq agent-guide` for the installed version before submitting managed work
    including skips and limitations.
    Follow explicit user instructions about direct commits or pull requests.
 7. Public CI must run untrusted contributions only on disposable GitHub-hosted runners.
-   Never register a personal/shared Mac runner to this public repository. Workflows use
+   Never register a self-hosted runner to this public repository. Workflows use
    least-privilege tokens; publishing is separate from read-only build/test jobs.
 8. Commit source and useful regression tests, not credentials, host configuration,
    device identifiers, local paths, private validation data or generated build artifacts.
