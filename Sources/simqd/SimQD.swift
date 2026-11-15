@@ -301,6 +301,7 @@ struct Run: ParsableCommand {
             engine: engine, config: daemonConfig, info: info, executor: jobExecutor, artifacts: artifacts)
         service.storageChecksEnabled = true
         service.validateStorage = volumeGuard.check
+        service.ioProbe = StorageIOProbe()
         (jobExecutor as? ProcessExecutor)?.storageCheck = volumeGuard.check
         let server: DaemonServer
         do {
