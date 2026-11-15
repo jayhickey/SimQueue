@@ -161,8 +161,16 @@ final class SocketDisconnectTests: XCTestCase {
                     index.isMultiple(of: 3)
                     ? .wait(WaitParams(jobID: response.job.id, stream: true))
                     : (index.isMultiple(of: 2) ? .status : .jobs(JobsParams(limit: 256)))
-                try connection.write(try LineCodec.encode(Request(params: params)))
-                connection.close()
+                defer { connection.close() }
+                do {
+                    try connection.write(try LineCodec.encode(Request(params: params)))
+                } catch let failure as SocketError {
+                    // Darwin may reject this already-disconnected peer while
+                    // installing SO_NOSIGPIPE. Its close can race our send, too.
+                    // The daemon survival and subsequent status checks below
+                    // remain mandatory even when the request cannot be written.
+                    guard case .system(call: "send", errno: EPIPE) = failure else { throw failure }
+                }
             }
             if refusedConnections > 0 {
                 print("Recovered \(refusedConnections) backlog refusals with live daemon \(pid) (rotating=\(rotating))")
