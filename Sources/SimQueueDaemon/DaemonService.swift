@@ -76,6 +76,8 @@ public final class DaemonService: @unchecked Sendable {
     /// `<state dir>/events.jsonl`, appended every tick (nil: off).
     public var storageChecksEnabled = false
     public var validateStorage: @Sendable (String) throws -> Void = JobStorage.check
+    /// Bounded real read/write check of the job output root for status and doctor (nil: off).
+    public var ioProbe: StorageIOProbe?
     public var eventLog: EventLog?
 
     public init(
@@ -1275,8 +1277,10 @@ public final class DaemonService: @unchecked Sendable {
     }
 
     private func storageDiagnostics() -> StorageInfo {
-        let failure: String?
-        do { try validateStorage(artifacts.root); failure = nil } catch { failure = String(describing: error) }
+        var failure: String?
+        do { try validateStorage(artifacts.root) } catch { failure = String(describing: error) }
+        // Metadata checks pass on a volume whose reads and writes hang; probe real I/O too.
+        if failure == nil { failure = ioProbe?.check(artifacts.root) }
         return StorageInfo(
             stateDirectory: (info.statePath as NSString).deletingLastPathComponent,
             jobOutputRoot: artifacts.root, available: failure == nil,

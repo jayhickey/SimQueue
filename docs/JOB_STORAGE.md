@@ -25,6 +25,11 @@ history or manually move job directories.
 
 `simq status` and `simq doctor` show the internal state path, output root,
 availability/writability and free bytes. Unavailable storage holds new admission.
+Both also run a bounded real-I/O probe of the output root: a tiny file is written,
+read back uncached and removed on a separate thread. A probe still pending after 5 s
+reports the root unavailable ("reads and writes there may be hung") even when the
+volume is mounted and its metadata looks writable. Results are reused for 30 s. The
+probe changes what status and doctor report; admission keeps its existing checks.
 A configured `/Volumes/<name>/...` path requires that mount to use a separate
 filesystem from `/Volumes` before directories are created; an absent mount is never
 intentionally recreated on the internal disk. Cleanup checks availability too.
