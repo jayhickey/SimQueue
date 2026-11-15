@@ -1,4 +1,15 @@
-# Contributor guidance
+<!-- kit:agents-base v0.1.0 -->
+## Contribution guidance
+
+Preserve existing work. Use an isolated branch, keep changes scoped, and explain the reason and validation in the PR. Open drafts early and request independent review at the final head. Required checks must pass before the repository's normal merge process.
+
+Use SimQueue by default for iOS builds, tests and simulator proof. Read `simq agent-guide`, use the assigned device and output paths, bound compiler workers to four and disable parallel simulator testing. Do not bypass admission or manipulate unowned simulators. Record run IDs and relevant logs. Retry diagnosed infrastructure failures at most once; never retry run timeouts or cancellations.
+
+For visible changes, inspect final-head screenshots in light and dark mode and attach proof to the PR. Describe the device, OS and tested commit. Never commit proof media. Nonvisual changes need relevant check results. Keep credentials and personal data out of files, logs and attachments.
+<!-- /kit:agents-base -->
+
+<!-- kit:project-start -->
+# SimQueue project guidance
 
 ## Build and test
 
@@ -73,3 +84,4 @@ Fresh disposable CI machines may build directly with bounded workers.
   least-privilege workflow tokens and separate publishing from build/test jobs.
 - Keep repository instructions and workflow dependencies usable by public
   contributors. Do not add dependencies that require private repository access.
+<!-- kit:project-end -->
