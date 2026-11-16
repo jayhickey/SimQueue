@@ -104,6 +104,21 @@ func parseTimeout(_ text: String?, flag: String) throws -> Double? {
     return seconds
 }
 
+/// The next jittered busy-refusal backoff (0.2 s doubling to 5 s). Debug builds accept a fixed
+/// `SIMQ_TEST_BUSY_BACKOFF_SECONDS` (0–10 s) so tests can place retries at exact boundaries.
+func nextBusyBackoff(_ backoff: inout Double) -> Double {
+    #if DEBUG
+        if let text = ProcessInfo.processInfo.environment["SIMQ_TEST_BUSY_BACKOFF_SECONDS"],
+            let fixed = Double(text), fixed.isFinite
+        {
+            return min(max(fixed, 0), 10)
+        }
+    #endif
+    let delay = backoff * Double.random(in: 0.5...1)
+    backoff = min(backoff * 2, 5)
+    return delay
+}
+
 /// Sends one request; maps transport failures and error responses to exit codes.
 /// With `retryTimeoutsUntil`, a request that times out (a daemon busy for a moment) is sent
 /// again until that time instead of failing; only for requests that are safe to repeat.
@@ -114,6 +129,10 @@ func parseTimeout(_ text: String?, flag: String) throws -> Double? {
 /// after an ambiguous disconnect or an unanswered request. A `wait` first re-reads the job
 /// (a short `explain`) to prove the new daemon answers and still has it, then waits again
 /// with no recovery deadline: a requeued job can wait in the queue as long as it needs.
+/// A daemon that refuses a request because it is busy (`ProtocolError.isTransientBusy`:
+/// nothing ran) gets the same request again with jittered backoff for up to
+/// `daemonReconnectSeconds`, for every request kind, since the refusal precedes execution.
+/// Those retries also end at `deadline` or `retryTimeoutsUntil` (exit 7), whichever is first.
 /// `stopRetrying` ends the retries early (a signal).
 func call(
     _ connection: Connection, _ params: RequestParams, timeout: Double = requestTimeoutSeconds,
@@ -125,6 +144,35 @@ func call(
     var reconnectUntil: Date?
     var backoff = 0.2
     var triedAutoStart = false
+    var busyUntil: Date?
+    var busyBackoff = 0.2
+    /// The caller's own limit on retrying: an absolute wait deadline or `retryTimeoutsUntil`.
+    let callerUntil = [deadline.map { Date(timeIntervalSince1970: $0) }, retryTimeoutsUntil].compactMap { $0 }.min()
+    /// Decides whether to resend a busy refusal, sleeping a backoff first. False surfaces the
+    /// refusal (a signal, or the busy window is spent); the caller's own limit throws exit 7.
+    func retryBusy(_ refusal: Response?) throws -> Bool {
+        guard let refusal, case .error(let error) = refusal.body, error.isTransientBusy,
+            daemonReconnectSeconds > 0
+        else { return false }
+        /// Checked before the backoff and again after it, right before resending: a signal or
+        /// an expiry during the sleep must never be followed by another attempt.
+        func mayResend() throws -> Bool {
+            guard !stopRetrying() else { return false }
+            let now = Date()
+            if let callerUntil, now >= callerUntil { throw failure(.waitTimeout) }
+            return busyUntil.map { now < $0 } ?? true
+        }
+        guard try mayResend() else { return false }
+        if busyUntil == nil {
+            busyUntil = Date().addingTimeInterval(daemonReconnectSeconds)
+            if !connection.json {
+                printError("\(error.message); retrying for up to \(Int(daemonReconnectSeconds.rounded(.up))) s")
+            }
+        }
+        let until = [busyUntil, callerUntil].compactMap { $0 }.min() ?? Date()
+        Thread.sleep(forTimeInterval: max(0, min(nextBusyBackoff(&busyBackoff), until.timeIntervalSinceNow)))
+        return try mayResend()
+    }
     let observingJob: Bool
     switch params {
     case .wait, .logs, .explain: observingJob = true
@@ -141,6 +189,7 @@ func call(
                 let probe = try connection.client(timeout: requestTimeoutSeconds).send(
                     Request(params: .explain(JobRef(jobID: wait.jobID))), deadline: attemptDeadline)
                 if let probe, case .error = probe.body {
+                    if try retryBusy(probe) { continue }
                     response = probe
                     break
                 }
@@ -164,6 +213,10 @@ func call(
                     response = try connection.client(timeout: timeout).send(
                         Request(params: params), deadline: attemptDeadline, onEvent: onEvent)
                 }
+            }
+            if try retryBusy(response) {
+                response = nil
+                continue
             }
             break
         } catch SocketError.timedOut where deadline.map({ Date().timeIntervalSince1970 >= $0 }) == true {

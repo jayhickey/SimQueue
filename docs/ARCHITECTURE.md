@@ -97,7 +97,11 @@ A dedicated nonblocking reaper owns any killed child still waiting in the kernel
 
 Socket admission has separate limits: 4 incoming readers, 4 control requests, 8 other
 requests, 16 streaming waits, and one reserved self-check. Excess requests receive
-`queue_full` with a `daemon busy` explanation; callers may retry after a delay.
+`queue_full` with a `daemon busy` explanation and `retryable: true`: the daemon ran none
+of the request. The `simq` client resends such a request, of any kind, with jittered
+backoff (0.2 s doubling to 5 s) for up to its reconnect window (`SIMQ_RECONNECT_SECONDS`,
+default 10 minutes) and never past the caller's own deadline. Queue backlog caps are
+not retryable and still exit 73 at once.
 Incoming lines have a two-second total deadline and writes are bounded. Socket handlers
 use bounded independent threads rather than blocking Dispatch's shared pool.
 

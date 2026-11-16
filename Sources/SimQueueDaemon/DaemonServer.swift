@@ -335,7 +335,8 @@ public final class DaemonServer: @unchecked Sendable {
                     Response(
                         id: "",
                         body: .error(
-                            ProtocolError(.queueFull, "daemon busy: too many incoming requests; retry shortly"))),
+                            ProtocolError(
+                                .queueFull, "daemon busy: too many incoming requests; retry shortly", retryable: true))),
                     on: connection)
                 connection.close()
                 continue
@@ -396,7 +397,9 @@ public final class DaemonServer: @unchecked Sendable {
             _ = send(
                 Response(
                     id: request.id,
-                    body: .error(ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly"))),
+                    body: .error(
+                        ProtocolError(.queueFull, "daemon busy: request limit reached; retry shortly", retryable: true))
+                ),
                 on: connection)
             return
         }
