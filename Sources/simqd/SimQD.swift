@@ -301,8 +301,15 @@ struct Run: ParsableCommand {
             engine: engine, config: daemonConfig, info: info, executor: jobExecutor, artifacts: artifacts)
         service.storageChecksEnabled = true
         service.validateStorage = volumeGuard.check
-        service.ioProbe = StorageIOProbe()
-        (jobExecutor as? ProcessExecutor)?.storageCheck = volumeGuard.check
+        let ioProbe = StorageIOProbe()
+        service.ioProbe = ioProbe
+        // Starting a job prepares its run directory on the output root. On a root whose
+        // metadata answers but whose open() calls block, that preparation never returns and
+        // every job behind it waits. Hold the job like a disconnected volume (no attempt
+        // spent) until the probe has passed, including right after this daemon starts.
+        (jobExecutor as? ProcessExecutor)?.storageCheck = JobOutputGuard.storageCheck(
+            volume: volumeGuard.check, probe: ioProbe)
+        _ = ioProbe.check(artifacts.root)  // start the first probe now, not on the first tick
         let server: DaemonServer
         do {
             server = try DaemonServer(service: service, socketPath: paths.socketPath)

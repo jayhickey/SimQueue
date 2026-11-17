@@ -302,6 +302,44 @@ final class StartPreparationTests: XCTestCase {
         XCTAssertEqual(fixture.executor.takePreparationWork().count, 1, "reconnection prepares a fresh descriptor")
     }
 
+    /// Output whose metadata answers while open() blocks: the probe-backed check `simqd` installs
+    /// (`JobOutputGuard.storageCheck`) fails until a probe has passed, and preparation then holds
+    /// the job like a disconnected volume, with no attempt spent and nothing started.
+    /// Passes until `guarded` is set, then defers to `JobOutputGuard`'s probe-backed check. The
+    /// fixture's preparation work captures this check when it is queued, so switching it later
+    /// is what that work sees.
+    private final class SwitchableStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var guarded: (@Sendable (String) throws -> Void)?
+        func use(_ check: @escaping @Sendable (String) throws -> Void) { lock.lock(); guarded = check; lock.unlock() }
+        func check(_ root: String) throws {
+            lock.lock(); let current = guarded; lock.unlock()
+            try current?(root)
+        }
+    }
+
+    func testAnUnverifiedOrHungOutputProbeHoldsPreparationWithoutSpendingAnAttempt() throws {
+        let storage = SwitchableStorage()
+        let fixture = try ExecutorFixture(storageCheck: storage.check)
+        defer { fixture.remove() }
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = StorageIOProbe(
+            timeoutSeconds: 5, intervalSeconds: 30, inlineWaitSeconds: 0,
+            operation: { _ in release.wait() }, uptime: { 0 })
+        storage.use(JobOutputGuard.storageCheck(volume: JobStorage.check, probe: probe))
+        let outcome = fixture.executor.prepareStart(fixture.work)
+        guard case .failure(let failure) = outcome else { return XCTFail("an unverified root must not be prepared") }
+        XCTAssertTrue(failure.storageUnavailable, failure.message)
+        fixture.executor.finishPreparation(fixture.work, result: outcome)
+        try fixture.executor.step(store: fixture.store, epoch: fixture.epoch, now: 3)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.state, .admitted)
+        XCTAssertEqual(try fixture.store.job(id: fixture.job.id)?.attempt, fixture.job.attempt, "No attempt spent")
+        XCTAssertNil(try fixture.store.job(id: fixture.job.id)?.startedAt)
+        XCTAssertTrue(fixture.executor.takePreparationWork().isEmpty, "Nothing is prepared while unverified")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.marker))
+    }
+
     private final class TransientStorage: @unchecked Sendable {
         private let lock = NSLock()
         private var calls = 0

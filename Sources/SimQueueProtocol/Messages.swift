@@ -818,6 +818,9 @@ public struct JobInfo: Sendable, Equatable, Codable {
     /// True when the listing stopped early: at its cap (`ArtifactInfo.listCap`) or at the
     /// walk bound on file-system nodes.
     public var artifactsTruncated: Bool?
+    /// Why `artifacts` is missing on `explain` or `wait`: the job's output root is failing its
+    /// I/O probe, so the run directory was not listed (a walk there could block indefinitely).
+    public var artifactsUnavailable: String?
     /// Pool sims the job held, as recorded when it started, each with the template it was
     /// cloned from (`sims[].cloned_from`), for the latest attempt. Nil before the start or
     /// with no pool sims.
@@ -925,6 +928,7 @@ public struct JobInfo: Sendable, Equatable, Codable {
         case runDir = "run_dir"
         case artifacts
         case artifactsTruncated = "artifacts_truncated"
+        case artifactsUnavailable = "artifacts_unavailable"
         case resultBundles = "result_bundles"
         case sims
         case peakMemoryMiB = "peak_memory_mib"

@@ -752,28 +752,40 @@ public final class ProcessExecutor: JobExecutor {
         return nil
     }
 
+    /// Longest a caller (under the state lock) waits for a finished job's summary files.
+    /// Writing them on a volume that stops answering would otherwise hold the lock until it
+    /// answers, long enough to trip the daemon's liveness check.
+    public var summaryDeadlineSeconds: Double = 2
+    private let summaryWriters = BoundedWriters()
+
     private func writeSummary(jobID: String, store: JobStore) throws {
         guard let job = try store.job(id: jobID) else { return }
-        guard (try? storageCheck(job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root)) != nil
-        else { return }
+        let root = job.command?.artifactsRoot ?? artifacts.legacyRoot ?? artifacts.root
+        guard (try? storageCheck(root)) != nil else { return }
         var info = JobInfo(job: job, explanation: nil)
         info.logPath = artifacts.logPath(for: job)
         info.runDir = artifacts.directory(for: job)
         info.attachRunInfo(try store.jobRunInfo(jobID: job.id))
-        info = ArtifactListing.attach(to: info)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
+        let events = (try? store.auditEntries(jobID: job.id)).map {
+            $0.map(JobReport.eventLine).joined(separator: "\n")
+        }
         let path = artifacts.summaryPath(for: job)
-        try? (try encoder.encode(info) + Data("\n".utf8)).write(to: URL(fileURLWithPath: path), options: .atomic)
-        // summary.md and the job's own events.jsonl, best effort like job.json.
         let directory = artifacts.directory(for: job)
-        let markdown = JobReport.markdown(info, logTail: info.logPath.flatMap { JobReport.tail(of: $0) })
-        try? Data(markdown.utf8).write(
-            to: URL(fileURLWithPath: directory + "/" + JobReport.summaryName), options: .atomic)
-        if let events = try? store.auditEntries(jobID: job.id) {
-            let lines = events.map(JobReport.eventLine).joined(separator: "\n")
-            try? Data((lines.isEmpty ? "" : lines + "\n").utf8).write(
-                to: URL(fileURLWithPath: directory + "/" + JobReport.eventsName), options: .atomic)
+        // The store is read above, under the caller's lock. The run directory is listed and
+        // written by a bounded writer: normally done before this returns, as before.
+        summaryWriters.run(root: root, deadlineSeconds: summaryDeadlineSeconds) { [info] in
+            let info = ArtifactListing.attach(to: info)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
+            try? (try encoder.encode(info) + Data("\n".utf8)).write(to: URL(fileURLWithPath: path), options: .atomic)
+            // summary.md and the job's own events.jsonl, best effort like job.json.
+            let markdown = JobReport.markdown(info, logTail: info.logPath.flatMap { JobReport.tail(of: $0) })
+            try? Data(markdown.utf8).write(
+                to: URL(fileURLWithPath: directory + "/" + JobReport.summaryName), options: .atomic)
+            if let events {
+                try? Data((events.isEmpty ? "" : events + "\n").utf8).write(
+                    to: URL(fileURLWithPath: directory + "/" + JobReport.eventsName), options: .atomic)
+            }
         }
     }
 

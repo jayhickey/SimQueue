@@ -454,7 +454,7 @@ public final class DaemonServer: @unchecked Sendable {
                 // `artifacts_truncated`, `result_bundles`). Once, here, and outside the
                 // service lock: `jobInfo` has already released it; polls stay listing-free.
                 _ = send(
-                    Response(id: request.id, body: .result(.job(ArtifactListing.attach(to: current)))), on: connection)
+                    Response(id: request.id, body: .result(.job(service.attachArtifacts(to: current)))), on: connection)
                 return
             }
             if params.stream, current != last {

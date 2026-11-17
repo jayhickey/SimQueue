@@ -28,8 +28,31 @@ availability/writability and free bytes. Unavailable storage holds new admission
 Both also run a bounded real-I/O probe of the output root: a tiny file is written,
 read back uncached and removed on a separate thread. A probe still pending after 5 s
 reports the root unavailable ("reads and writes there may be hung") even when the
-volume is mounted and its metadata looks writable. Results are reused for 30 s. The
-probe changes what status and doctor report; admission keeps its existing checks.
+volume is mounted and its metadata looks writable. Results are reused for 30 s.
+While the probe reports a root hung, or has not finished a probe of it yet (as
+right after the daemon starts), the daemon treats it as unavailable storage:
+nothing new is admitted (so no pool sims are leased for work that cannot start),
+an admitted job is not prepared and keeps its attempt, and `explain` and `wait`
+return the job without walking its run directory, with `artifacts_unavailable`
+saying why. Requests therefore keep answering instead of each holding a connection
+slot in a blocked walk until new ones are refused as "request limit reached". A
+finished job's `job.json`, `summary.md` and `events.jsonl` are written within 2 s
+or left to finish in the background, so the daemon's state lock is never held by a
+blocked write.
+
+Jobs admitted before a hang keep their leased sims until the volume answers or the
+job is canceled (cancel releases them), as with a disconnected volume. A probe
+passes for 30 s, so for up to about 35 s after a passing probe a newly hung volume
+can still block a run-directory listing or a start preparation already under way;
+a start preparation inside a blocked call waits for the volume, and the jobs
+queued behind it wait too.
+
+On macOS a volume can behave this way without any hardware fault: opening files on
+an external or removable volume waits for the privacy consent ("access files on a
+removable volume") of the process's responsible app, so a prompt left unanswered on
+a headless host blocks every such open while `stat` and free-space calls still
+succeed. Grant the daemon's app access (or Full Disk Access) ahead of time, or keep
+job output on the internal volume.
 A configured `/Volumes/<name>/...` path requires that mount to use a separate
 filesystem from `/Volumes` before directories are created; an absent mount is never
 intentionally recreated on the internal disk. Cleanup checks availability too.

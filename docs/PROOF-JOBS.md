@@ -64,7 +64,9 @@ jq -r '.run_dir as $d | .artifacts[] | select(.type == "video" or .type == "imag
 Each entry is `{path, bytes, type}`, with `path` relative to `run_dir`. `DerivedData` and
 `job.json` (with `summary.md` and `events.jsonl`) are never listed; a `*.xcresult` bundle is one entry. At most 200 entries are
 listed (`artifacts_truncated` says when there were more), so keep proof output to the files
-you'd actually look at.
+you'd actually look at. When the job output volume is not answering (see
+[Job output storage](JOB_STORAGE.md)), `artifacts` is left out and `artifacts_unavailable`
+says why; the files are still there once the volume answers.
 
 ## Retention and listing limits
 

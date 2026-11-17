@@ -370,6 +370,9 @@ public final class DaemonService: @unchecked Sendable {
                         try validateStorage(root)
                         try JobStorage.ensureFreeSpace(
                             JobStorage.freeBytes(root), minimum: config.scheduler.minFreeDiskBytes)
+                        // A root can pass those metadata checks while every open() on it blocks.
+                        // Admitting then leases sims to jobs whose start preparation cannot finish.
+                        if let failure = ioProbe?.check(root, requireResult: true) { throw JobStorage.Failure(failure) }
                     }
                     if engine.admissionStorageFailure != nil { artifactCleanupDue = true }
                     engine.admissionStorageFailure = nil
@@ -469,9 +472,9 @@ public final class DaemonService: @unchecked Sendable {
         switch request.params {
         case .templateBuild(let params): return respond(request) { try templateBuild(params) }
         case .explain(let ref):
-            return respond(request) { .job(ArtifactListing.attach(to: try locked { try requireJob(ref.jobID) })) }
+            return respond(request) { .job(attachArtifacts(to: try locked { try requireJob(ref.jobID) })) }
         case .wait(let params):
-            return respond(request) { .job(ArtifactListing.attach(to: try locked { try requireJob(params.jobID) })) }
+            return respond(request) { .job(attachArtifacts(to: try locked { try requireJob(params.jobID) })) }
         case .templateList: refreshTemplateVersions()
         case .doctor: if templateVersions == nil { refreshTemplateVersions() }
         case .gc(let params):
@@ -1274,6 +1277,28 @@ public final class DaemonService: @unchecked Sendable {
         let data = try encoder.encode(try health(now: now))
         try data.write(to: URL(fileURLWithPath: healthPath), options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: healthPath)
+    }
+
+    /// `ArtifactListing.attach`, unless the job's output root is failing its I/O probe. A walk
+    /// of a hung root blocks in the kernel, and the request keeps its connection slot until the
+    /// volume answers; enough of them and every new request is refused as "request limit
+    /// reached". The record says why it has no listing instead. Call outside the state lock.
+    public func attachArtifacts(to info: JobInfo) -> JobInfo {
+        guard let runDir = info.runDir else { return info }
+        let root = Self.outputRoot(of: runDir, roots: [artifacts.root, artifacts.legacyRoot])
+        if let failure = ioProbe?.check(root, requireResult: true) {
+            var info = info
+            info.artifactsUnavailable = failure
+            return info
+        }
+        return ArtifactListing.attach(to: info)
+    }
+
+    /// The configured output root holding `runDir`, else the directory above its date folder
+    /// (`<root>/<date>/<job>`), which a probe can write to just the same.
+    static func outputRoot(of runDir: String, roots: [String?]) -> String {
+        for case let root? in roots where runDir.hasPrefix(root.hasSuffix("/") ? root : root + "/") { return root }
+        return ((runDir as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
     }
 
     private func storageDiagnostics() -> StorageInfo {
