@@ -305,12 +305,11 @@ struct Run: ParsableCommand {
         service.ioProbe = ioProbe
         // Starting a job prepares its run directory on the output root. On a root whose
         // metadata answers but whose open() calls block, that preparation never returns and
-        // every job behind it waits. Treat hung I/O like a disconnected volume: hold the
-        // job (it spends no attempt) and prepare again once the probe passes.
-        (jobExecutor as? ProcessExecutor)?.storageCheck = { root in
-            try volumeGuard.check(root)
-            if let failure = ioProbe.check(root) { throw JobStorage.Failure(failure) }
-        }
+        // every job behind it waits. Hold the job like a disconnected volume (no attempt
+        // spent) until the probe has passed, including right after this daemon starts.
+        (jobExecutor as? ProcessExecutor)?.storageCheck = JobOutputGuard.storageCheck(
+            volume: volumeGuard.check, probe: ioProbe)
+        _ = ioProbe.check(artifacts.root)  // start the first probe now, not on the first tick
         let server: DaemonServer
         do {
             server = try DaemonServer(service: service, socketPath: paths.socketPath)

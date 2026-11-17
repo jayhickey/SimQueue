@@ -372,7 +372,7 @@ public final class DaemonService: @unchecked Sendable {
                             JobStorage.freeBytes(root), minimum: config.scheduler.minFreeDiskBytes)
                         // A root can pass those metadata checks while every open() on it blocks.
                         // Admitting then leases sims to jobs whose start preparation cannot finish.
-                        if let failure = ioProbe?.check(root) { throw JobStorage.Failure(failure) }
+                        if let failure = ioProbe?.check(root, requireResult: true) { throw JobStorage.Failure(failure) }
                     }
                     if engine.admissionStorageFailure != nil { artifactCleanupDue = true }
                     engine.admissionStorageFailure = nil
@@ -1285,7 +1285,8 @@ public final class DaemonService: @unchecked Sendable {
     /// reached". The record says why it has no listing instead. Call outside the state lock.
     public func attachArtifacts(to info: JobInfo) -> JobInfo {
         guard let runDir = info.runDir else { return info }
-        if let failure = ioProbe?.check(Self.outputRoot(of: runDir, roots: [artifacts.root, artifacts.legacyRoot])) {
+        let root = Self.outputRoot(of: runDir, roots: [artifacts.root, artifacts.legacyRoot])
+        if let failure = ioProbe?.check(root, requireResult: true) {
             var info = info
             info.artifactsUnavailable = failure
             return info

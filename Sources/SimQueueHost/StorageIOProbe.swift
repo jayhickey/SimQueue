@@ -50,7 +50,13 @@ public final class StorageIOProbe: @unchecked Sendable {
 
     /// Returns nil when the latest probe of `root` succeeded (or none has finished yet),
     /// otherwise a description of the failure. Starts a new probe when the last is stale.
-    public func check(_ root: String) -> String? {
+    ///
+    /// - Parameter requireResult: For callers about to start work on `root` (admission, start
+    ///   preparation, run-directory listings): until a probe of `root` has finished, report it
+    ///   as not verified instead of assuming it answers. A daemon that starts while the volume
+    ///   hangs then holds work rather than blocking in its first `open()` there. Status and
+    ///   doctor report without it.
+    public func check(_ root: String, requireResult: Bool = false) -> String? {
         lock.lock()
         let now = uptime()
         var started: Pending?
@@ -87,6 +93,9 @@ public final class StorageIOProbe: @unchecked Sendable {
                 return "job output I/O probe has not finished after \(Self.seconds(elapsed)) "
                     + "(limit \(Self.seconds(timeoutSeconds))) at \(root); reads and writes there may be hung"
             }
+        }
+        if requireResult, last == nil {
+            return "job output I/O at \(root) is not verified yet; work waits for the first probe to finish"
         }
         return last?.failure
     }

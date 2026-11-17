@@ -91,6 +91,81 @@ final class HungJobOutputTests: XCTestCase {
         XCTAssertNotEqual(try daemon.service.jobInfo(job)?.state, .queued, "Admitted once the probe passes")
     }
 
+    /// A daemon that starts while the volume hangs has no finished probe yet. Nothing is
+    /// admitted (or its run directory prepared) until one finishes; the clock never passes the
+    /// probe's limit here, so this is the not-yet-verified case, not the hung one.
+    func testAColdStartIntoAHungDriveAdmitsNothingUntilAProbeFinishes() throws {
+        let daemon = try TestDaemon()
+        let gate = Gate()
+        defer { gate.open(); daemon.destroy() }
+        daemon.stop()
+        let root = daemon.service.artifacts.root
+        let probe = StorageIOProbe(
+            timeoutSeconds: 5, intervalSeconds: 30, inlineWaitSeconds: 0, operation: gate.operation, uptime: { 0 })
+        daemon.service.storageChecksEnabled = true
+        daemon.service.validateStorage = { _ in }
+        daemon.service.ioProbe = probe
+
+        let job = try submit(daemon)
+        _ = try daemon.service.tick()
+        XCTAssertEqual(try daemon.service.jobInfo(job)?.state, .queued, "Nothing is admitted on an unverified root")
+        XCTAssertNil(probe.check(root), "Status and doctor still report without a result")
+        XCTAssertTrue(probe.check(root, requireResult: true)?.contains("not verified") == true)
+
+        gate.open()
+        XCTAssertTrue(eventually { probe.check(root, requireResult: true) == nil })
+        _ = try daemon.service.tick()
+        XCTAssertNotEqual(try daemon.service.jobInfo(job)?.state, .queued, "Admitted once the first probe passes")
+    }
+
+    /// The check `simqd` gives the executor: volume failures pass through, and a probe that has
+    /// not passed (not yet verified, or hung) holds start preparation.
+    func testTheExecutorStorageCheckHoldsUntilTheProbeHasPassed() throws {
+        let gate = Gate()
+        defer { gate.open() }
+        let clock = Clock()
+        let probe = StorageIOProbe(
+            timeoutSeconds: 5, intervalSeconds: 30, inlineWaitSeconds: 0, operation: gate.operation,
+            uptime: { clock.now })
+        let check = JobOutputGuard.storageCheck(volume: { _ in }, probe: probe)
+        XCTAssertThrowsError(try check("/out"), "Not verified yet at startup")
+        clock.advance(10)
+        XCTAssertThrowsError(try check("/out"), "Hung")
+        gate.open()
+        XCTAssertTrue(eventually { (try? check("/out")) != nil }, "Passes once the probe does")
+        let offline = JobOutputGuard.storageCheck(
+            volume: { _ in throw JobStorage.Failure("volume offline") }, probe: probe)
+        XCTAssertThrowsError(try offline("/out")) { error in
+            XCTAssertEqual(String(describing: error), "volume offline")
+        }
+    }
+
+    func testABoundedWriterReturnsAtItsDeadlineAndHoldsOneThreadPerHungRoot() {
+        let writers = BoundedWriters()
+        let gate = Gate()
+        defer { gate.open() }
+        let started = Date()
+        XCTAssertFalse(writers.run(root: "/hung", deadlineSeconds: 0.2) { try? gate.operation("/hung") })
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "The caller is released at the deadline")
+        XCTAssertEqual(writers.busyRoots, ["/hung"])
+
+        final class Count: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            var calls: Int { lock.lock(); defer { lock.unlock() }; return value }
+            func add() { lock.lock(); value += 1; lock.unlock() }
+        }
+        let count = Count()
+        XCTAssertFalse(writers.run(root: "/hung", deadlineSeconds: 5) { count.add() }, "Skipped while blocked")
+        XCTAssertTrue(writers.run(root: "/other", deadlineSeconds: 5) { count.add() }, "Other roots still write")
+        XCTAssertEqual(count.calls, 1)
+
+        gate.open()
+        XCTAssertTrue(eventually { writers.busyRoots.isEmpty })
+        XCTAssertTrue(writers.run(root: "/hung", deadlineSeconds: 5) { count.add() }, "Writes again once it answers")
+        XCTAssertEqual(count.calls, 2)
+    }
+
     func testExplainAnswersWithoutWalkingAHungRunDirectoryAndSaysWhy() throws {
         let daemon = try TestDaemon()
         let gate = Gate()
