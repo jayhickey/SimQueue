@@ -28,8 +28,21 @@ availability/writability and free bytes. Unavailable storage holds new admission
 Both also run a bounded real-I/O probe of the output root: a tiny file is written,
 read back uncached and removed on a separate thread. A probe still pending after 5 s
 reports the root unavailable ("reads and writes there may be hung") even when the
-volume is mounted and its metadata looks writable. Results are reused for 30 s. The
-probe changes what status and doctor report; admission keeps its existing checks.
+volume is mounted and its metadata looks writable. Results are reused for 30 s.
+While the probe reports a root hung, the daemon treats it as unavailable storage:
+nothing new is admitted (so no pool sims are leased for work that cannot start),
+an admitted job is not prepared and keeps its attempt, and `explain` and `wait`
+return the job without walking its run directory, with `artifacts_unavailable`
+saying why. Requests therefore keep answering instead of each holding a connection
+slot in a blocked walk until new ones are refused as "request limit reached". A
+start preparation already inside a blocked call still waits for the volume.
+
+On macOS a volume can behave this way without any hardware fault: opening files on
+an external or removable volume waits for the privacy consent ("access files on a
+removable volume") of the process's responsible app, so a prompt left unanswered on
+a headless host blocks every such open while `stat` and free-space calls still
+succeed. Grant the daemon's app access (or Full Disk Access) ahead of time, or keep
+job output on the internal volume.
 A configured `/Volumes/<name>/...` path requires that mount to use a separate
 filesystem from `/Volumes` before directories are created; an absent mount is never
 intentionally recreated on the internal disk. Cleanup checks availability too.

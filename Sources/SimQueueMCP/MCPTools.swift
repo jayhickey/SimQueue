@@ -82,7 +82,7 @@ enum MCPTools {
             MCPTool(
                 name: "simq_explain",
                 description:
-                    "One job, with why it is waiting. Once started: run_dir (SIMQ_RUN_DIR) and artifacts (files left there: path, bytes, type; capped at 200, artifacts_truncated when more).",
+                    "One job, with why it is waiting. Once started: run_dir (SIMQ_RUN_DIR) and artifacts (files left there: path, bytes, type; capped at 200, artifacts_truncated when more; artifacts_unavailable when the output volume is not answering).",
                 properties: ["job_id": jobID],
                 required: ["job_id"]),
             MCPTool(
