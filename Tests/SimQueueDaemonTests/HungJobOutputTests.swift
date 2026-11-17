@@ -13,12 +13,20 @@ import XCTest
 /// started, and `explain`/`wait` requests each kept a connection slot until all were refused
 /// with "request limit reached". These cover what the daemon does instead.
 final class HungJobOutputTests: XCTestCase {
-    /// An I/O probe operation that blocks until opened, then never again.
+    /// An I/O probe operation that blocks until opened, then never again. `open()` may be
+    /// called more than once (a test opens it, and its `defer` opens it again).
     private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
         private let opened = DispatchGroup()
+        private var isOpen = false
         init() { opened.enter() }
         func operation(_ root: String) throws { opened.wait() }
-        func open() { opened.leave() }
+        func open() {
+            lock.lock(); defer { lock.unlock() }
+            guard !isOpen else { return }
+            isOpen = true
+            opened.leave()
+        }
     }
 
     private final class Clock: @unchecked Sendable {
