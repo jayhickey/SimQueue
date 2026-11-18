@@ -224,3 +224,23 @@ test('activity phase ranges distinguish queue, preparation, execution and missin
   assert.match(m.activityDescription({ ...job, attempt: 1 }, 100000), /unavailable across retries/);
   assert.equal(m.waitLabel({ started_at: 20 }), 'Before start');
 });
+test('admission names a blocked simulator pool even while admission is open', () => {
+  const open = { draining: false, paused: false, load_throttled: false, global_wait_reasons: [] };
+  assert.equal(m.admissionLabel(open), 'Admission open');
+  const block = {
+    template: 'duo',
+    job_id: 'J-0002',
+    detail: 'template simq-template-duo is Booted, not Shutdown',
+    failures: 3,
+    summary:
+      "simulator pool can't prepare a duo sim for J-0002: template is Booted (3 failed attempts)",
+  };
+  assert.equal(
+    m.admissionLabel({ ...open, pool_block: block }),
+    `Admission open · Simulator jobs blocked: ${block.summary}`,
+  );
+  assert.equal(
+    m.admissionLabel({ ...open, draining: true, pool_block: block }),
+    `Draining · new jobs wait · Simulator jobs blocked: ${block.summary}`,
+  );
+});

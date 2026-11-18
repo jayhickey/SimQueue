@@ -122,7 +122,13 @@ final class SlimCloneBackendTests: XCTestCase {
         for state in ["Booted", "Booting", "ShuttingDown", "Creating", "Unknown"] {
             let (tools, backend) = try fixture()
             try tools.respond("xcrun-list", out: listing(sourceState: state))
-            XCTAssertThrowsError(try backend.prepareClone(name: Self.targetName, plan: slimPlan), state)
+            XCTAssertThrowsError(try backend.prepareClone(name: Self.targetName, plan: slimPlan), state) { error in
+                // Names the template and its state, never "couldn't parse".
+                XCTAssertEqual(
+                    error as? SimctlBackendError,
+                    .templateNotShutdown(name: Self.sourceName, udid: Self.source, state: state))
+                XCTAssertTrue("\(error)".contains("\(Self.sourceName) (\(Self.source)) is \(state)"), "\(error)")
+            }
             try assertNoMutation(tools)
         }
     }

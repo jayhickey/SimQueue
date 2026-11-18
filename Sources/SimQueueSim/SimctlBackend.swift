@@ -11,6 +11,10 @@ public enum SimctlBackendError: Error, Equatable, CustomStringConvertible {
     case createNotConfirmed(String)
     case deleteNotConfirmed(String)
     case noTemplate
+    /// A slim clone needs its template shut down, and something outside SimQueue (Simulator,
+    /// xcodebuild, a device-automation session) has it running. SimQueue never shuts down
+    /// a template another tool is using; the pool retries every pass until it is free.
+    case templateNotShutdown(name: String, udid: String, state: String)
 
     public var description: String {
         switch self {
@@ -20,6 +24,10 @@ public enum SimctlBackendError: Error, Equatable, CustomStringConvertible {
         case .createNotConfirmed(let name): "simctl clone returned but \(name) isn't listed"
         case .deleteNotConfirmed(let udid): "simctl delete returned but \(udid) is still listed"
         case .noTemplate: noTemplateMessage
+        case .templateNotShutdown(let name, let udid, let state):
+            "template \(name) (\(udid)) is \(state), not Shutdown; slim clones need it shut down. Another tool "
+                + "(Simulator, xcodebuild or a device-automation session) is using it: end that session, or run "
+                + "xcrun simctl shutdown \(udid) once nothing needs it"
         }
     }
 }
@@ -171,7 +179,8 @@ public final class SimctlBackend: SimBackend, @unchecked Sendable {
             let device = devices.first(where: { $0.udid == source && $0.name == expectedName })
         else { throw SimctlBackendError.unparseable("slim clone needs an exact registered template source") }
         guard !requireShutdown || device.state == "Shutdown" else {
-            throw SimctlBackendError.unparseable("shut down the selected slim template before cloning it")
+            throw SimctlBackendError.templateNotShutdown(
+                name: device.name, udid: device.udid, state: device.state ?? (device.isBooted ? "Booted" : "unknown"))
         }
         return device
     }

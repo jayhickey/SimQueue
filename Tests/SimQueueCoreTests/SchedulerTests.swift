@@ -162,6 +162,47 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.plan(request).admittedIDs, [job.id])
     }
 
+    /// Field case: a booted template failed every clone for 38 minutes while both waiters
+    /// said only "waiting for the simulator pool: needs 1, 0 ready".
+    func testPoolBlockNamesTheFailureForItsTemplateAndForWaitersBehindIt() {
+        func job(_ id: String, seq: Int64, template: String) -> Job {
+            var job = makeJob(id, seq: seq, resources: sims(1))
+            job.command = JobCommand(argv: ["true"])
+            job.command?.template = template
+            return job
+        }
+        let head = job("J-duo", seq: 1, template: "duo")
+        let behind = job("J-photos", seq: 2, template: "photos")
+        let sameTemplate = job("J-duo-2", seq: 3, template: "duo")
+        var request = input(queued: [head, behind, sameTemplate], pool: PoolSnapshot())
+        request.allowNewBoots = false
+        XCTAssertEqual(scheduler.plan(request).reasonCodes(for: behind.id), ["pool_warming"])
+
+        request.poolBlock = PoolBlock(
+            template: "duo", jobID: head.id, detail: "template simq-template-duo (T) is Booted, not Shutdown",
+            since: 0, lastAt: 0, failures: 3)
+        let plan = scheduler.plan(request)
+        XCTAssertTrue(plan.admissions.isEmpty)
+        let detail = "template simq-template-duo (T) is Booted, not Shutdown"
+        XCTAssertEqual(
+            plan.reasons(for: head.id), [.poolBlocked(template: "duo", detail: detail, behindJobID: nil)])
+        XCTAssertEqual(
+            plan.reasons(for: sameTemplate.id), [.poolBlocked(template: "duo", detail: detail, behindJobID: nil)])
+        XCTAssertEqual(
+            plan.reasons(for: behind.id), [.poolBlocked(template: "duo", detail: detail, behindJobID: head.id)])
+        XCTAssertEqual(
+            plan.reasons(for: behind.id).first?.summary,
+            "simulator pool is preparing a duo sim for higher-ranked J-duo first, and that is blocked: \(detail) "
+                + "(simq bump raises this job above it)")
+        XCTAssertEqual(
+            plan.reasons(for: head.id).first?.summary, "simulator pool can't prepare a duo sim: \(detail)")
+
+        // Once the photos job outranks the blocked waiter, it is not "behind" anything.
+        var bumped = behind; bumped.priority = 90
+        request.queued = [head, bumped]
+        XCTAssertEqual(scheduler.plan(request).reasonCodes(for: bumped.id), ["pool_warming"])
+    }
+
     func testParkedThawCountsAgainstRunningCap() {
         let job = makeJob("J-1", seq: 1, retryable: true, resources: sims(1))
         let config = testConfig(maxRunningSims: 2, maxParkedSims: 1)

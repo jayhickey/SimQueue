@@ -233,6 +233,9 @@ public final class Engine {
     /// Pool actions already audited as report-only or postponed (by description), so an
     /// unchanged plan is audited once, not every pass. Rebuilt each pool pass.
     var poolReportedActions: Set<String> = []
+    /// The pool's current failure to prepare a sim (nil while nothing is failing). Shown
+    /// in `simq status`, `simq explain` (as `pool_blocked`), doctor and the dashboard.
+    public internal(set) var poolBlock: PoolBlock?
     /// The load deferral last audited (`pool_boot_deferred`), so an unchanged one isn't
     /// written every pass.
     var bootDeferral: BootDeferral?
@@ -588,6 +591,7 @@ public final class Engine {
         )
         input.physicalDevices = devices
         input.restartBreaker = restartBreaker
+        input.poolBlock = pool == nil ? nil : poolBlock
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
             try store.setLoadThrottled(

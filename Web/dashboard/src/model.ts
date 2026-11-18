@@ -92,6 +92,15 @@ export interface CleanupSummary {
   failures: string[];
   unavailableRoots: string[];
 }
+export interface PoolBlock {
+  template?: string;
+  job_id?: string;
+  detail: string;
+  since?: At;
+  last_at?: At;
+  failures: number;
+  summary: string;
+}
 export interface Status {
   devices?: {
     device: { udid: string; name: string; labels: string[]; enabled: boolean };
@@ -106,6 +115,8 @@ export interface Status {
   paused: boolean;
   load_throttled: boolean;
   global_wait_reasons?: Reason[];
+  /** Set while the simulator pool keeps failing to prepare a sim (admission can still be open). */
+  pool_block?: PoolBlock;
   template_hint?: string;
   host?: Host;
   daemon: { version: string; backend: string; started_at: At; probe?: string };
@@ -386,6 +397,22 @@ export async function request<T>(
 // One missed poll is not an outage: a busy Mac answers late. With a snapshot on screen,
 // the dashboard keeps it and retries quickly; only this many misses in a row (or a miss
 // with nothing to show) is reported as disconnected.
+/** The runner's admission line. A pool block names what holds simulator jobs even
+ * while host admission is open (it used to read "Admission open" with jobs stuck). */
+export function admissionLabel(s: Status): string {
+  const reasons = s.global_wait_reasons || [];
+  const base = s.draining
+    ? 'Draining · new jobs wait'
+    : s.paused
+      ? 'Paused · new jobs wait'
+      : reasons.length
+        ? reasons.map((r) => r.summary).join(' · ')
+        : s.load_throttled
+          ? 'Admission held by host load'
+          : 'Admission open';
+  return s.pool_block ? `${base} · Simulator jobs blocked: ${s.pool_block.summary}` : base;
+}
+
 export const OFFLINE_AFTER_FAILURES = 3;
 export type Connection = 'connecting' | 'live' | 'retrying' | 'offline';
 export function connectionAfterFailure(failures: number, hasSnapshot: boolean): Connection {

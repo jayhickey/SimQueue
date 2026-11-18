@@ -505,7 +505,12 @@ extension Engine {
                         guard resourcesOK else { report.createsDeferredForResources += 1; return false }
                         return true
                     }
-                    if let sim { byUDID[sim.udid] = sim }
+                    if let sim {
+                        byUDID[sim.udid] = sim
+                        if poolBlock?.template == targetTemplate {
+                            try clearPoolBlock(reason: "created \(sim.udid)", now: environment.clock.now())
+                        }
+                    }
                 case .boot(let udid, let reason):
                     guard try store.poolSims().filter(\.holdsBootSlot).count < config.maxConcurrentBoots else {
                         continue
@@ -631,7 +636,27 @@ extension Engine {
                 }
             } catch {
                 report.failures.append("\(action): \(error)")
-                try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                if case .create = action {
+                    // The same failing create retries every pass. Audit it once per distinct
+                    // error; `pool_blocked` and the block's count carry the rest.
+                    let key = "create-failed:\(targetTemplate ?? ""):\(error)"
+                    reportedNow.insert(key)
+                    if !poolReportedActions.contains(key) {
+                        try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                    }
+                    try notePoolCreateFailed(template: targetTemplate, error: error, now: environment.clock.now())
+                } else {
+                    try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                }
+            }
+        }
+        if let block = poolBlock {
+            if block.template != targetTemplate {
+                try clearPoolBlock(reason: "pool now prepares \(targetTemplate ?? "the default template")", now: now)
+            } else if !report.actions.contains(where: {
+                if case .create = $0 { return true }; return false
+            }) {
+                try clearPoolBlock(reason: "no create needed", now: now)
             }
         }
         if !report.bootsDeferredForExternal.isEmpty || report.createsDeferredForExternal > 0 {
@@ -993,10 +1018,46 @@ extension Engine {
 
     func nextDemandedTemplate() throws -> String? {
         guard !hostTemplates.isEmpty else { return nil }
-        let ordered = scheduler.config.priority.order(try store.queuedJobs(), now: environment.clock.now())
         // Keep the highest-ranked simulator waiter's ready capacity intact until
         // admission; preparing a later profile must not recycle that waiter's clone.
-        return ordered.first { $0.resources.needsSims }?.command?.template ?? defaultHostTemplate
+        return try nextSimWaiter()?.command?.template ?? defaultHostTemplate
+    }
+
+    /// The highest-ranked queued job that needs a simulator: the one the pool prepares for.
+    func nextSimWaiter() throws -> Job? {
+        scheduler.config.priority.order(try store.queuedJobs(), now: environment.clock.now())
+            .first { $0.resources.needsSims }
+    }
+
+    /// Records a failed create for `template`. The first failure (and each new error text)
+    /// is audited as `pool_blocked`; repeats only count, so a pool retrying every pass
+    /// doesn't write an audit row per second.
+    func notePoolCreateFailed(template: String?, error: any Error, now: Double) throws {
+        let detail = "\(error)"
+        let waiter = try nextSimWaiter()?.id
+        let updated: PoolBlock
+        if let block = poolBlock, block.template == template {
+            updated = block.failedAgain(jobID: waiter, detail: detail, at: now)
+            poolBlock = updated
+            if block.detail == detail { return }
+        } else {
+            updated = PoolBlock(
+                template: template, jobID: waiter, detail: detail, since: now, lastAt: now, failures: 1)
+            poolBlock = updated
+        }
+        try store.audit("pool_blocked", detail: updated.summary, now: now)
+    }
+
+    /// Clears the recorded failure once a create succeeds, or once the pool no longer
+    /// plans a create for that template (demand gone, or it now serves another template).
+    func clearPoolBlock(reason: String, now: Double) throws {
+        guard let block = poolBlock else { return }
+        poolBlock = nil
+        try store.audit(
+            "pool_unblocked",
+            detail: "\(block.template ?? "default template"): \(reason) after \(block.failures) failed attempt"
+                + "\(block.failures == 1 ? "" : "s") over \(Int((now - block.since).rounded()))s",
+            now: now)
     }
 
     func templateDemand(_ name: String?, availableMemoryBytes: UInt64) throws -> Int {

@@ -604,6 +604,7 @@ struct Status: ParsableCommand {
         if status.loadThrottled { flags.append("cpu/load-throttled") }
         if !flags.isEmpty { print("state: " + flags.joined(separator: ", ")) }
         for reason in status.globalWaitReasons { print("blocked: \(reason.summary)") }
+        if let block = status.poolBlock { print("pool blocked: \(block.summary)") }
     }
 }
 

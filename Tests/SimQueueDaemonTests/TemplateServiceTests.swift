@@ -157,6 +157,25 @@ final class TemplateServiceTests: XCTestCase {
         XCTAssertEqual(daemon.sims.baseCreates.count, 1)
     }
 
+    /// A slim clone needs its template shut down; doctor said "current" while another tool
+    /// kept one booted and every pool create failed.
+    func testDoctorWarnsWhenATemplateIsNotShutDown() throws {
+        let daemon = try TestDaemon(config: try config())
+        defer { daemon.destroy() }
+        _ = try daemon.result(.templateBuild(TemplateBuildParams(project: "demo")))
+        let template = try XCTUnwrap(daemon.engine.templates().first?.record)
+        guard case .doctor(let before) = try daemon.result(.doctor) else { return XCTFail("no doctor report") }
+        let shutDown = try XCTUnwrap(before.checks.first { $0.name == "templates" })
+        XCTAssertFalse(shutDown.detail.contains("not shut down"), shutDown.detail)
+
+        try daemon.sims.bootDevice(udid: template.udid)
+        guard case .doctor(let report) = try daemon.result(.doctor) else { return XCTFail("no doctor report") }
+        let check = try XCTUnwrap(report.checks.first { $0.name == "templates" })
+        XCTAssertEqual(check.level, .warn)
+        XCTAssertTrue(check.detail.contains("not shut down, so the pool can't clone them"), check.detail)
+        XCTAssertTrue(check.detail.contains("\(template.name) (\(template.udid)) Booted"), check.detail)
+    }
+
     func testDoctorListsUnregisteredTemplateSims() throws {
         let daemon = try TestDaemon(config: try config())
         defer { daemon.destroy() }

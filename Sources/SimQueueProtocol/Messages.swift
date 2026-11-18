@@ -757,6 +757,33 @@ public struct WaitReasonInfo: Sendable, Equatable, Codable {
     }
 }
 
+/// `status.pool_block`: the simulator pool's current failure to prepare a sim.
+public struct PoolBlockInfo: Sendable, Equatable, Codable {
+    public var template: String?
+    public var jobID: String?
+    public var detail: String
+    public var since: Timestamp?
+    public var lastAt: Timestamp?
+    public var failures: Int
+    public var summary: String
+
+    public init(_ block: PoolBlock) {
+        template = block.template
+        jobID = block.jobID
+        detail = block.detail
+        since = Timestamp(block.since)
+        lastAt = Timestamp(block.lastAt)
+        failures = block.failures
+        summary = block.summary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case template, detail, since, failures, summary
+        case jobID = "job_id"
+        case lastAt = "last_at"
+    }
+}
+
 public struct JobInfo: Sendable, Equatable, Codable {
     public var device: String?
     public var physicalUDID: String?
@@ -1128,6 +1155,9 @@ public struct StatusResult: Sendable, Equatable, Codable {
     public var health: HealthInfo?
     /// Set while a cloning backend has no template: "no template yet, run simq template build".
     public var templateHint: String?
+    /// Set while the simulator pool keeps failing to prepare a sim. Admission can be open
+    /// while this holds every simulator job. Nil when nothing is failing or on older daemons.
+    public var poolBlock: PoolBlockInfo?
 
     public init(
         daemon: DaemonInfo,
@@ -1171,6 +1201,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         case globalWaitReasons = "global_wait_reasons"
         case lastTickAt = "last_tick_at"
         case templateHint = "template_hint"
+        case poolBlock = "pool_block"
         /// `template_hint` before the rename. Sent too (same value), since the wire format
         /// only adds fields; read from an older daemon.
         case legacyTemplateHint = "golden_hint"
@@ -1195,6 +1226,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         globalWaitReasons = try container.decode([WaitReasonInfo].self, forKey: .globalWaitReasons)
         lastTickAt = try container.decodeIfPresent(Timestamp.self, forKey: .lastTickAt)
         health = try container.decodeIfPresent(HealthInfo.self, forKey: .health)
+        poolBlock = try container.decodeIfPresent(PoolBlockInfo.self, forKey: .poolBlock)
         templateHint =
             try container.decodeIfPresent(String.self, forKey: .templateHint)
             ?? container.decodeIfPresent(String.self, forKey: .legacyTemplateHint)
@@ -1220,6 +1252,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         try container.encodeIfPresent(lastTickAt, forKey: .lastTickAt)
         try container.encodeIfPresent(health, forKey: .health)
         try container.encodeIfPresent(templateHint, forKey: .templateHint)
+        try container.encodeIfPresent(poolBlock, forKey: .poolBlock)
         try container.encodeIfPresent(templateHint, forKey: .legacyTemplateHint)
     }
 }

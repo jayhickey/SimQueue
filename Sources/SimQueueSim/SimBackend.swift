@@ -253,7 +253,10 @@ public final class FakeSimBackend: SimBackend, @unchecked Sendable {
     }
 
     public private(set) var clonePlans: [SimClonePlan] = []
+    /// Thrown by every clone preflight while set (a template another tool keeps booted).
+    public var prepareFailure: (any Error)?
     public func prepareClone(name: String, plan: SimClonePlan) throws -> SimClonePreparation {
+        if let prepareFailure = lock.withLock({ self.prepareFailure }) { throw prepareFailure }
         let devices = try listDevices()
         guard !devices.contains(where: { $0.name == name }) else { throw FakeSimError.noTemplate }
         return SimClonePreparation(

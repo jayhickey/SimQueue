@@ -24,6 +24,10 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case simCapacity(needed: Int, runningAfter: Int, maxRunning: Int)
     case bootCapacity(bootsNeeded: Int, inProgress: Int, max: Int)
     case poolWarming(needed: Int, ready: Int)
+    /// The pool's last attempt to prepare a sim for `template` failed (see `PoolBlock`).
+    /// `behindJobID` is set when this job needs another template: the pool serves the
+    /// highest-ranked simulator waiter's template first, so this job waits behind it.
+    case poolBlocked(template: String?, detail: String, behindJobID: String?)
     case loadTooHighForBoot(load1: Double, limit: Double)
     case insufficientMemory(availableBytes: UInt64, neededBytes: UInt64, reserveBytes: UInt64)
     case reservedForHigherPriority(jobID: String)
@@ -53,6 +57,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .simCapacity: return "sim_capacity"
         case .bootCapacity: return "boot_capacity"
         case .poolWarming: return "pool_warming"
+        case .poolBlocked: return "pool_blocked"
         case .loadTooHighForBoot: return "load_too_high_for_boot"
         case .insufficientMemory: return "insufficient_memory"
         case .reservedForHigherPriority: return "reserved_for_higher_priority"
@@ -106,6 +111,11 @@ public enum WaitReason: Sendable, Equatable, Codable {
             return "needs \(needed) sims; would make \(runningAfter) running sims (max \(maximum))"
         case .poolWarming(let needed, let ready):
             return "waiting for the simulator pool: needs \(needed), \(ready) ready"
+        case .poolBlocked(let template, let detail, let behind):
+            let target = template.map { "a \($0) sim" } ?? "a sim"
+            guard let behind else { return "simulator pool can't prepare \(target): \(detail)" }
+            return "simulator pool is preparing \(target) for higher-ranked \(behind) first, and that is blocked: "
+                + "\(detail) (simq bump raises this job above it)"
         case .bootCapacity(let needed, let inProgress, let maximum):
             return "needs \(needed) new boot(s); \(inProgress) boot(s) pending, at most \(maximum) at a time"
         case .loadTooHighForBoot(let load, let limit):

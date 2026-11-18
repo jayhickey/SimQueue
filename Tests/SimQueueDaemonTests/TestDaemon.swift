@@ -36,6 +36,7 @@ final class TestDaemon: @unchecked Sendable {
         simsOverride: (any SimBackend)? = nil, processesOverride: (any ProcessTable)? = nil,
         executorOverride: (any JobExecutor)? = nil, tickIntervalOverride: Double? = nil,
         fileSystemOverride: (any FileSystem)? = nil,
+        host: HostSnapshot = healthyFakeHost,
         configureServer: (DaemonServer) -> Void = { _ in }
     ) throws {
         let dir = stateDir ?? testScratchRoot() + "/sqd-" + UUID().uuidString.prefix(8)
@@ -53,7 +54,7 @@ final class TestDaemon: @unchecked Sendable {
         store.restartRecovery = config.restartRecovery
         let environment = EngineEnvironment(
             clock: SystemClock(),
-            probe: FakeResourceProbe(fixed: healthyFakeHost),
+            probe: FakeResourceProbe(fixed: host),
             sims: simsOverride ?? sims,
             processes: processesOverride ?? (realProcesses ? (processTable ?? SystemProcessTable()) : processes),
             fileSystem: fileSystemOverride ?? FakeFileSystem(),

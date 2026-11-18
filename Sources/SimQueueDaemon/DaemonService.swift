@@ -1369,6 +1369,7 @@ public final class DaemonService: @unchecked Sendable {
             storageReviewRunning: artifactCleanupRunning, lastCleanup: lastCleanup
         )
         result.devices = try engine.physicalDeviceInfos()
+        result.poolBlock = engine.poolBlock.map(PoolBlockInfo.init)
         return result
     }
 
