@@ -358,6 +358,23 @@ final class ObservationRecoveryTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "done\n").count - 1, 1, text)
     }
 
+    /// CI flake: a `simq wait` whose daemon was stopping got "daemon is shutting down" and
+    /// exited 70 instead of reconnecting like it does for a dropped socket.
+    func testWaitInterruptedByAStoppingDaemonReconnects() throws {
+        let path = try directory()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let server = try Server(path: path + "/simq.sock") { request, index in
+            if index == 0 { return .refuse(ProtocolError.shuttingDown) }
+            if case .wait = request.params { return .result(.job(Self.job(.succeeded))) }
+            return Self.finishedRun(request)
+        }
+        defer { server.stop() }
+        let (code, text, _) = try run(["wait", "J-0001"], state: path, recovery: 5)
+        XCTAssertEqual(code, 0, text)
+        XCTAssertEqual(server.requests.map { $0.method }.prefix(3), [.wait, .explain, .wait], text)
+        XCTAssertTrue(text.contains("reconnected; still waiting on J-0001"), text)
+    }
+
     func testOlderDaemonBusyRefusalWithoutFlagIsResent() throws {
         let path = try directory()
         defer { try? FileManager.default.removeItem(atPath: path) }

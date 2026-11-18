@@ -5,6 +5,7 @@ import SimQueueCore
 import SimQueueDaemon
 import SimQueueEngine
 import SimQueueProtocol
+import SimQueueSim
 import XCTest
 
 /// The daemon runs the pool pass each tick, and `lease_acquire` hands out a sim only
@@ -44,7 +45,9 @@ final class DaemonPoolTests: XCTestCase {
         }
     }
 
-    private func poolDaemon(warmMin: Int = 0, realProcesses: Bool = false) throws -> TestDaemon {
+    private func poolDaemon(
+        warmMin: Int = 0, realProcesses: Bool = false, host: HostSnapshot = healthyFakeHost
+    ) throws -> TestDaemon {
         var config = DaemonConfig()
         var pool = SimPoolConfig()
         pool.maxSims = 2
@@ -53,7 +56,70 @@ final class DaemonPoolTests: XCTestCase {
         pool.settle.loadBelow = 1000
         config.pool = pool
         config.reliability.cleanupMode = .enforce  // the pool takes no host action in report-only
-        return try TestDaemon(config: config, realProcesses: realProcesses)
+        return try TestDaemon(config: config, realProcesses: realProcesses, host: host)
+    }
+
+    /// Field case (0.1.46): a template another tool kept booted failed every pool create
+    /// for 38 minutes. Status said "admission open", explain said "needs 1, 0 ready", and
+    /// doctor's only warning was 5.7 GiB of stable swap "above its 3.0 GiB limit", which
+    /// gated nothing.
+    func testStatusExplainAndDoctorNameAFailingPoolCreateAndNotStableSwap() throws {
+        var host = healthyFakeHost
+        host.swapUsedBytes = 6 * ByteSize.gibibyte
+        let daemon = try poolDaemon(host: host)
+        defer { daemon.stop() }
+        let failure = FakeSimError.slimFailed("template simq-template-duo is Booted, not Shutdown")
+        daemon.sims.prepareFailure = failure
+        let submitted = daemon.service.handle(
+            Request(params: .submit(SubmitParams(project: "app", submitter: "t", minSims: 1, command: ["true"]))))
+        guard case .result(.submit(let job)) = submitted.body else { return XCTFail("\(submitted.body)") }
+
+        var status: StatusResult?
+        var reasons: [WaitReasonInfo] = []
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if case .result(.status(let current)) = daemon.service.handle(Request(params: .status)).body {
+                status = current
+            }
+            if case .result(.job(let info)) = daemon.service.handle(
+                Request(params: .explain(JobRef(jobID: job.job.id)))
+            )
+            .body {
+                reasons = info.waitReasons
+            }
+            if status?.poolBlocks?.isEmpty == false, reasons.first?.code == "pool_blocked" { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        let block = try XCTUnwrap(status?.poolBlocks?.first, "status names the failing pool")
+        XCTAssertEqual(block.detail, "\(failure)")
+        XCTAssertEqual(block.jobID, job.job.id)
+        XCTAssertGreaterThanOrEqual(block.failures, 1)
+        XCTAssertEqual(reasons.map(\.code), ["pool_blocked"])
+        XCTAssertTrue(reasons[0].summary.contains("\(failure)"), reasons[0].summary)
+        let encoded = String(decoding: try JSONEncoder().encode(try XCTUnwrap(status)), as: UTF8.self)
+        XCTAssertTrue(encoded.contains("\"pool_blocks\""), encoded)
+
+        guard case .doctor(let report) = try daemon.result(.doctor) else { return XCTFail("no doctor result") }
+        let pool = try XCTUnwrap(report.checks.first { $0.name == "pool" })
+        XCTAssertEqual(pool.level, .warn)
+        XCTAssertTrue(pool.detail.contains("blocked: "), pool.detail)
+        let memory = try XCTUnwrap(
+            report.checks.first { $0.name == "memory_swap" }, "\(report.checks.map { "\($0.name): \($0.detail)" })")
+        XCTAssertEqual(memory.level, .ok, memory.detail)
+        XCTAssertTrue(memory.detail.contains("swap 6.0 GiB not growing"), memory.detail)
+        XCTAssertFalse(memory.detail.contains("limit 3.0 GiB"), memory.detail)
+
+        daemon.sims.prepareFailure = nil
+        let cleared = Date().addingTimeInterval(10)
+        while Date() < cleared {
+            if case .result(.status(let current)) = daemon.service.handle(Request(params: .status)).body,
+                current.poolBlocks == nil
+            {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTFail("the block clears once a create succeeds")
     }
 
     private func acquire(_ daemon: TestDaemon, _ holder: String) -> LeaseResult? {

@@ -14,6 +14,8 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case restartLoop(restarts: Int, windowSeconds: Double)
     case memoryPressure(level: MemoryPressure, stopAt: MemoryPressure)
     case swapGrowing(bytesPerMinute: Double, limitBytesPerMinute: Double)
+    /// Never produced: swap size alone gates nothing. Kept so stored explanations from
+    /// older daemons still decode.
     case swapHigh(usedBytes: UInt64, maxBytes: UInt64)
     case cpuThrottle(percent: Double, limit: Double, boot: Bool)
     case loadThrottle(load1: Double, load5: Double, clearing: Bool)
@@ -24,6 +26,9 @@ public enum WaitReason: Sendable, Equatable, Codable {
     case simCapacity(needed: Int, runningAfter: Int, maxRunning: Int)
     case bootCapacity(bootsNeeded: Int, inProgress: Int, max: Int)
     case poolWarming(needed: Int, ready: Int)
+    /// The pool's last attempt to prepare a sim for `template` failed (see `PoolBlock`).
+    /// Holds no reservation: meanwhile the pool prepares sims for other templates' waiters.
+    case poolBlocked(template: String?, detail: String)
     case loadTooHighForBoot(load1: Double, limit: Double)
     case insufficientMemory(availableBytes: UInt64, neededBytes: UInt64, reserveBytes: UInt64)
     case reservedForHigherPriority(jobID: String)
@@ -53,6 +58,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
         case .simCapacity: return "sim_capacity"
         case .bootCapacity: return "boot_capacity"
         case .poolWarming: return "pool_warming"
+        case .poolBlocked: return "pool_blocked"
         case .loadTooHighForBoot: return "load_too_high_for_boot"
         case .insufficientMemory: return "insufficient_memory"
         case .reservedForHigherPriority: return "reserved_for_higher_priority"
@@ -106,6 +112,9 @@ public enum WaitReason: Sendable, Equatable, Codable {
             return "needs \(needed) sims; would make \(runningAfter) running sims (max \(maximum))"
         case .poolWarming(let needed, let ready):
             return "waiting for the simulator pool: needs \(needed), \(ready) ready"
+        case .poolBlocked(let template, let detail):
+            let target = template.map { "a \($0) sim" } ?? "a sim"
+            return "simulator pool can't prepare \(target): \(detail); jobs for other templates keep running"
         case .bootCapacity(let needed, let inProgress, let maximum):
             return "needs \(needed) new boot(s); \(inProgress) boot(s) pending, at most \(maximum) at a time"
         case .loadTooHighForBoot(let load, let limit):
@@ -124,7 +133,7 @@ public enum WaitReason: Sendable, Equatable, Codable {
     /// Reasons that don't justify holding a reservation for the job.
     public var isSelfLimited: Bool {
         switch self {
-        case .cleanupPending, .projectCap, .exclusiveSlot, .neverFits: return true
+        case .cleanupPending, .projectCap, .exclusiveSlot, .neverFits, .poolBlocked: return true
         default: return false
         }
     }

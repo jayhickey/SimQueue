@@ -162,6 +162,39 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.plan(request).admittedIDs, [job.id])
     }
 
+    /// Field case: a booted template failed every clone for 38 minutes. Its waiter said only
+    /// "needs 1, 0 ready" and, by reserving the one idle sim, also held a lower-ranked job
+    /// whose own template had that sim ready.
+    func testBlockedTemplateIsNamedAndHoldsNoCapacityFromOtherTemplates() {
+        func job(_ id: String, seq: Int64, template: String) -> Job {
+            var job = makeJob(id, seq: seq, resources: sims(1))
+            job.command = JobCommand(argv: ["true"])
+            job.command?.template = template
+            return job
+        }
+        let head = job("J-duo", seq: 1, template: "duo")
+        let behind = job("J-photos", seq: 2, template: "photos")
+        let sameTemplate = job("J-duo-2", seq: 3, template: "duo")
+        var request = input(queued: [head, behind, sameTemplate], pool: PoolSnapshot(idleRunning: 1))
+        request.allowNewBoots = false
+        request.readySimsByTemplate = ["photos": 1]
+        // Without a block the head waiter reserves the only idle sim; nothing runs.
+        XCTAssertTrue(scheduler.plan(request).admissions.isEmpty)
+
+        let detail = "template simq-template-duo (T) is Booted, not Shutdown"
+        request.poolBlocks = [
+            "duo": PoolBlock(template: "duo", jobID: head.id, detail: detail, since: 0, lastAt: 0, failures: 3)
+        ]
+        let plan = scheduler.plan(request)
+        XCTAssertEqual(plan.admittedIDs, [behind.id], "the photos job takes its own ready sim")
+        XCTAssertEqual(plan.reasons(for: head.id), [.poolBlocked(template: "duo", detail: detail)])
+        XCTAssertEqual(plan.reasons(for: sameTemplate.id), [.poolBlocked(template: "duo", detail: detail)])
+        XCTAssertEqual(
+            plan.reasons(for: head.id).first?.summary,
+            "simulator pool can't prepare a duo sim: \(detail); jobs for other templates keep running")
+        XCTAssertTrue(WaitReason.poolBlocked(template: "duo", detail: detail).isSelfLimited)
+    }
+
     func testParkedThawCountsAgainstRunningCap() {
         let job = makeJob("J-1", seq: 1, retryable: true, resources: sims(1))
         let config = testConfig(maxRunningSims: 2, maxParkedSims: 1)
@@ -220,7 +253,6 @@ final class SchedulerTests: XCTestCase {
             config.loadThrottle,
             LoadThrottlePolicy(load5Above: 30, load1Above: 30, load5WithLoad1Above: 15, clearBelowLoad5: 20))
         XCTAssertEqual(config.pressureStop, .warn)
-        XCTAssertEqual(config.maxSwapUsedBytes, 3 * gib)
         XCTAssertEqual(config.minFreeDiskBytes, 20 * gib)
     }
 

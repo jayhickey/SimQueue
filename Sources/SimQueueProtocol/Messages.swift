@@ -351,6 +351,13 @@ public struct ProtocolError: Error, Sendable, Equatable, Codable {
     public var isTransientBusy: Bool {
         retryable == true || (code == .queueFull && message.hasPrefix("daemon busy:"))
     }
+
+    /// What a stopping daemon answers an observation still in flight (a `wait`). Nothing
+    /// changed; to the client it is a disconnect, so it reconnects like one.
+    public static let shuttingDown = ProtocolError(.internalError, "daemon is shutting down")
+    public var isShutdownInterruption: Bool {
+        code == Self.shuttingDown.code && message == Self.shuttingDown.message
+    }
 }
 
 // MARK: - Request parameters
@@ -757,6 +764,33 @@ public struct WaitReasonInfo: Sendable, Equatable, Codable {
     }
 }
 
+/// One `status.pool_blocks` entry: a template the simulator pool currently fails to prepare.
+public struct PoolBlockInfo: Sendable, Equatable, Codable {
+    public var template: String?
+    public var jobID: String?
+    public var detail: String
+    public var since: Timestamp?
+    public var lastAt: Timestamp?
+    public var failures: Int
+    public var summary: String
+
+    public init(_ block: PoolBlock) {
+        template = block.template
+        jobID = block.jobID
+        detail = block.detail
+        since = Timestamp(block.since)
+        lastAt = Timestamp(block.lastAt)
+        failures = block.failures
+        summary = block.summary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case template, detail, since, failures, summary
+        case jobID = "job_id"
+        case lastAt = "last_at"
+    }
+}
+
 public struct JobInfo: Sendable, Equatable, Codable {
     public var device: String?
     public var physicalUDID: String?
@@ -1128,6 +1162,10 @@ public struct StatusResult: Sendable, Equatable, Codable {
     public var health: HealthInfo?
     /// Set while a cloning backend has no template: "no template yet, run simq template build".
     public var templateHint: String?
+    /// Templates the simulator pool keeps failing to prepare. Their waiters get
+    /// `pool_blocked`; jobs for other templates keep being served. Nil when nothing is
+    /// failing or on older daemons.
+    public var poolBlocks: [PoolBlockInfo]?
 
     public init(
         daemon: DaemonInfo,
@@ -1171,6 +1209,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         case globalWaitReasons = "global_wait_reasons"
         case lastTickAt = "last_tick_at"
         case templateHint = "template_hint"
+        case poolBlocks = "pool_blocks"
         /// `template_hint` before the rename. Sent too (same value), since the wire format
         /// only adds fields; read from an older daemon.
         case legacyTemplateHint = "golden_hint"
@@ -1195,6 +1234,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         globalWaitReasons = try container.decode([WaitReasonInfo].self, forKey: .globalWaitReasons)
         lastTickAt = try container.decodeIfPresent(Timestamp.self, forKey: .lastTickAt)
         health = try container.decodeIfPresent(HealthInfo.self, forKey: .health)
+        poolBlocks = try container.decodeIfPresent([PoolBlockInfo].self, forKey: .poolBlocks)
         templateHint =
             try container.decodeIfPresent(String.self, forKey: .templateHint)
             ?? container.decodeIfPresent(String.self, forKey: .legacyTemplateHint)
@@ -1220,6 +1260,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         try container.encodeIfPresent(lastTickAt, forKey: .lastTickAt)
         try container.encodeIfPresent(health, forKey: .health)
         try container.encodeIfPresent(templateHint, forKey: .templateHint)
+        try container.encodeIfPresent(poolBlocks, forKey: .poolBlocks)
         try container.encodeIfPresent(templateHint, forKey: .legacyTemplateHint)
     }
 }

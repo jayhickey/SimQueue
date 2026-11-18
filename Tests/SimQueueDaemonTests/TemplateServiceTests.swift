@@ -157,6 +157,22 @@ final class TemplateServiceTests: XCTestCase {
         XCTAssertEqual(daemon.sims.baseCreates.count, 1)
     }
 
+    /// A slim clone needs its template shut down; doctor said "current" while another tool
+    /// kept one booted and every pool create failed. Pure: no daemon, backend or simctl.
+    func testDoctorNamesTemplatesThatAreNotShutDown() {
+        let sims = [
+            SimDevice(udid: "T-1", name: "simq-template-duo-default-1", isBooted: true, state: "Booted"),
+            SimDevice(udid: "T-2", name: "simq-template-iphone-default-2", isBooted: false, state: "Shutdown"),
+            SimDevice(udid: "T-3", name: "simq-template-ipad-default-3", isBooted: false, state: "ShuttingDown"),
+            SimDevice(udid: "T-4", name: "simq-template-fake-default-4", isBooted: false),
+            SimDevice(udid: "OTHER", name: "Someone Else", isBooted: true, state: "Booted"),
+        ]
+        XCTAssertEqual(
+            DoctorBuilder.templatesNotShutDown(templateUDIDs: ["T-1", "T-2", "T-3", "T-4"], sims: sims),
+            ["simq-template-duo-default-1 (T-1) Booted", "simq-template-ipad-default-3 (T-3) ShuttingDown"])
+        XCTAssertEqual(DoctorBuilder.templatesNotShutDown(templateUDIDs: [], sims: sims), [])
+    }
+
     func testDoctorListsUnregisteredTemplateSims() throws {
         let daemon = try TestDaemon(config: try config())
         defer { daemon.destroy() }

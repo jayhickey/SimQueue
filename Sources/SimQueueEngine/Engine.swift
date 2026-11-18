@@ -233,6 +233,12 @@ public final class Engine {
     /// Pool actions already audited as report-only or postponed (by description), so an
     /// unchanged plan is audited once, not every pass. Rebuilt each pool pass.
     var poolReportedActions: Set<String> = []
+    /// Templates the pool currently fails to prepare, by `PoolBlock.key`. Shown in `simq
+    /// status`, `simq explain` (as `pool_blocked`), doctor and the dashboard. While one is
+    /// blocked the pool serves other templates' waiters. Rebuilt from the audit log on start.
+    public internal(set) var poolBlocks: [String: PoolBlock] = [:]
+    /// When each blocked template was last re-checked with the read-only clone preflight.
+    var poolBlockCheckedAt: [String: Double] = [:]
     /// The load deferral last audited (`pool_boot_deferred`), so an unchanged one isn't
     /// written every pass.
     var bootDeferral: BootDeferral?
@@ -316,6 +322,9 @@ public final class Engine {
             epoch: epoch)
         engine.loadThrottled = try store.loadThrottled()
         engine.lastAdmissionAt = try store.latestAdmissionAt()
+        // A restart must not forget a template the pool can't prepare: it would retarget
+        // it and hold its other templates' waiters again until the next failure.
+        engine.poolBlocks = try engine.restoredPoolBlocks(now: now)
         engine.refreshDefaultTemplate()
         engine.startupTimeouts = try engine.enforceTimeouts(now: now)
         // The startup reconcile is the first full watchdog pass of this epoch.
@@ -588,6 +597,7 @@ public final class Engine {
         )
         input.physicalDevices = devices
         input.restartBreaker = restartBreaker
+        input.poolBlocks = pool == nil ? [:] : poolBlocks
         let plan = scheduler.plan(input)
         if plan.loadThrottled != loadThrottled {
             try store.setLoadThrottled(

@@ -581,6 +581,22 @@ extension JobStore {
         try database.query("SELECT MAX(seq) AS seq FROM audit_log;").first?.int("seq")
     }
 
+    /// Audit entries of `types` since `since`, oldest first (uses `audit_log_type_at_idx`).
+    public func auditEntries(types: [String], since: Double) throws -> [AuditEntry] {
+        guard !types.isEmpty else { return [] }
+        let marks = Array(repeating: "?", count: types.count).joined(separator: ", ")
+        return try database.query(
+            "SELECT * FROM audit_log WHERE type IN (\(marks)) AND at >= ? ORDER BY seq;",
+            types.map { .text($0) } + [.real(since)]
+        ).map { row in
+            AuditEntry(
+                seq: row.int("seq") ?? 0, at: row.double("at") ?? 0, epoch: row.int("epoch"),
+                jobID: row.string("job_id"),
+                resourceID: row.int("resource_id"), type: row.string("type") ?? "", detail: row.string("detail"),
+                passID: row.string("pass_id"))
+        }
+    }
+
     /// Every audit entry for a job, oldest first (uses `audit_log_job_idx`).
     public func auditEntries(jobID: String) throws -> [AuditEntry] {
         try database.query("SELECT * FROM audit_log WHERE job_id = ? ORDER BY seq;", [.text(jobID)]).map { row in

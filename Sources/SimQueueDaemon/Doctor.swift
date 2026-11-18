@@ -142,12 +142,15 @@ public enum DoctorBuilder {
             live.map { live in
                 poolConfig.map { !$0.actsOnHost(cleanupMode: live.engine.reliability.cleanupMode) } ?? false
             } ?? false
-        if pool != nil || poolReportOnly {
+        // A failing create is said even with no pool sims (it is why there are none).
+        let blocks = (live?.engine.poolBlocks.values).map { $0.sorted { $0.key < $1.key } } ?? []
+        if pool != nil || poolReportOnly || !blocks.isEmpty {
             let sims = pool?.sims.count ?? 0
             let settling = pool?.settling.count ?? 0
             let unleased = pool?.unleasedUsers.count ?? 0
             let capHits = pool?.settleCapHitsLastHour ?? 0
-            let level: DoctorCheck.Level = poolReportOnly || capHits > 0 || unleased > 0 ? .warn : .ok
+            let level: DoctorCheck.Level =
+                poolReportOnly || capHits > 0 || unleased > 0 || !blocks.isEmpty ? .warn : .ok
             let why =
                 poolConfig?.mode == .reportOnly
                 ? "pool.mode is report-only" : "pool.mode is follow-cleanup and cleanup_mode is report-only"
@@ -160,7 +163,8 @@ public enum DoctorBuilder {
                             + "run the pool while cleanup stays report-only); " : "")
                         + (poolConfig.map { "mode \($0.mode.rawValue), " } ?? "")
                         + "\(sims) sims, \(settling) settling, \(unleased) unleased users, "
-                        + "\(capHits) settle cap hits in the last hour"))
+                        + "\(capHits) settle cap hits in the last hour"
+                        + blocks.map { "; blocked: \($0.summary)" }.joined()))
         }
 
         checks += try liveChecks(live, now: now)
@@ -256,6 +260,13 @@ public enum DoctorBuilder {
                     "stale (Xcode or runtime changed; simq template build --replace): " + stale.joined(separator: ", "))
             }
             if !failed.isEmpty { problems.append("slim failed: " + failed.joined(separator: ", ")) }
+            // A template another tool booted can't be cloned (slim clones need it shut down).
+            let running = templatesNotShutDown(templateUDIDs: Set(templates.map(\.record.udid)), sims: world.sims)
+            if !running.isEmpty {
+                problems.append(
+                    "not shut down, so the pool can't clone them (another tool is using them; "
+                        + "end that session or xcrun simctl shutdown <udid>): " + running.joined(separator: ", "))
+            }
             if unknown { problems.append("tool versions unreadable; staleness unknown") }
             if !unregistered.isEmpty {
                 problems.append(
@@ -286,13 +297,20 @@ public enum DoctorBuilder {
                 case .warn: .warn
                 case .normal: .ok
                 }
-            if host.swapUsedBytes > config.maxSwapUsedBytes, memoryLevel == .ok { memoryLevel = .warn }
+            // Same gates as admission: pressure, reserve and swap growth. macOS rarely
+            // shrinks swap once pressure ends, so its size alone is history, not a limit.
+            let growth = live.engine.swapTracker.growthBytesPerMinute
+            let growing = growth > config.swapGrowthLimitBytesPerMinute
+            if memoryLevel == .ok, growing || host.availableMemoryBytes < config.reserveBytes { memoryLevel = .warn }
             checks.append(
                 DoctorCheck(
                     name: "memory_swap", level: memoryLevel,
                     detail:
-                        "pressure \(host.memoryPressure.rawValue), \(gibibytes(host.availableMemoryBytes)) available, "
-                        + "swap \(gibibytes(host.swapUsedBytes)) (limit \(gibibytes(config.maxSwapUsedBytes)))"))
+                        "pressure \(host.memoryPressure.rawValue), \(gibibytes(host.availableMemoryBytes)) available "
+                        + "(reserve \(gibibytes(config.reserveBytes))), swap \(gibibytes(host.swapUsedBytes)) "
+                        + (growing
+                            ? "growing \(mebibytes(growth))/min (limit \(mebibytes(config.swapGrowthLimitBytesPerMinute))/min)"
+                            : "not growing; swap size alone does not hold work")))
         } else {
             for name in ["disk", "memory_swap"] {
                 checks.append(DoctorCheck(name: name, level: .warn, detail: "host probe failed"))
@@ -341,6 +359,19 @@ public enum DoctorBuilder {
 
     static func gibibytes(_ bytes: UInt64) -> String {
         String(format: "%.1f GiB", Double(bytes) / Double(ByteSize.gibibyte))
+    }
+
+    /// Templates in `sims` that are not exactly Shutdown, as "name (udid) state", sorted.
+    /// A backend that reports no state counts a sim that isn't booted as shut down.
+    public static func templatesNotShutDown(templateUDIDs: Set<String>, sims: [SimDevice]) -> [String] {
+        sims.compactMap { sim -> String? in
+            let state = sim.state ?? (sim.isBooted ? "Booted" : "Shutdown")
+            return templateUDIDs.contains(sim.udid) && state != "Shutdown" ? "\(sim.name) (\(sim.udid)) \(state)" : nil
+        }.sorted()
+    }
+
+    static func mebibytes(_ bytes: Double) -> String {
+        String(format: "%.1f MiB", bytes / Double(ByteSize.mebibyte))
     }
 
     /// Run from the doctor client, independently of the service lock. This still

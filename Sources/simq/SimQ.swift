@@ -218,6 +218,13 @@ func call(
                 response = nil
                 continue
             }
+            // A daemon stopping mid-observation answers "shutting down" instead of just
+            // closing the socket. Same thing for a `wait`: reconnect, don't exit 70.
+            if observingJob, reconnect, let response, case .error(let error) = response.body,
+                error.isShutdownInterruption
+            {
+                throw SocketError.closed
+            }
             break
         } catch SocketError.timedOut where deadline.map({ Date().timeIntervalSince1970 >= $0 }) == true {
             throw failure(.waitTimeout)
@@ -604,6 +611,7 @@ struct Status: ParsableCommand {
         if status.loadThrottled { flags.append("cpu/load-throttled") }
         if !flags.isEmpty { print("state: " + flags.joined(separator: ", ")) }
         for reason in status.globalWaitReasons { print("blocked: \(reason.summary)") }
+        for block in status.poolBlocks ?? [] { print("pool blocked: \(block.summary)") }
     }
 }
 

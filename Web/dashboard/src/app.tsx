@@ -3,6 +3,7 @@ import { Component, render, type ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   APIError,
+  admissionLabel,
   activitySegments,
   activityDescription,
   waitLabel,
@@ -267,7 +268,6 @@ function StatusSummary({
   const s = snapshot?.status,
     h = s?.host,
     offline = connection === 'offline';
-  const reasons = s?.global_wait_reasons || [];
   const failed = snapshot?.recent
     .filter((j) => ['failed', 'infra_failed', 'timed_out', 'interrupted'].includes(j.state))
     .sort((a, b) => (epoch(b.finished_at) ?? 0) - (epoch(a.finished_at) ?? 0))[0];
@@ -279,15 +279,7 @@ function StatusSummary({
   const disk = s?.storage?.system_free_bytes ?? h?.freeDiskBytes,
     floor = s?.storage?.minimum_free_bytes;
   const margin = finite(disk) && finite(floor) ? disk - floor : null;
-  const admission = s?.draining
-    ? 'Draining · new jobs wait'
-    : s?.paused
-      ? 'Paused · new jobs wait'
-      : reasons.length
-        ? reasons.map((r) => r.summary).join(' · ')
-        : s?.load_throttled
-          ? 'Admission held by host load'
-          : 'Admission open';
+  const admission = s ? admissionLabel(s) : 'Admission open';
   const headline = offline
     ? 'Can’t reach the Mac'
     : !s
@@ -327,6 +319,13 @@ function StatusSummary({
               </span>
             </div>
           )}
+          {(s?.pool_blocks || []).map((block) => (
+            <div class="warning-chip danger" key={`pool-${block.template ?? ''}`}>
+              <span>
+                <b>Simulator pool blocked</b> · {block.summary}
+              </span>
+            </div>
+          ))}
           {s?.health && s.health.health !== 'ok' && (
             <div class="warning-chip danger">
               <span>
@@ -847,7 +846,9 @@ function Runner({ snapshot }: { snapshot?: Snapshot }) {
         ? 'Paused'
         : s?.load_throttled || s?.global_wait_reasons?.length
           ? 'Held'
-          : 'Open';
+          : s?.pool_blocks?.length
+            ? 'Open · simulator pool blocked'
+            : 'Open';
   return (
     <section class="side-section" aria-labelledby="runner-title">
       <Heading id="runner-title" title="Runner" />

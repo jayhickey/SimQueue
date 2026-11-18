@@ -1369,6 +1369,8 @@ public final class DaemonService: @unchecked Sendable {
             storageReviewRunning: artifactCleanupRunning, lastCleanup: lastCleanup
         )
         result.devices = try engine.physicalDeviceInfos()
+        let blocks = engine.poolBlocks.values.sorted { $0.key < $1.key }.map(PoolBlockInfo.init)
+        result.poolBlocks = blocks.isEmpty ? nil : blocks
         return result
     }
 

@@ -367,15 +367,20 @@ extension Engine {
                 if case .create = $0 { return false }; if case .boot = $0 { return false }; return true
             }
             // Make room when the shared pool is full of another profile's idle clones.
-            // Use the normal bounded recycle path, never replace a leased/in-flight sim.
-            if selectedDemand > matching.filter({ $0.phase != .leased && !$0.tainted }).count,
+            // Use the normal bounded recycle path, never replace a leased/in-flight sim,
+            // and never destroy a ready clone for a template that can't be cloned: a
+            // blocked template recycles nothing, and an unproven one must first pass the
+            // read-only clone preflight (a failure records the block instead).
+            if poolBlocks[PoolBlock.key(targetTemplate)] == nil,
+                selectedDemand > matching.filter({ $0.phase != .leased && !$0.tainted }).count,
                 sims.count >= config.maxSims,
                 let victim = other.filter({ $0.leaseID == nil && !$0.holdsBootSlot && !unleasedUsers.contains($0.udid) }
                 )
                 .sorted(by: { $0.lastUsedAt < $1.lastUsedAt }).first,
                 !planned.contains(where: {
                     if case .recycle(let id, _) = $0 { return id == victim.udid }; return false
-                })
+                }),
+                try clonePreflightPasses(targetTemplate, plan: clonePlan, hostWork: hostWork)
             {
                 planned.insert(.recycle(udid: victim.udid, reason: "make room for requested host template"), at: 0)
             }
@@ -420,6 +425,9 @@ extension Engine {
             }
         }
         var externalBootedNames: Set<String> = []
+        // Whether this pass ran a create's preflight for the target template (a block it
+        // did not try is re-checked read-only instead, so it never goes stale).
+        var createAttempted = false
         func externalSimsBlockBoot() throws -> Bool {
             guard !config.externalSimPatterns.isEmpty else { return false }
             // Inventory is needed only when an otherwise eligible action would boot a
@@ -494,6 +502,7 @@ extension Engine {
                     }
                     // Read-only preflight runs unlocked, then this callback applies all
                     // fresh boot gates immediately before the durable started marker.
+                    createAttempted = true
                     let sim = try createPreparedPoolSim(
                         slot: Self.freeSlot(in: try store.poolSims()), now: now, plan: clonePlan, hostWork: hostWork
                     ) {
@@ -505,6 +514,11 @@ extension Engine {
                         guard resourcesOK else { report.createsDeferredForResources += 1; return false }
                         return true
                     }
+                    // A clone, or a create held by a fresh gate after its preflight passed:
+                    // either way the template can be cloned again.
+                    try clearPoolBlock(
+                        targetTemplate, reason: sim.map { "created \($0.udid)" } ?? "clone preflight passes",
+                        now: environment.clock.now())
                     if let sim { byUDID[sim.udid] = sim }
                 case .boot(let udid, let reason):
                     guard try store.poolSims().filter(\.holdsBootSlot).count < config.maxConcurrentBoots else {
@@ -631,9 +645,21 @@ extension Engine {
                 }
             } catch {
                 report.failures.append("\(action): \(error)")
-                try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                if case .create = action {
+                    // The same failing create retries every pass. Audit it once per distinct
+                    // error; `pool_blocked` and the block's count carry the rest.
+                    let key = "create-failed:\(targetTemplate ?? ""):\(error)"
+                    reportedNow.insert(key)
+                    if !poolReportedActions.contains(key) {
+                        try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                    }
+                    try notePoolCreateFailed(template: targetTemplate, error: error, now: environment.clock.now())
+                } else {
+                    try store.audit("pool_action_failed", detail: "\(action): \(error)", now: now)
+                }
             }
         }
+        try settlePoolBlocks(attemptedKey: createAttempted ? PoolBlock.key(targetTemplate) : nil, hostWork: hostWork)
         if !report.bootsDeferredForExternal.isEmpty || report.createsDeferredForExternal > 0 {
             let names = externalBootedNames.sorted()
             let key = "external:" + names.joined(separator: ",")
@@ -991,12 +1017,134 @@ extension Engine {
         return keys
     }
 
+    /// The template the pool prepares this pass: the highest-ranked simulator waiter's,
+    /// skipping templates whose clones keep failing so their waiters don't hold everyone
+    /// else's (a blocked template is re-checked read-only by `settlePoolBlocks`). When every
+    /// waiter's template is blocked, the highest-ranked one is attempted as before.
     func nextDemandedTemplate() throws -> String? {
         guard !hostTemplates.isEmpty else { return nil }
-        let ordered = scheduler.config.priority.order(try store.queuedJobs(), now: environment.clock.now())
-        // Keep the highest-ranked simulator waiter's ready capacity intact until
-        // admission; preparing a later profile must not recycle that waiter's clone.
-        return ordered.first { $0.resources.needsSims }?.command?.template ?? defaultHostTemplate
+        // Keep that waiter's ready capacity intact until admission; preparing a later
+        // profile must not recycle its clone.
+        let templates = try simWaiters().map { $0.command?.template ?? defaultHostTemplate }
+        return templates.first { poolBlocks[PoolBlock.key($0)] == nil } ?? templates.first ?? defaultHostTemplate
+    }
+
+    /// Queued jobs that need a simulator, highest-ranked first.
+    func simWaiters() throws -> [Job] {
+        scheduler.config.priority.order(try store.queuedJobs(), now: environment.clock.now())
+            .filter { $0.resources.needsSims }
+    }
+
+    /// Runs the backend's read-only clone preflight for `template`. A failure is recorded
+    /// as that template's block and returns false; nothing is mutated. A re-check of an
+    /// existing block (`counts: false`) updates its detail without counting an attempt.
+    func clonePreflightPasses(
+        _ template: String?, plan: SimClonePlan, hostWork: PoolHostWork, counts: Bool = true
+    ) throws -> Bool {
+        let key = PoolBlock.key(template)
+        let name = environment.naming.poolSimName(slot: Self.freeSlot(in: try store.poolSims()), intentID: 0)
+        var failure: (any Error)?
+        try hostWork {
+            do { _ = try (hostCall { try self.environment.sims.prepareClone(name: name, plan: plan) }) } catch {
+                failure = error
+            }
+        }
+        poolBlockCheckedAt[key] = environment.clock.now()
+        guard let failure else { return true }
+        try notePoolCreateFailed(template: template, error: failure, now: environment.clock.now(), counts: counts)
+        return false
+    }
+
+    /// How often a blocked template that this pass did not try is re-checked with the
+    /// backend's read-only clone preflight.
+    public static let poolBlockRecheckSeconds: Double = 15
+    static let poolBlockedAuditType = "pool_blocked"
+    static let poolUnblockedAuditType = "pool_unblocked"
+
+    /// Records a failed create for `template`. The first failure, and each new error text,
+    /// is audited as `pool_blocked` (JSON, so a restart can rebuild it); repeats only count,
+    /// so a pool retrying every pass doesn't write an audit row per second.
+    func notePoolCreateFailed(template: String?, error: any Error, now: Double, counts: Bool = true) throws {
+        let detail = "\(error)"
+        let key = PoolBlock.key(template)
+        let waiter = try simWaiters().first { ($0.command?.template ?? defaultHostTemplate) == template }?.id
+        let updated: PoolBlock
+        let previous = poolBlocks[key]
+        if let previous {
+            updated = previous.failedAgain(jobID: waiter, detail: detail, at: now, counts: counts)
+        } else {
+            updated = PoolBlock(template: template, jobID: waiter, detail: detail, since: now, lastAt: now, failures: 1)
+        }
+        poolBlocks[key] = updated
+        poolBlockCheckedAt[key] = now
+        guard previous?.detail != detail else { return }
+        try store.audit(Self.poolBlockedAuditType, detail: try Self.json(updated), now: now)
+    }
+
+    /// Forgets the failure recorded for `template`, if any, with an audited reason.
+    func clearPoolBlock(_ template: String?, reason: String, now: Double) throws {
+        let key = PoolBlock.key(template)
+        guard let block = poolBlocks.removeValue(forKey: key) else { return }
+        poolBlockCheckedAt[key] = nil
+        try store.audit(
+            Self.poolUnblockedAuditType,
+            detail: try Self.json(
+                PoolUnblock(
+                    template: block.template, reason: reason, failures: block.failures,
+                    seconds: Int((now - block.since).rounded()))),
+            now: now)
+    }
+
+    /// After a pool pass: drop blocks no queued job needs, and re-check (read-only, at most
+    /// every `poolBlockRecheckSeconds`) each block this pass did not try, so a template that
+    /// was shut down meanwhile stops being reported blocked even while creates wait on load.
+    func settlePoolBlocks(attemptedKey: String?, hostWork: PoolHostWork) throws {
+        guard !poolBlocks.isEmpty else { return }
+        let now = environment.clock.now()
+        let waiting = Set(try simWaiters().map { PoolBlock.key($0.command?.template ?? defaultHostTemplate) })
+        for (key, block) in poolBlocks.sorted(by: { $0.key < $1.key }) {
+            guard waiting.contains(key) else {
+                try clearPoolBlock(block.template, reason: "no queued job needs it", now: now)
+                continue
+            }
+            guard key != attemptedKey, now - (poolBlockCheckedAt[key] ?? 0) >= Self.poolBlockRecheckSeconds
+            else { continue }
+            let plan = try planForTemplate(block.template)
+            if try clonePreflightPasses(block.template, plan: plan, hostWork: hostWork, counts: false) {
+                try clearPoolBlock(block.template, reason: "clone preflight passes again", now: environment.clock.now())
+            }
+        }
+    }
+
+    /// The blocks the audit log says were still open (no later `pool_unblocked`) within
+    /// the last day. Nothing is retried for them until the first pool pass.
+    func restoredPoolBlocks(now: Double) throws -> [String: PoolBlock] {
+        var blocks: [String: PoolBlock] = [:]
+        let decoder = JSONDecoder()
+        for entry in try store.auditEntries(
+            types: [Self.poolBlockedAuditType, Self.poolUnblockedAuditType], since: now - 86_400)
+        {
+            let data = Data((entry.detail ?? "").utf8)
+            if entry.type == Self.poolBlockedAuditType, let block = try? decoder.decode(PoolBlock.self, from: data) {
+                blocks[block.key] = block
+            } else if let cleared = try? decoder.decode(PoolUnblock.self, from: data) {
+                blocks[PoolBlock.key(cleared.template)] = nil
+            }
+        }
+        return blocks
+    }
+
+    struct PoolUnblock: Codable {
+        var template: String?
+        var reason: String
+        var failures: Int
+        var seconds: Int
+    }
+
+    static func json(_ value: some Encodable) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
     func templateDemand(_ name: String?, availableMemoryBytes: UInt64) throws -> Int {
