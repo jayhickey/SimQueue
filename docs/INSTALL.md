@@ -235,7 +235,7 @@ Inspect `simq status`, `simq explain JOB_ID`, `simq logs JOB_ID` and `simq docto
 | --- | --- |
 | No selected template or incompatible clones | Select a ready template; reset the old pool before changing the contract. |
 | Pool warming/readiness | Allow bounded clone/boot/settle work to finish; inspect failures and daemon logs. |
-| `pool_blocked` (status `pool blocked`, dashboard "Simulator jobs blocked") | The pool's last create for that template failed and retries each pass. The reason names the error, such as a template another tool (Simulator, xcodebuild, a device-automation session) keeps booted; end that session or shut the template down once nothing uses it. Jobs for other templates that rank behind the blocked waiter say so; `simq bump` lets one go first. |
+| `pool_blocked` (status `pool blocked`, dashboard "Simulator jobs blocked") | The pool can't prepare a sim for that template; the reason names the error, such as a template another tool (Simulator, xcodebuild, a device-automation session) keeps booted. End that session or shut the template down once nothing uses it; the pool notices within about 15 seconds. Jobs for other templates keep running meanwhile. |
 | Memory, swap growth, load or thermal gate | Reduce work or wait for recovery. Stable historical swap alone does not stop admission. Explicit load limits remain binding. |
 | Drain or pause | Inspect work, then deliberately `simq resume`. |
 | Version mismatch | Align CLI/daemon versions and restart the chosen manager. |

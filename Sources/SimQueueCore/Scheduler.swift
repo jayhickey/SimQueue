@@ -23,9 +23,10 @@ public struct SchedulerInput: Sendable {
     public var storageFailure: String?
     public var cleanupJobIDs: Set<String>
     public var physicalDevices: [PhysicalDeviceInfo] = []
-    /// The pool's current failure to prepare a sim, if any. Waiters it holds name it
-    /// instead of the generic `poolWarming`.
-    public var poolBlock: PoolBlock?
+    /// The pool's current failures to prepare a sim, by `PoolBlock.key`. Waiters for a
+    /// blocked template name it instead of `poolWarming` and hold no reservation, so jobs
+    /// for other templates are admitted meanwhile.
+    public var poolBlocks: [String: PoolBlock] = [:]
 
     public init(
         now: Double,
@@ -285,13 +286,9 @@ public struct Scheduler: Sendable {
                     deviceHolders.insert(physicalUDID)
                 }
             case .failure(let failure):
-                wait(
-                    Self.namingPoolBlock(
-                        failure.reasons, block: input.poolBlock, template: label,
-                        behind: input.poolBlock?.jobID.flatMap { id in
-                            ordered[..<index].contains { $0.id == id } ? id : nil
-                        }))
-                if reservedFor == nil, !failure.reasons.allSatisfy(\.isSelfLimited) {
+                let reasons = Self.namingPoolBlock(failure.reasons, block: input.poolBlocks[label])
+                wait(reasons)
+                if reservedFor == nil, !reasons.allSatisfy(\.isSelfLimited) {
                     reservedFor = job.id
                     let ready = state.idleRunning + state.idleParked
                     warmupHint = max(0, job.resources.minSims - ready)
@@ -397,18 +394,14 @@ public struct Scheduler: Sendable {
         return .failure(AllocationFailure(reasons: minimumFailure))
     }
 
-    /// Replaces the generic pool-warming reason with the pool's recorded failure when that
-    /// failure holds this job: the job needs the blocked template, or it ranks behind the
-    /// waiter the pool is preparing (`behind`; the pool serves that waiter's template first).
-    static func namingPoolBlock(
-        _ reasons: [WaitReason], block: PoolBlock?, template: String, behind: String?
-    ) -> [WaitReason] {
+    /// Replaces the generic pool-warming reason with the pool's recorded failure for the
+    /// job's own template. Such a job reserves nothing (`poolBlocked` is self-limited), so
+    /// a waiter whose template can't be prepared doesn't hold capacity other jobs could use.
+    static func namingPoolBlock(_ reasons: [WaitReason], block: PoolBlock?) -> [WaitReason] {
         guard let block else { return reasons }
-        let ownTemplate = (block.template ?? "") == template
-        guard ownTemplate || behind != nil else { return reasons }
         return reasons.map { reason in
             guard case .poolWarming = reason else { return reason }
-            return .poolBlocked(template: block.template, detail: block.detail, behindJobID: ownTemplate ? nil : behind)
+            return .poolBlocked(template: block.template, detail: block.detail)
         }
     }
 

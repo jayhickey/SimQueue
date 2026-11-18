@@ -319,13 +319,13 @@ function StatusSummary({
               </span>
             </div>
           )}
-          {s?.pool_block && (
-            <div class="warning-chip danger">
+          {(s?.pool_blocks || []).map((block) => (
+            <div class="warning-chip danger" key={`pool-${block.template ?? ''}`}>
               <span>
-                <b>Simulator pool blocked</b> · {s.pool_block.summary}
+                <b>Simulator pool blocked</b> · {block.summary}
               </span>
             </div>
-          )}
+          ))}
           {s?.health && s.health.health !== 'ok' && (
             <div class="warning-chip danger">
               <span>
@@ -846,7 +846,7 @@ function Runner({ snapshot }: { snapshot?: Snapshot }) {
         ? 'Paused'
         : s?.load_throttled || s?.global_wait_reasons?.length
           ? 'Held'
-          : s?.pool_block
+          : s?.pool_blocks?.length
             ? 'Open · simulator pool blocked'
             : 'Open';
   return (

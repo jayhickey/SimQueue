@@ -465,7 +465,7 @@ public final class DaemonServer: @unchecked Sendable {
             Thread.sleep(forTimeInterval: waitPollSeconds)
         }
         _ = send(
-            Response(id: request.id, body: .error(ProtocolError(.internalError, "daemon is shutting down"))),
+            Response(id: request.id, body: .error(ProtocolError.shuttingDown)),
             on: connection)
     }
 }

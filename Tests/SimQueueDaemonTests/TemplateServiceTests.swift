@@ -158,22 +158,19 @@ final class TemplateServiceTests: XCTestCase {
     }
 
     /// A slim clone needs its template shut down; doctor said "current" while another tool
-    /// kept one booted and every pool create failed.
-    func testDoctorWarnsWhenATemplateIsNotShutDown() throws {
-        let daemon = try TestDaemon(config: try config())
-        defer { daemon.destroy() }
-        _ = try daemon.result(.templateBuild(TemplateBuildParams(project: "demo")))
-        let template = try XCTUnwrap(daemon.engine.templates().first?.record)
-        guard case .doctor(let before) = try daemon.result(.doctor) else { return XCTFail("no doctor report") }
-        let shutDown = try XCTUnwrap(before.checks.first { $0.name == "templates" })
-        XCTAssertFalse(shutDown.detail.contains("not shut down"), shutDown.detail)
-
-        try daemon.sims.bootDevice(udid: template.udid)
-        guard case .doctor(let report) = try daemon.result(.doctor) else { return XCTFail("no doctor report") }
-        let check = try XCTUnwrap(report.checks.first { $0.name == "templates" })
-        XCTAssertEqual(check.level, .warn)
-        XCTAssertTrue(check.detail.contains("not shut down, so the pool can't clone them"), check.detail)
-        XCTAssertTrue(check.detail.contains("\(template.name) (\(template.udid)) Booted"), check.detail)
+    /// kept one booted and every pool create failed. Pure: no daemon, backend or simctl.
+    func testDoctorNamesTemplatesThatAreNotShutDown() {
+        let sims = [
+            SimDevice(udid: "T-1", name: "simq-template-duo-default-1", isBooted: true, state: "Booted"),
+            SimDevice(udid: "T-2", name: "simq-template-iphone-default-2", isBooted: false, state: "Shutdown"),
+            SimDevice(udid: "T-3", name: "simq-template-ipad-default-3", isBooted: false, state: "ShuttingDown"),
+            SimDevice(udid: "T-4", name: "simq-template-fake-default-4", isBooted: false),
+            SimDevice(udid: "OTHER", name: "Someone Else", isBooted: true, state: "Booted"),
+        ]
+        XCTAssertEqual(
+            DoctorBuilder.templatesNotShutDown(templateUDIDs: ["T-1", "T-2", "T-3", "T-4"], sims: sims),
+            ["simq-template-duo-default-1 (T-1) Booted", "simq-template-ipad-default-3 (T-3) ShuttingDown"])
+        XCTAssertEqual(DoctorBuilder.templatesNotShutDown(templateUDIDs: [], sims: sims), [])
     }
 
     func testDoctorListsUnregisteredTemplateSims() throws {

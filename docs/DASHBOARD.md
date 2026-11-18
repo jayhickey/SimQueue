@@ -228,9 +228,9 @@ load averages, core count and thermal state. CPU percent is a tick delta (first
 sample unavailable); load average is a different measure, not CPU percent. Sample
 time and stale readings are visible. System and job-output free space are shown
 separately even when they share a volume. Admission holds show the daemon’s actual
-reasons. While the simulator pool keeps failing to prepare a sim (`status.pool_block`),
-the admission line and a "Simulator pool blocked" chip name that failure even when
-host admission is open. Missing metrics from older daemons display unavailable, never zero.
+reasons. While the simulator pool keeps failing to prepare a template's sims
+(`status.pool_blocks`), the admission line and a "Simulator pool blocked" chip per
+template name that failure even when host admission is open. Missing metrics from older daemons display unavailable, never zero.
 
 **Review storage** schedules a background pass on the daemon’s existing artifact
 retention lane. Polling reads the cached report; it does not scan directories.

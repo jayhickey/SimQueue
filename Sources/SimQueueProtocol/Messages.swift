@@ -351,6 +351,13 @@ public struct ProtocolError: Error, Sendable, Equatable, Codable {
     public var isTransientBusy: Bool {
         retryable == true || (code == .queueFull && message.hasPrefix("daemon busy:"))
     }
+
+    /// What a stopping daemon answers an observation still in flight (a `wait`). Nothing
+    /// changed; to the client it is a disconnect, so it reconnects like one.
+    public static let shuttingDown = ProtocolError(.internalError, "daemon is shutting down")
+    public var isShutdownInterruption: Bool {
+        code == Self.shuttingDown.code && message == Self.shuttingDown.message
+    }
 }
 
 // MARK: - Request parameters
@@ -757,7 +764,7 @@ public struct WaitReasonInfo: Sendable, Equatable, Codable {
     }
 }
 
-/// `status.pool_block`: the simulator pool's current failure to prepare a sim.
+/// One `status.pool_blocks` entry: a template the simulator pool currently fails to prepare.
 public struct PoolBlockInfo: Sendable, Equatable, Codable {
     public var template: String?
     public var jobID: String?
@@ -1155,9 +1162,10 @@ public struct StatusResult: Sendable, Equatable, Codable {
     public var health: HealthInfo?
     /// Set while a cloning backend has no template: "no template yet, run simq template build".
     public var templateHint: String?
-    /// Set while the simulator pool keeps failing to prepare a sim. Admission can be open
-    /// while this holds every simulator job. Nil when nothing is failing or on older daemons.
-    public var poolBlock: PoolBlockInfo?
+    /// Templates the simulator pool keeps failing to prepare. Their waiters get
+    /// `pool_blocked`; jobs for other templates keep being served. Nil when nothing is
+    /// failing or on older daemons.
+    public var poolBlocks: [PoolBlockInfo]?
 
     public init(
         daemon: DaemonInfo,
@@ -1201,7 +1209,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         case globalWaitReasons = "global_wait_reasons"
         case lastTickAt = "last_tick_at"
         case templateHint = "template_hint"
-        case poolBlock = "pool_block"
+        case poolBlocks = "pool_blocks"
         /// `template_hint` before the rename. Sent too (same value), since the wire format
         /// only adds fields; read from an older daemon.
         case legacyTemplateHint = "golden_hint"
@@ -1226,7 +1234,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         globalWaitReasons = try container.decode([WaitReasonInfo].self, forKey: .globalWaitReasons)
         lastTickAt = try container.decodeIfPresent(Timestamp.self, forKey: .lastTickAt)
         health = try container.decodeIfPresent(HealthInfo.self, forKey: .health)
-        poolBlock = try container.decodeIfPresent(PoolBlockInfo.self, forKey: .poolBlock)
+        poolBlocks = try container.decodeIfPresent([PoolBlockInfo].self, forKey: .poolBlocks)
         templateHint =
             try container.decodeIfPresent(String.self, forKey: .templateHint)
             ?? container.decodeIfPresent(String.self, forKey: .legacyTemplateHint)
@@ -1252,7 +1260,7 @@ public struct StatusResult: Sendable, Equatable, Codable {
         try container.encodeIfPresent(lastTickAt, forKey: .lastTickAt)
         try container.encodeIfPresent(health, forKey: .health)
         try container.encodeIfPresent(templateHint, forKey: .templateHint)
-        try container.encodeIfPresent(poolBlock, forKey: .poolBlock)
+        try container.encodeIfPresent(poolBlocks, forKey: .poolBlocks)
         try container.encodeIfPresent(templateHint, forKey: .legacyTemplateHint)
     }
 }

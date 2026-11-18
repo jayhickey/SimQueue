@@ -35,8 +35,6 @@ public struct SchedulerConfig: Sendable, Equatable {
     public var minFreeDiskBytes: UInt64
     /// Spec `swap_growth_limit_mb_per_min = 50`.
     public var swapGrowthLimitBytesPerMinute: Double
-    /// Legacy configuration value; stable historical swap no longer stops admissions.
-    public var maxSwapUsedBytes: UInt64
     /// Spec `pressure_stop = "warn"` (kernel pressure level 2 or worse).
     public var pressureStop: MemoryPressure
     /// Host-wide load throttle with hysteresis.
@@ -71,7 +69,6 @@ public struct SchedulerConfig: Sendable, Equatable {
         bootLoadFactor: Double = 3.0,
         minFreeDiskBytes: UInt64 = 20 * ByteSize.gibibyte,
         swapGrowthLimitBytesPerMinute: Double = Double(50 * ByteSize.mebibyte),
-        maxSwapUsedBytes: UInt64 = 3 * ByteSize.gibibyte,
         pressureStop: MemoryPressure = .warn,
         loadThrottle: LoadThrottlePolicy = LoadThrottlePolicy(),
         thermalStop: ThermalState = .serious,
@@ -91,7 +88,6 @@ public struct SchedulerConfig: Sendable, Equatable {
         self.bootLoadFactor = bootLoadFactor
         self.minFreeDiskBytes = minFreeDiskBytes
         self.swapGrowthLimitBytesPerMinute = swapGrowthLimitBytesPerMinute
-        self.maxSwapUsedBytes = maxSwapUsedBytes
         self.pressureStop = pressureStop
         self.loadThrottle = loadThrottle
         self.thermalStop = thermalStop

@@ -236,11 +236,17 @@ test('admission names a blocked simulator pool even while admission is open', ()
       "simulator pool can't prepare a duo sim for J-0002: template is Booted (3 failed attempts)",
   };
   assert.equal(
-    m.admissionLabel({ ...open, pool_block: block }),
+    m.admissionLabel({ ...open, pool_blocks: [block] }),
     `Admission open · Simulator jobs blocked: ${block.summary}`,
   );
   assert.equal(
-    m.admissionLabel({ ...open, draining: true, pool_block: block }),
+    m.admissionLabel({ ...open, draining: true, pool_blocks: [block] }),
     `Draining · new jobs wait · Simulator jobs blocked: ${block.summary}`,
   );
+  const other = { ...block, template: 'ipad', summary: "simulator pool can't prepare an ipad sim" };
+  assert.equal(
+    m.admissionLabel({ ...open, pool_blocks: [block, other] }),
+    `Admission open · Simulator jobs blocked: ${block.summary} · ${other.summary}`,
+  );
+  assert.equal(m.admissionLabel({ ...open, pool_blocks: [] }), 'Admission open');
 });

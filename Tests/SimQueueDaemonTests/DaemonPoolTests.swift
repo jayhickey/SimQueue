@@ -87,17 +87,17 @@ final class DaemonPoolTests: XCTestCase {
             .body {
                 reasons = info.waitReasons
             }
-            if status?.poolBlock != nil, reasons.first?.code == "pool_blocked" { break }
+            if status?.poolBlocks?.isEmpty == false, reasons.first?.code == "pool_blocked" { break }
             Thread.sleep(forTimeInterval: 0.02)
         }
-        let block = try XCTUnwrap(status?.poolBlock, "status names the failing pool")
+        let block = try XCTUnwrap(status?.poolBlocks?.first, "status names the failing pool")
         XCTAssertEqual(block.detail, "\(failure)")
         XCTAssertEqual(block.jobID, job.job.id)
         XCTAssertGreaterThanOrEqual(block.failures, 1)
         XCTAssertEqual(reasons.map(\.code), ["pool_blocked"])
         XCTAssertTrue(reasons[0].summary.contains("\(failure)"), reasons[0].summary)
         let encoded = String(decoding: try JSONEncoder().encode(try XCTUnwrap(status)), as: UTF8.self)
-        XCTAssertTrue(encoded.contains("\"pool_block\""), encoded)
+        XCTAssertTrue(encoded.contains("\"pool_blocks\""), encoded)
 
         guard case .doctor(let report) = try daemon.result(.doctor) else { return XCTFail("no doctor result") }
         let pool = try XCTUnwrap(report.checks.first { $0.name == "pool" })
@@ -113,7 +113,7 @@ final class DaemonPoolTests: XCTestCase {
         let cleared = Date().addingTimeInterval(10)
         while Date() < cleared {
             if case .result(.status(let current)) = daemon.service.handle(Request(params: .status)).body,
-                current.poolBlock == nil
+                current.poolBlocks == nil
             {
                 return
             }

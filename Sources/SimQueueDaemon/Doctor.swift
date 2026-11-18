@@ -143,14 +143,14 @@ public enum DoctorBuilder {
                 poolConfig.map { !$0.actsOnHost(cleanupMode: live.engine.reliability.cleanupMode) } ?? false
             } ?? false
         // A failing create is said even with no pool sims (it is why there are none).
-        let block = live?.engine.poolBlock
-        if pool != nil || poolReportOnly || block != nil {
+        let blocks = (live?.engine.poolBlocks.values).map { $0.sorted { $0.key < $1.key } } ?? []
+        if pool != nil || poolReportOnly || !blocks.isEmpty {
             let sims = pool?.sims.count ?? 0
             let settling = pool?.settling.count ?? 0
             let unleased = pool?.unleasedUsers.count ?? 0
             let capHits = pool?.settleCapHitsLastHour ?? 0
             let level: DoctorCheck.Level =
-                poolReportOnly || capHits > 0 || unleased > 0 || block != nil ? .warn : .ok
+                poolReportOnly || capHits > 0 || unleased > 0 || !blocks.isEmpty ? .warn : .ok
             let why =
                 poolConfig?.mode == .reportOnly
                 ? "pool.mode is report-only" : "pool.mode is follow-cleanup and cleanup_mode is report-only"
@@ -164,7 +164,7 @@ public enum DoctorBuilder {
                         + (poolConfig.map { "mode \($0.mode.rawValue), " } ?? "")
                         + "\(sims) sims, \(settling) settling, \(unleased) unleased users, "
                         + "\(capHits) settle cap hits in the last hour"
-                        + (block.map { "; blocked: \($0.summary)" } ?? "")))
+                        + blocks.map { "; blocked: \($0.summary)" }.joined()))
         }
 
         checks += try liveChecks(live, now: now)
@@ -261,12 +261,7 @@ public enum DoctorBuilder {
             }
             if !failed.isEmpty { problems.append("slim failed: " + failed.joined(separator: ", ")) }
             // A template another tool booted can't be cloned (slim clones need it shut down).
-            let templateIDs = Set(templates.map(\.record.udid))
-            let running = world.sims.compactMap { sim -> String? in
-                let state = sim.state ?? (sim.isBooted ? "Booted" : "Shutdown")
-                return templateIDs.contains(sim.udid) && state != "Shutdown"
-                    ? "\(sim.name) (\(sim.udid)) \(state)" : nil
-            }.sorted()
+            let running = templatesNotShutDown(templateUDIDs: Set(templates.map(\.record.udid)), sims: world.sims)
             if !running.isEmpty {
                 problems.append(
                     "not shut down, so the pool can't clone them (another tool is using them; "
@@ -364,6 +359,15 @@ public enum DoctorBuilder {
 
     static func gibibytes(_ bytes: UInt64) -> String {
         String(format: "%.1f GiB", Double(bytes) / Double(ByteSize.gibibyte))
+    }
+
+    /// Templates in `sims` that are not exactly Shutdown, as "name (udid) state", sorted.
+    /// A backend that reports no state counts a sim that isn't booted as shut down.
+    public static func templatesNotShutDown(templateUDIDs: Set<String>, sims: [SimDevice]) -> [String] {
+        sims.compactMap { sim -> String? in
+            let state = sim.state ?? (sim.isBooted ? "Booted" : "Shutdown")
+            return templateUDIDs.contains(sim.udid) && state != "Shutdown" ? "\(sim.name) (\(sim.udid)) \(state)" : nil
+        }.sorted()
     }
 
     static func mebibytes(_ bytes: Double) -> String {
